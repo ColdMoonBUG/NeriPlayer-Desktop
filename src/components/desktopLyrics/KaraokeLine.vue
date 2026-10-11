@@ -21,10 +21,13 @@ const props = defineProps<{
 const container = ref<HTMLElement | null>(null)
 const fit = ref<HTMLElement | null>(null)
 const base = ref<HTMLElement | null>(null)
+const outline = ref<HTMLElement | null>(null)
 const fill = ref<HTMLElement | null>(null)
 let wordOffsets: Array<readonly [number, number]> | null = null
 let textWidth = 0
 let lastWidth = -1
+let clipStart = 0
+let clipEnd = 0
 let observer: ResizeObserver | null = null
 
 const timedWords = computed(() => !!props.line && props.karaoke === 'word' && hasWordTiming(props.line))
@@ -45,10 +48,17 @@ function measure() {
   textWidth = element.offsetWidth
   const spans = [...element.children] as HTMLElement[]
   wordOffsets = timedWords.value ? spans.map(span => [span.offsetLeft, span.offsetWidth] as const) : null
-  const available = box.clientWidth
+  const boxStyle = getComputedStyle(box)
+  const available = Math.max(0, box.clientWidth - Number.parseFloat(boxStyle.paddingLeft) - Number.parseFloat(boxStyle.paddingRight))
   // 太长的行整体缩小，最多缩到一半，再长才截掉
   const scale = textWidth > available && textWidth > 0 ? Math.max(0.5, available / textWidth) : 1
   scaler.style.transform = scale < 1 ? `scale(${scale})` : ''
+  const excess = Math.max(0, Math.round((textWidth - available / scale) * 2) / 2)
+  clipStart = props.align === 'right' ? excess : props.align === 'center' ? excess / 2 : 0
+  clipEnd = textWidth - (props.align === 'left' ? excess : props.align === 'center' ? excess / 2 : 0)
+  const clip = excess > 0 ? `inset(-100% ${textWidth - clipEnd}px -100% ${clipStart}px)` : ''
+  element.style.clipPath = clip
+  if (outline.value) outline.value.style.clipPath = clip
   lastWidth = -1
   requestFrame?.()
 }
@@ -67,14 +77,14 @@ function update(timeMs: number) {
   const rounded = Math.round(width * 2) / 2
   if (rounded === lastWidth) return
   lastWidth = rounded
-  element.style.clipPath = `inset(0 ${Math.max(0, textWidth - rounded)}px 0 0)`
+  element.style.clipPath = `inset(0 ${Math.max(0, textWidth - Math.min(rounded, clipEnd))}px 0 ${clipStart ? `${clipStart}px` : '0'})`
 }
 
 const register = inject(KARAOKE_REGISTRY, null)
 const requestFrame = inject(KARAOKE_WAKE, null)
 let unregister: (() => void) | null = null
 
-watch(() => [props.line, props.karaoke, props.fallback], () => { void nextTick(measure) })
+watch(() => [props.line, props.karaoke, props.fallback, props.align], () => { void nextTick(measure) })
 
 onMounted(() => {
   void nextTick(measure)
@@ -94,9 +104,9 @@ onBeforeUnmount(() => {
 <template>
   <div ref="container" class="karaoke-line" :class="[`align-${align}`, { upcoming }]">
     <div ref="fit" class="karaoke-fit">
-      <span class="karaoke-text karaoke-stroke" aria-hidden="true"><span v-for="(segment, index) in segments" :key="index">{{ segment }}</span></span>
+      <span class="karaoke-shadow" aria-hidden="true"><span ref="outline" class="karaoke-text karaoke-stroke"><span v-for="(segment, index) in segments" :key="index">{{ segment }}</span></span></span>
       <span ref="base" class="karaoke-text karaoke-unplayed"><span v-for="(segment, index) in segments" :key="index">{{ segment }}</span></span>
-      <span ref="fill" class="karaoke-text karaoke-played" aria-hidden="true"><span v-for="(segment, index) in segments" :key="index">{{ segment }}</span></span>
+      <span class="karaoke-glow" aria-hidden="true"><span ref="fill" class="karaoke-text karaoke-played"><span v-for="(segment, index) in segments" :key="index">{{ segment }}</span></span></span>
     </div>
   </div>
 </template>
@@ -106,8 +116,8 @@ onBeforeUnmount(() => {
   display: flex;
   width: 100%;
   min-width: 0;
-  overflow: hidden;
-  padding: 0.12em 0.2em;
+  overflow: visible;
+  padding: 0.12em max(0.2em, var(--dl-effect-inset));
   box-sizing: border-box;
 }
 
@@ -122,8 +132,8 @@ onBeforeUnmount(() => {
   transform-origin: center;
 }
 
-.align-left .karaoke-fit { transform-origin: left center; }
-.align-right .karaoke-fit { transform-origin: right center; }
+.karaoke-line.align-left .karaoke-fit { transform-origin: left center; }
+.karaoke-line.align-right .karaoke-fit { transform-origin: right center; }
 
 .karaoke-text {
   display: block;
@@ -135,12 +145,15 @@ onBeforeUnmount(() => {
 }
 
 /* 描边画在最底下，被上面的填充盖住内半边，只露出外半边 */
-.karaoke-stroke {
+.karaoke-shadow {
   position: absolute;
   inset: 0;
+  filter: var(--dl-shadow);
+}
+
+.karaoke-stroke {
   color: transparent;
   -webkit-text-stroke: var(--dl-stroke);
-  filter: var(--dl-shadow);
 }
 
 .karaoke-unplayed,
@@ -155,14 +168,17 @@ onBeforeUnmount(() => {
   background-image: var(--dl-unplayed);
 }
 
-.karaoke-played {
+.karaoke-glow {
   position: absolute;
   inset: 0;
-  background-image: var(--dl-played);
   filter: var(--dl-glow);
+}
+
+.karaoke-played {
+  background-image: var(--dl-played);
   clip-path: inset(0 100% 0 0);
   will-change: clip-path;
 }
 
-.upcoming .karaoke-played { visibility: hidden; }
+.upcoming .karaoke-glow { visibility: hidden; }
 </style>

@@ -774,11 +774,20 @@ watch(() => props.seekSeq, (seq, oldSeq) => {
   font-weight: 850;
   font-variation-settings: 'wght' 850;
   letter-spacing: -0.025em;
+  overflow-wrap: anywhere;
+}
+
+:deep(.amll-lyric-player [class*="lyricMainLine"] > span),
+:deep(.amll-lyric-player [class*="emphasizeWrapper"] > span) {
+  // AMLL 给词容器各留了 1em 效果空间，宽度限制要保留这部分 padding
+  box-sizing: border-box;
+  max-width: calc(100% + 2em);
 }
 
 :deep(.amll-lyric-player [class*="lyricSubLine"]) {
   font-weight: 650;
   font-variation-settings: 'wght' 650;
+  overflow-wrap: anywhere;
 }
 
 </style>
