@@ -35,7 +35,7 @@ const REMOTE_PREPARE_TIMEOUT: Duration = Duration::from_secs(12);
 const REMOTE_SEEK_TIMEOUT: Duration = Duration::from_secs(45);
 const LOCAL_PREBUFFER: Duration = Duration::from_millis(80);
 const GROWING_PREBUFFER: Duration = Duration::from_millis(800);
-const REMOTE_PREBUFFER: Duration = Duration::from_millis(400);
+const REMOTE_PREBUFFER: Duration = Duration::from_millis(1_500);
 const REBUFFER_TARGET: Duration = Duration::from_millis(1_500);
 // 音效/倍速切换后的短恢复目标：避免 underrun 后卡 1.5s
 const EFFECTS_RECOVER_TARGET: Duration = Duration::from_millis(120);
@@ -3418,6 +3418,10 @@ fn render_output<T>(
     let OutputChain { stretcher, effects, scratch, clock_remainder_us } = chain;
     let started_ns = metrics::monotonic_ns();
     let silence = T::from_sample(0.0);
+    // EOF can race begin_rebuffering: the worker clears buffering just before
+    // the callback sets it. Recheck readiness here so the remaining tail drains
+    // and QueryEmpty can report completion instead of staying silent forever.
+    shared.update_buffering_state();
     if shared.paused.load(Ordering::Acquire) || shared.buffering.load(Ordering::Acquire) {
         output.fill(silence);
         counters.record_callback(0, 0, false, metrics::monotonic_ns().saturating_sub(started_ns));

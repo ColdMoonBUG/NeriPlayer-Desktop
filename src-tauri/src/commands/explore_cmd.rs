@@ -46,6 +46,25 @@ pub struct ExplorePage {
     pub has_more: bool,
 }
 
+/// QQ's public new-song feed: real recommendations, not search placeholders.
+#[tauri::command]
+pub async fn get_qq_recommendations(state: State<'_, AppState>) -> AppResult<Vec<ExploreItem>> {
+    let songs = state.qq().api()?.recommend.get_web_newsongs(1).await
+        .map_err(|error| crate::api::qq::client::qq_api_error("recommendations", &error))?;
+    Ok(songs.into_iter().take(30).map(|song| {
+        let cover_url = https(&song.cover_url(300));
+        ExploreItem::Song {
+            id: format!("qq:{}", song.mid),
+            title: if song.title.is_empty() { song.name } else { song.title },
+            artist: song.singer.into_iter().map(|s| s.name).collect::<Vec<_>>().join(" / "),
+            album: song.album.name,
+            duration_ms: song.interval.max(0) as u64 * 1_000,
+            source: "qq".into(),
+            cover_url,
+        }
+    }).collect())
+}
+
 fn https(url: &str) -> Option<String> {
     let url = url.trim();
     if url.is_empty() {
@@ -142,6 +161,24 @@ pub async fn explore_search(
     }
     let page = page.unwrap_or(1).max(1);
     match platform.as_str() {
+        "qq" => {
+            if kind != "songs" {
+                return Err(AppError::Api("Unsupported QQ Music search kind".into()));
+            }
+            let songs = state.qq().search(&query, page, NETEASE_PAGE_SIZE).await?;
+            let has_more = songs.len() == NETEASE_PAGE_SIZE as usize;
+            let items = songs.into_iter().map(|song| ExploreItem::Song {
+                id: format!("qq:{}", song.song_mid),
+                title: song.song_name,
+                artist: song.artists.join(" / "),
+                album: song.album_name,
+                duration_ms: song.duration_ms,
+                source: "qq".into(),
+                cover_url: song.album_mid.map(|mid| format!("https://y.gtimg.cn/music/photo_new/T002R800x800M000{mid}.jpg"))
+                    .or_else(|| song.singer_mid.map(|mid| format!("https://y.gtimg.cn/music/photo_new/T001R500x500M000{mid}.jpg"))),
+            }).collect();
+            Ok(ExplorePage { items, has_more })
+        }
         "netease" => {
             let search_type = match kind.as_str() {
                 "playlists" => 1000,

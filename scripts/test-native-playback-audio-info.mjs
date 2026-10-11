@@ -40,6 +40,10 @@ async function load(source, dependencies = {}) {
 
 const root = new URL('../src/', import.meta.url)
 const source = await readFile(new URL('stores/player.ts', root), 'utf8')
+const playbackClock = await load(await readFile(new URL('modules/playback/playbackClock.ts', root), 'utf8'))
+assert.equal(playbackClock.predictAudiblePosition(1000, 10000, 1, 180000, false), 1000, 'buffering must freeze the audible clock')
+assert.equal(playbackClock.predictAudiblePosition(1000, 10000, 1, 180000, true), 1250, 'stale events cannot extrapolate for seconds')
+assert.equal(playbackClock.predictAudiblePosition(1000, 100, 2, 180000, true), 1200)
 const sourceText = await readFile(new URL('modules/playback/playbackSource.ts', root), 'utf8')
 const policy = await load(await readFile(new URL('modules/playback/playbackPolicy.ts', root), 'utf8'))
 const request = await load(await readFile(new URL('modules/playback/playbackRequest.ts', root), 'utf8'))
@@ -106,6 +110,7 @@ async function runtime(options = {}) {
     rememberLongFormProgress: options.rememberLongForm !== false,
   })
   const loaded = await load(source, {
+    '@/modules/playback/playbackClock': playbackClock,
     vue, pinia, '@tauri-apps/api/core': core,
     '@tauri-apps/api/event': { listen: async (name, callback) => { events.set(name, callback); return () => events.delete(name) } },
     './history': { useHistoryStore: () => options.history ?? { record: () => {}, rememberedPosition: () => 0, updateResumePosition() {} } },

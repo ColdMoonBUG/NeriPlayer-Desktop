@@ -48,6 +48,7 @@
     "no_notifications": "暫無通知"
   },
   "explore": {
+    "qq_hint": "搜尋 QQ 音樂歌曲；登入後依帳號權益取得音源。",
     "title": "探索",
     "search_placeholder": "搜尋歌曲、藝人、專輯...",
     "tab_link": "連結",
@@ -251,6 +252,7 @@
     "tab_search_hint": "搜尋"
   },
   "common": {
+    "refresh": "重新整理",
     "back": "返回",
     "loading": "載入中...",
     "save": "儲存",
@@ -661,6 +663,8 @@
     "clear_confirm_btn": "確定清空"
   },
   "settings": {
+    "qq_quality": "QQ 音樂音質",
+    "qq_wechat_login": "微信登入",
     "audio_output": "音訊輸出裝置",
     "audio_output_default": "跟隨系統預設裝置",
     "audio_output_desc": "切換裝置時保留播放位置；預設選項自動跟隨系統變更",

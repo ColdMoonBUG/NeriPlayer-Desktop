@@ -82,12 +82,14 @@ const tabs = computed<LibraryTab[]>(() => [
   { label: t('library.tab_netease'), brandIcon: '/icons/ic_netease.svg', key: 'netease' },
   { label: t('library.bilibili_favorites'), brandIcon: '/icons/ic_bilibili.svg', key: 'bilibili_favorites' },
   { label: 'YouTube Music', brandIcon: '/icons/ic_youtube.svg', key: 'youtube_playlists' },
+  { label: t('player.source_qq'), brandIcon: '/icons/ic_qq_music.svg', key: 'qq_playlists' },
 ])
 // 根据路由 query 参数设置初始标签；旧的 netease_albums / netease_playlists 仍可用
 const tabKeyToIndex: Record<string, number> = {
   local: 0, favorites: 1, downloads: 2,
   netease: 3, netease_playlists: 3, netease_albums: 3,
   bilibili_favorites: 4, youtube_playlists: 5,
+  qq_playlists: 6,
 }
 type NeteaseCategory = 'playlists' | 'albums'
 const neteaseCategory = ref<NeteaseCategory>('playlists')
@@ -420,6 +422,8 @@ const filteredBiliPlaylists = computed(() =>
 const filteredYoutubePlaylists = computed(() =>
   youtubePlaylists.value.filter((ypl: any) => matchesQuery(tabQuery.value, ypl.name)),
 )
+const qqPlaylists = computed(() => recommend.userPlaylists.qq || [])
+const filteredQqPlaylists = computed(() => qqPlaylists.value.filter(pl => matchesQuery(tabQuery.value, pl.name)))
 // 本地库分类：歌单 / 歌手（对齐 Android LOCAL_CATEGORY_ARTIST）
 type LocalCategory = 'playlists' | 'artists' | 'files'
 const localCategory = ref<LocalCategory>('playlists')
@@ -708,10 +712,10 @@ onMounted(loadFavorites)
 /// 表现就是「明明登录了，云端歌单一直空着」。
 /// 这里改成对（登录态 × 当前 tab）响应式求值，任一变化都会补拉。
 /// 有缓存时先显示缓存，本次启动第一次打开时在后台刷新；同一平台的请求由 store 合并。
-type CloudPlatform = 'netease' | 'bilibili' | 'youtube'
+type CloudPlatform = 'netease' | 'bilibili' | 'youtube' | 'qq'
 
 function isCloudPlatform(platform: string): platform is CloudPlatform {
-  return platform === 'netease' || platform === 'bilibili' || platform === 'youtube'
+  return platform === 'netease' || platform === 'bilibili' || platform === 'youtube' || platform === 'qq'
 }
 
 function ensurePlatformData(platform: string, force = false) {
@@ -731,6 +735,9 @@ function syncActiveTabData(force = false) {
       break
     case 5:
       ensurePlatformData('youtube', force)
+      break
+    case 6:
+      ensurePlatformData('qq', force)
       break
     default:
       break
@@ -770,6 +777,7 @@ watch(
     auth.netease.loggedIn,
     auth.bilibili.loggedIn,
     auth.youtube.loggedIn,
+    auth.qq.loggedIn,
   ],
   () => syncActiveTabData(),
   { immediate: true },
@@ -1451,6 +1459,26 @@ onUnmounted(() => {
         <p class="empty-title">YouTube Music</p>
         <p class="empty-desc">{{ t('explore.login_for_playlists') }}</p>
       </div>
+    </div>
+    <div v-else-if="activeTab === 6" key="tab-qq" class="playlist-list">
+      <template v-if="qqPlaylists.length > 0 && cloudSignedIn('qq')">
+        <div class="platform-summary">
+          <span class="platform-icon-mask" style="mask-image: url('/icons/ic_qq_music.svg')"></span>
+          <div><div class="platform-title">{{ t('player.source_qq') }}</div><div class="platform-desc">{{ t('library.playlist_count', { count: qqPlaylists.length }) }}</div></div>
+          <button class="m3-chip sm" :disabled="cloudPlaylistStatus('qq')?.loading" @click="recommend.fetchUserPlaylists('qq')"><span class="material-symbols-rounded">refresh</span>{{ t('common.refresh') }}</button>
+          <CloudListState variant="banner" :status="cloudPlaylistStatus('qq')" @retry="recommend.fetchUserPlaylists('qq')" />
+        </div>
+        <div v-for="pl in filteredQqPlaylists" :key="'qq-' + pl.id" class="playlist-item" @click="router.push({ name: 'qq-playlist', params: { id: pl.id } })">
+          <div class="pl-icon"><img v-if="pl.coverUrl" :src="pl.coverUrl" class="pl-cover-img" referrerpolicy="no-referrer" loading="lazy" /><span v-else class="material-symbols-rounded">queue_music</span></div>
+          <div class="pl-info"><div class="pl-name">{{ pl.name }}</div><div class="pl-count">{{ t('library.track_count', { count: pl.trackCount }) }}</div></div>
+          <span class="material-symbols-rounded">chevron_right</span>
+        </div>
+        <p v-if="!filteredQqPlaylists.length" class="empty-tab">{{ t('player.no_results') }}</p>
+      </template>
+      <CloudListState v-else-if="cloudSignedIn('qq')" variant="placeholder" :status="cloudPlaylistStatus('qq')" @retry="recommend.fetchUserPlaylists('qq')">
+        <p class="empty-title">{{ t('explore.no_playlists') }}</p>
+      </CloudListState>
+      <div v-else class="empty-tab"><p>{{ t('explore.login_for_playlists') }}</p></div>
     </div>
     </Transition>
 

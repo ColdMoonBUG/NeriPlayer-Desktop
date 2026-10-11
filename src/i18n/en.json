@@ -48,6 +48,7 @@
     "no_notifications": "No notifications"
   },
   "explore": {
+    "qq_hint": "Search QQ Music songs. Sign in to use your account's playback access.",
     "title": "Explore",
     "search_placeholder": "Search songs, artists, albums...",
     "tab_link": "Links",
@@ -251,6 +252,7 @@
     "tab_search_hint": "Search"
   },
   "common": {
+    "refresh": "Refresh",
     "back": "Back",
     "loading": "Loading...",
     "save": "Save",
@@ -661,6 +663,8 @@
     "clear_confirm_btn": "Clear"
   },
   "settings": {
+    "qq_quality": "QQ Music quality",
+    "qq_wechat_login": "Sign in with WeChat",
     "audio_output": "Audio output device",
     "audio_output_default": "Follow system default",
     "audio_output_desc": "Keep your position when switching devices and follow system changes with the default option",

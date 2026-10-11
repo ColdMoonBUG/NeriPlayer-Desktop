@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { predictAudiblePosition } from '@/modules/playback/playbackClock'
 import { ref, computed, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
@@ -320,6 +321,7 @@ let _interpAnchorTime = 0       // 对应的 performance.now() 锚点
 let _interpRenderedMs = 0       // 上次渲染的插值位置
 let _interpSpeed = 1.0          // 当前播放速度快照
 let _interpIsPlaying = false    // 当前播放状态快照
+let _interpBackendAdvancing = false
 let _interpDurationMs = 0       // 当前时长快照
 let _interpLoopStarted = false  // rAF 循环是否已启动
 let _interpLastTickTime = 0     // 上一帧 tick 的 performance.now()
@@ -992,12 +994,13 @@ export const usePlayerStore = defineStore('player', () => {
     }
 
     const renderedMs = clampPlaybackPosition(_interpRenderedMs)
+    _interpBackendAdvancing = _interpIsPlaying && safePositionMs > positionMs.value
     // 后端位置比渲染值回退超过 30s 视为时钟跳变（睡眠唤醒后 performance.now 大跳
     // 把渲染值冲到曲末），此时必须强制重锚而非忽略，否则进度永久卡死
     const isClockJump = _interpIsPlaying && !forceRendered
       && renderedMs - safePositionMs > CLOCK_JUMP_BACKWARD_MS
     // 倍速播放时后端时钟与插值都应按速度前进；仍拒绝明显回跳
-    if (_interpIsPlaying && !forceRendered && !isClockJump
+    if (_interpBackendAdvancing && !forceRendered && !isClockJump
       && safePositionMs < renderedMs - POSITION_BACKWARD_TOLERANCE_MS) {
       // 后端在缓冲（时钟停了）而插值还在走：渲染值不往回拉，但锚点要跟上后端，
       // 插值随之停住、等声音追上再走；只丢弃事件的话锚点不动，歌词会按累计卡顿时长永久领先
@@ -1012,7 +1015,7 @@ export const usePlayerStore = defineStore('player', () => {
     _interpAnchorTime = performance.now()
     _interpDurationMs = Math.max(durationMs.value || _interpDurationMs, safePositionMs)
     // 播放中也允许后端时钟校准插值，保证歌词与倍速同步
-    if (!_interpIsPlaying || forceRendered || isClockJump
+    if (!_interpBackendAdvancing || forceRendered || isClockJump
       || Math.abs(safePositionMs - renderedMs) > POSITION_HARD_RESYNC_MS) {
       _interpRenderedMs = safePositionMs
       interpolatedPositionMs.value = safePositionMs
@@ -1051,6 +1054,7 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   function setRenderedPosition(position: number, durationOverride?: number): number {
+    _interpBackendAdvancing = false
     const safePositionMs = clampPlaybackPosition(position, durationOverride)
     positionMs.value = safePositionMs
     _interpAnchorMs = safePositionMs
@@ -1148,9 +1152,7 @@ export const usePlayerStore = defineStore('player', () => {
   function livePositionMs(): number {
     if (pendingSeek) return Math.round(pendingSeek.targetMs)
     if (!_interpIsPlaying) return Math.round(_interpRenderedMs)
-    const predicted = _interpAnchorMs + (performance.now() - _interpAnchorTime) * _interpSpeed
-    const clamped = Math.max(0, Math.min(predicted, _interpDurationMs))
-    return Math.round(Math.max(_interpRenderedMs, clamped))
+    return Math.round(predictAudiblePosition(_interpAnchorMs, performance.now() - _interpAnchorTime, _interpSpeed, _interpDurationMs, _interpBackendAdvancing))
   }
 
   /** 按需启动 rAF 插值循环：暂停且无待确认 seek 时自动停表，状态恢复时重启 */
@@ -1181,15 +1183,14 @@ export const usePlayerStore = defineStore('player', () => {
         return
       }
 
-      const predicted = _interpAnchorMs + (now - _interpAnchorTime) * _interpSpeed
-      const clamped = Math.max(0, Math.min(predicted, _interpDurationMs))
+      const clamped = predictAudiblePosition(_interpAnchorMs, now - _interpAnchorTime, _interpSpeed, _interpDurationMs, _interpBackendAdvancing)
 
       // 按自然速度推进，同时把与后端预测值的偏差按指数平滑收敛：
       // 落后时略快、超前时略慢（超前太多则停住等后端追上），从不往回拉
       const error = clamped - _interpRenderedMs
       const correction = error * Math.min(1, dt / POSITION_SLEW_TAU_MS)
       const step = Math.max(0, dt * _interpSpeed + correction)
-      _interpRenderedMs = Math.min(_interpRenderedMs + step, Math.max(_interpRenderedMs, _interpDurationMs))
+      _interpRenderedMs = Math.min(_interpRenderedMs + step, clamped)
 
       interpolatedPositionMs.value = Math.round(_interpRenderedMs)
     }
@@ -2445,7 +2446,7 @@ export const usePlayerStore = defineStore('player', () => {
       } else {
         // 停止播放但保留队列（对齐 Android stopPlaybackPreservingQueue）
         await pause('local_safety')
-        positionMs.value = 0
+        setRenderedPosition(0)
       }
     }
   }

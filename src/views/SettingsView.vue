@@ -103,7 +103,7 @@ const {
   showTranslation, showRomanization, lyricBlur, lyricBlurAmount,
   advancedLyrics, preferWordTimedLyrics, defaultLyricSource, dynamicBackground, colorMode, audioReactive,
   coverBlurBg, coverBlurAmount, coverBlurDarken,
-  neteaseQuality, youtubeQuality, biliQuality,
+  neteaseQuality, qqMusicQuality, youtubeQuality, biliQuality,
   youtubePlaybackSource, neteaseAutoSourceSwitch, neteaseLocalSourceFallback,
   bypassProxy, internationalizationEnabled, exploreSearchHistoryEnabled,
   backgroundImageUri, backgroundImageBlur, backgroundImageAlpha, backgroundImageDim,
@@ -111,7 +111,7 @@ const {
   devModeEnabled, logToFile, logLevel,
   maxCacheSize, downloadNameTemplate, downloadDir,
   downloadParallelism, downloadAutoFillMetadata, downloadEmbedLyrics,
-  downloadFollowPlaybackQuality, downloadNeteaseQuality,
+  downloadFollowPlaybackQuality, downloadNeteaseQuality, downloadQqMusicQuality,
   downloadYoutubeQuality, downloadBiliQuality,
   ltServerUrl, ltNickname, ltAllowMemberControl, ltAutoPauseOnMemberChange, ltShareAudioLinks,
   locale: settingLocale,
@@ -502,17 +502,25 @@ const biliQualityOptions = computed(() => [
   { value: 'dolby', label: t('settings.q_dolby') },
 ])
 
-type OnlineQualitySource = 'netease' | 'youtube' | 'bilibili'
+const qqQualityOptions = computed(() => [
+  { value: 'standard', label: t('settings.q_standard') },
+  { value: 'high', label: t('settings.q_good') },
+  { value: 'lossless', label: t('settings.q_lossless') },
+])
+
+type OnlineQualitySource = 'netease' | 'qq' | 'youtube' | 'bilibili'
 const qualitySwitching = ref(false)
 
 function qualityForSource(source: OnlineQualitySource): string {
+  if (source === 'qq') return qqMusicQuality.value
   if (source === 'netease') return neteaseQuality.value
   if (source === 'youtube') return youtubeQuality.value
   return biliQuality.value
 }
 
 function setQualityForSource(source: OnlineQualitySource, value: string) {
-  if (source === 'netease') neteaseQuality.value = value
+  if (source === 'qq') qqMusicQuality.value = value
+  else if (source === 'netease') neteaseQuality.value = value
   else if (source === 'youtube') youtubeQuality.value = value
   else biliQuality.value = value
 }
@@ -1328,6 +1336,7 @@ function formatSyncTime(ms: number): string {
 
 // 平台账号配置
 const platformAccounts = computed(() => [
+  { key: 'qq', label: t('player.source_qq'), iconSvg: '/icons/ic_qq_music.svg', auth: auth.qq, login: auth.loginQq },
   { key: 'netease', label: t('settings.netease_account'), iconSvg: '/icons/ic_netease.svg', auth: auth.netease, login: auth.loginNetease },
   { key: 'bilibili', label: t('settings.bilibili_account'), iconSvg: '/icons/ic_bilibili.svg', auth: auth.bilibili, login: auth.loginBilibili },
   { key: 'youtube', label: t('settings.youtube_account'), iconSvg: '/icons/ic_youtube.svg', auth: auth.youtube, login: auth.loginYoutube },
@@ -1476,12 +1485,17 @@ useEscapeClose(
       class="setting-card account-card"
     >
       <div class="setting-icon-wrap">
-        <span class="platform-icon" :style="{ maskImage: `url(${account.iconSvg})` }"></span>
+        <BilibiliCoverImage v-if="account.auth.loggedIn && account.key === 'bilibili' && account.auth.avatarUrl" :src="account.auth.avatarUrl" class="account-avatar">
+          <span class="material-symbols-rounded">account_circle</span>
+        </BilibiliCoverImage>
+        <img v-else-if="account.auth.loggedIn && account.auth.avatarUrl && !isAvatarLoadFailed(account.key, account.auth.avatarUrl)" :src="account.auth.avatarUrl" class="account-avatar" referrerpolicy="no-referrer" @error="handleAvatarError(account.key, account.auth.avatarUrl)" />
+        <span v-else-if="account.auth.loggedIn" class="material-symbols-rounded">account_circle</span>
+        <span v-else class="platform-icon" :style="{ maskImage: `url(${account.iconSvg})` }"></span>
       </div>
       <div class="setting-info">
-        <div class="setting-title">{{ account.label }}</div>
+        <div class="setting-title">{{ account.auth.loggedIn ? (account.auth.nickname || account.label) : account.label }}</div>
         <div class="setting-desc" v-if="account.auth.loggedIn">
-          {{ t('settings.signed_in_as', { name: account.auth.nickname || '—' }) }}
+          {{ account.label }}
         </div>
         <div class="setting-desc" v-else-if="auth.loggingIn === account.key">
           {{ t('settings.signing_in') }}
@@ -1492,21 +1506,6 @@ useEscapeClose(
         </div>
       </div>
       <template v-if="account.auth.loggedIn">
-        <BilibiliCoverImage
-          v-if="account.key === 'bilibili' && account.auth.avatarUrl"
-          :src="account.auth.avatarUrl"
-          class="account-avatar"
-        >
-          <span class="material-symbols-rounded account-avatar account-avatar-fallback">account_circle</span>
-        </BilibiliCoverImage>
-        <img
-          v-else-if="account.auth.avatarUrl && !isAvatarLoadFailed(account.key, account.auth.avatarUrl)"
-          :src="account.auth.avatarUrl"
-          class="account-avatar"
-          referrerpolicy="no-referrer"
-          @error="handleAvatarError(account.key, account.auth.avatarUrl)"
-        />
-        <span v-else class="material-symbols-rounded account-avatar account-avatar-fallback">account_circle</span>
         <button class="account-logout-btn" @click="requestLogout(account.key, account.label)">
           <span class="material-symbols-rounded" style="font-size: 16px">logout</span>
           {{ t('settings.sign_out') }}
@@ -1520,6 +1519,9 @@ useEscapeClose(
         >
           <span v-if="auth.loggingIn === account.key" class="material-symbols-rounded spin" style="font-size: 18px">progress_activity</span>
           <span v-else>{{ t('settings.sign_in') }}</span>
+        </button>
+        <button v-if="account.key === 'qq'" class="account-login-btn" :disabled="auth.loggingIn === 'qq'" @click="auth.loginQqWechat()">
+          {{ t('settings.qq_wechat_login') }}
         </button>
       </template>
     </div>
@@ -2222,6 +2224,10 @@ useEscapeClose(
           <CustomSelect v-model="downloadNeteaseQuality" :options="downloadNeteaseQualityOptions" :label="t('settings.netease_quality')" />
         </div>
         <div class="setting-card sub-card">
+          <div class="setting-info"><div class="setting-title">{{ t('settings.qq_quality') }}</div></div>
+          <CustomSelect v-model="downloadQqMusicQuality" :options="qqQualityOptions" :label="t('settings.qq_quality')" />
+        </div>
+        <div class="setting-card sub-card">
           <div class="setting-info"><div class="setting-title">{{ t('settings.youtube_quality') }}</div></div>
           <CustomSelect v-model="downloadYoutubeQuality" :options="youtubeQualityOptions" :label="t('settings.youtube_quality')" />
         </div>
@@ -2768,6 +2774,16 @@ useEscapeClose(
           <div class="setting-title">{{ t('settings.netease_quality') }}</div>
           <div class="chip-wrap">
             <button v-for="o in neteaseQualityOptions" :key="o.value" class="m3-chip sm" :class="{ active: neteaseQuality === o.value }" :disabled="qualitySwitching" @click="handleQualityChange('netease', o.value)">{{ o.label }}</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="setting-card quality-card">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">music_note</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.qq_quality') }}</div>
+          <div class="chip-wrap">
+            <button v-for="o in qqQualityOptions" :key="o.value" class="m3-chip sm" :class="{ active: qqMusicQuality === o.value }" :disabled="qualitySwitching" @click="handleQualityChange('qq', o.value)">{{ o.label }}</button>
           </div>
         </div>
       </div>

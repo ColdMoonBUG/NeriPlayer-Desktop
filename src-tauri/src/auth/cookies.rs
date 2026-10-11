@@ -147,7 +147,7 @@ fn clear_legacy_auth(app: &AppHandle) {
 }
 
 fn has_any_auth(auth: &AuthState) -> bool {
-    auth.netease.is_some() || auth.bilibili.is_some() || auth.youtube.is_some()
+    auth.qq.is_some() || auth.netease.is_some() || auth.bilibili.is_some() || auth.youtube.is_some()
 }
 
 /// 将所有已登录平台的 Cookie 注入 Jar

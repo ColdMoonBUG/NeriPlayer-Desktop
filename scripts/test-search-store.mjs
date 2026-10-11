@@ -34,6 +34,7 @@ const page = (ids, hasMore = false) => ({ items: ids.map(song), has_more: hasMor
 
 // 分类与平台都随请求带上，对齐 Android 的类型参数
 assert.deepEqual(exports.EXPLORE_KINDS.netease, ['songs', 'playlists', 'artists'])
+assert.deepEqual(exports.EXPLORE_KINDS.qq, ['songs'])
 assert.deepEqual(exports.EXPLORE_KINDS.youtube, ['songs', 'videos', 'creators'])
 
 // 慢的旧关键词晚于新关键词返回，不能覆盖新结果
@@ -80,5 +81,19 @@ assert.equal(store.isSearching, false)
 pending[5].resolve(page(['late']))
 await inFlight
 assert.deepEqual(store.items, [])
+
+// QQ follows the existing search/queue shape, including pagination and deduplication.
+const qqSearch = store.search('qq', 'songs', 'QQ song')
+assert.deepEqual(pending.at(-1).args, { platform: 'qq', kind: 'songs', query: 'QQ song', page: 1 })
+const qqSong = { ...song('qq:mid1'), source: 'qq' }
+pending.at(-1).resolve({ items: [qqSong], has_more: true })
+await qqSearch
+assert.deepEqual(store.items, [qqSong])
+const qqMore = store.loadMore('qq', 'songs', 'QQ song')
+assert.equal(pending.at(-1).args.page, 2)
+pending.at(-1).resolve({ items: [qqSong, { ...qqSong, id: 'qq:mid2' }], has_more: false })
+await qqMore
+assert.deepEqual(store.items.map(item => item.id), ['qq:mid1', 'qq:mid2'])
+assert.equal(store.hasMore, false)
 
 console.log('explore search store tests passed')

@@ -67,6 +67,7 @@ pub struct AppState {
     pub cookie_jar: Arc<reqwest::cookie::Jar>,
     /// 三平台登录状态
     pub auth: Mutex<AuthState>,
+    pub qq_auth_generation: AtomicU64,
     /// 一起听会话
     pub lt_session: Mutex<LtSession>,
     /// 后台下载任务
@@ -123,6 +124,7 @@ impl AppState {
             bypass_system_proxy: AtomicBool::new(true),
             cookie_jar: jar,
             auth: Mutex::new(AuthState::default()),
+            qq_auth_generation: AtomicU64::new(0),
             lt_session: Mutex::new(LtSession::new()),
             download_tasks: Mutex::new(HashMap::new()),
             youtube_refresh: Mutex::new(crate::api::youtube::refresh::YouTubeRefreshGate::default()),
@@ -222,7 +224,12 @@ impl AppState {
     }
 
     pub fn qq(&self) -> crate::api::qq::client::QqMusicClient {
-        crate::api::qq::client::QqMusicClient::with_transport(self.transport("qq"))
+        crate::api::qq::client::QqMusicClient::with_transport(
+            crate::api::transport::FallbackHttp::with_fallback(
+                &self.sync_http(), &self.sync_alt_http.read().clone(), "qq",
+            ),
+        )
+            .with_credential(self.auth.lock().qq.as_ref().filter(|a| a.info().logged_in).map(|a| a.credential.clone()))
     }
 
     pub fn lrclib(&self) -> crate::api::lrclib::LrcLibClient {

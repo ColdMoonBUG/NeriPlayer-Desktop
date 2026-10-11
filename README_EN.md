@@ -345,8 +345,8 @@ the sidebar.
   (paged top songs/albums), like/unlike, multi-quality streaming, lyrics
   (including word-synced YRC and translations), downloads.
 - **QQ Music**:
-  search, multi-quality streaming, lyric and metadata completion; no
-  account login yet, so capabilities are limited to guest APIs.
+  QQ/WeChat OAuth login, song search, multi-quality streaming, lyric and metadata
+  completion, and downloads according to account access; see [integration notes](QQ_MUSIC_INTEGRATION.md).
 - **Bilibili**:
   WebView login, video search, created/subscribed favorite folders, DASH
   audio streaming, cover proxying (Referer handling), downloads,
@@ -562,7 +562,8 @@ share publicly) are also available.
 Adjusted by maintenance capacity, platform availability, and community
 feedback; no fixed schedule is promised.
 
-- [ ] QQ Music account login and library pages
+- [x] QQ Music QQ/WeChat OAuth login, song search, and account playback sources
+- [ ] QQ Music account library pages
 - [ ] System tray and OS-level global shortcuts
 - [ ] In-app auto-update channel
 - [ ] Resumable downloads with queue recovery
@@ -618,7 +619,7 @@ feedback; no fixed schedule is promised.
 
 ### Capability boundaries
 
-- QQ Music has no account login yet; guest APIs limit its capabilities.
+- QQ Music supports QQ/WeChat OAuth login; available tracks and quality depend on account access and the platform's playback response.
 - Downloads are not resumable yet; cancelling cleans up.
 - Android-only mobile capabilities (USB exclusive output,
   floating/status-bar lyrics, SAF, safe mode) are out of scope.

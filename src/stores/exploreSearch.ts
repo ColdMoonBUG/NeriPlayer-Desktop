@@ -5,11 +5,12 @@ import { createLogger } from '@/utils/logger'
 
 const log = createLogger('explore-search')
 
-export type ExplorePlatform = 'netease' | 'bilibili' | 'youtube' | 'link'
+export type ExplorePlatform = 'netease' | 'qq' | 'bilibili' | 'youtube' | 'link'
 export type ExploreKind = 'songs' | 'playlists' | 'artists' | 'videos' | 'creators'
 
 /// 对齐 Android：网易云可搜歌曲/歌单/歌手，YouTube Music 可搜歌曲/视频/创作者，B 站只有视频
 export const EXPLORE_KINDS: Record<Exclude<ExplorePlatform, 'link'>, ExploreKind[]> = {
+  qq: ['songs'],
   netease: ['songs', 'playlists', 'artists'],
   youtube: ['songs', 'videos', 'creators'],
   bilibili: ['videos'],

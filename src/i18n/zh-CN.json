@@ -48,6 +48,7 @@
     "no_notifications": "暂无通知"
   },
   "explore": {
+    "qq_hint": "搜索 QQ 音乐歌曲；登录后按账号权益获取音源。",
     "title": "探索",
     "search_placeholder": "搜索歌曲、艺术家、专辑...",
     "tab_link": "链接",
@@ -251,6 +252,7 @@
     "tab_search_hint": "搜索"
   },
   "common": {
+    "refresh": "刷新",
     "back": "返回",
     "loading": "加载中...",
     "save": "保存",
@@ -661,6 +663,8 @@
     "clear_confirm_btn": "确定清空"
   },
   "settings": {
+    "qq_quality": "QQ 音乐音质",
+    "qq_wechat_login": "微信登录",
     "audio_output": "音频输出设备",
     "audio_output_default": "跟随系统默认设备",
     "audio_output_desc": "切换设备时保留播放位置；默认选项自动跟随系统变化",

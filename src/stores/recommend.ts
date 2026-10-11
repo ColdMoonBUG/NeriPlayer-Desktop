@@ -336,7 +336,9 @@ export const useRecommendStore = defineStore('recommend', () => {
       const data = await invoke<any>('get_user_playlists', { platform })
 
       let playlists: PlaylistInfo[] = []
-      if (platform === 'netease') {
+      if (platform === 'qq') {
+        playlists = data?.playlists || []
+      } else if (platform === 'netease') {
         const list = data?.playlist || []
         playlists = list.map((p: any) => ({
           id: p.id,

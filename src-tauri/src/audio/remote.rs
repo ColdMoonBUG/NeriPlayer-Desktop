@@ -25,6 +25,9 @@ const REMOTE_INITIAL_BLOCK_BYTES: u64 = 128 * 1024;
 /// 超长媒体首包加大，尽量一次拿齐 moov + 起始音频
 const REMOTE_LONG_INITIAL_BLOCK_BYTES: u64 = 512 * 1024;
 const REMOTE_FETCH_BLOCK_BYTES: u64 = 256 * 1024;
+// Interactive reads must not wait for a whole decoder-sized block. Read permits
+// short results; background prefetch fills the rest without delaying seek.
+const REMOTE_INTERACTIVE_BLOCK_BYTES: u64 = 64 * 1024;
 /// 预取专用块：慢链路上每个请求的往返/慢启动开销占大头（实机 256KB 块耗时
 /// 600-4000ms），顺序预取用大块摊薄开销；需求读与 seek 仍用 256KB 保低延迟
 const REMOTE_PREFETCH_BLOCK_BYTES: u64 = 512 * 1024;
@@ -1184,7 +1187,7 @@ impl RemoteAudioSource {
     }
 
     /// 按物理偏移拉取；全程不改 self.pos（self.pos 只存逻辑坐标）
-    fn fetch_physical_range(&self, physical: u64, wanted_len: usize) -> io::Result<()> {
+    fn fetch_physical_range(&self, physical: u64, _wanted_len: usize) -> io::Result<()> {
         self.ensure_read_current()?;
         if physical >= self.inner.total_len {
             return Ok(());
@@ -1198,8 +1201,9 @@ impl RemoteAudioSource {
         };
         // 慢网自适应：按近期吞吐缩块（8s 可完成），mode 块只作上限；
         // 无样本时保持 mode 默认块，冷启动行为不变
-        let block = adaptive_block_bytes(self.inner.throughput_bps(), mode_block, mode_block);
-        let wanted = wanted_len.max(block as usize) as u64;
+        let block = adaptive_block_bytes(self.inner.throughput_bps(), mode_block, mode_block)
+            .min(REMOTE_INTERACTIVE_BLOCK_BYTES);
+        let wanted = block;
         let end = physical
             .saturating_add(wanted)
             .saturating_sub(1)
@@ -2409,6 +2413,7 @@ pub struct SymphoniaAudioDecoder {
     buffer: SampleBuffer<f32>,
     spec: SignalSpec,
     retry_virtual_body_edges: bool,
+    fast_mpeg_seek: bool,
 }
 
 impl SymphoniaAudioDecoder {
@@ -2486,8 +2491,16 @@ impl SymphoniaAudioDecoder {
         let buffer_len = REMOTE_DECODER_BUFFER_BYTES;
         let options = MediaSourceStreamOptions { buffer_len };
         let mss = MediaSourceStream::new(Box::new(source), options);
-        let decoder = Self::init_remote(mss, None)
+        let mut decoder = Self::init_remote(mss, None)
             .map_err(|err| format!("Decode error: {}", err))?;
+        // Accurate MP3 seek scans every intervening frame over HTTP. Constant
+        // bitrate MP3 can jump by byte position then refine to a sample. Do not
+        // apply the estimate to Xing/VBRI variable-bitrate files or other codecs.
+        decoder.fast_mpeg_seek = decoder.decoder.codec_params().codec == codecs::CODEC_TYPE_MP3
+            && decoder.total_duration.is_some()
+            && finish_handle.header_bytes().is_some_and(|header| {
+                !header.windows(4).any(|word| word == b"Xing" || word == b"VBRI")
+            });
         finish_handle.finish_demuxer_open();
         finish_handle.clear_virtual_body();
         log::info!(
@@ -2614,6 +2627,7 @@ impl SymphoniaAudioDecoder {
             buffer,
             spec,
             retry_virtual_body_edges: false,
+            fast_mpeg_seek: false,
         })
     }
 
@@ -2716,6 +2730,7 @@ impl SymphoniaAudioDecoder {
             buffer,
             spec,
             retry_virtual_body_edges: enable_seek_after_probe.is_some(),
+            fast_mpeg_seek: false,
         })
     }
 
@@ -2842,6 +2857,7 @@ impl SymphoniaAudioDecoder {
             buffer,
             spec,
             retry_virtual_body_edges: true,
+            fast_mpeg_seek: false,
         })
     }
 
@@ -3040,7 +3056,7 @@ impl PcmSource for SymphoniaAudioDecoder {
         let seek_res = self
             .format
             .seek(
-                SeekMode::Accurate,
+                if self.fast_mpeg_seek { SeekMode::Coarse } else { SeekMode::Accurate },
                 SeekTo::Time {
                     time,
                     track_id: None,
@@ -3760,10 +3776,19 @@ fn spawn_prefetch_sequence(inner: Arc<RemoteAudioInner>, plan: PrefetchPlan) {
 
 /// 当前预取块大小：按近期吞吐自适应（8s 可完成），无样本时用 512KB 默认
 fn current_prefetch_block_bytes(inner: &RemoteAudioInner) -> u64 {
+    // response.bytes() publishes only once the full range arrives. Eight-second
+    // ranges therefore turn a brief cache miss into seconds of silence. Limit
+    // each response to roughly two seconds of media; keep the 15s window/lanes.
+    let media_cap = if inner.bitrate_bps > 0 {
+        inner.bitrate_bps.saturating_mul(2)
+            .clamp(REMOTE_MIN_BLOCK_BYTES, REMOTE_ADAPTIVE_MAX_BLOCK_BYTES)
+    } else {
+        REMOTE_PREFETCH_BLOCK_BYTES
+    };
     adaptive_block_bytes(
         inner.throughput_bps(),
         REMOTE_PREFETCH_BLOCK_BYTES,
-        REMOTE_ADAPTIVE_MAX_BLOCK_BYTES,
+        media_cap,
     )
 }
 
@@ -7159,7 +7184,7 @@ mod tests {
         let body: Arc<Vec<u8>> = Arc::new(
             (0..total_len).map(|index| (index % 251) as u8).collect(),
         );
-        // 前两个请求（256KB、128KB）中途断开，第三个（64KB）放行
+        // 交互读取直接使用 64KB；前两个请求中断，第三个放行。
         let (url, requests) = spawn_flaky_range_server(Arc::clone(&body), 2);
         let inner = Arc::new(RemoteAudioInner {
             // 必须绕过系统代理：本地回环服务器走代理会拿到 502
@@ -7207,10 +7232,10 @@ mod tests {
             .expect("demand read must survive transient failures");
 
         assert_eq!(bytes, [0, 1, 2, 3]);
-        // 断言折半序列：256KB → 128KB → 64KB
+        // 已在块大小下限，重试不再缩小，也不扩大到解码缓冲区大小。
         assert_eq!(
             requests.lock().expect("requests lock").clone(),
-            vec![(0, 262_143), (0, 131_071), (0, 65_535)],
+            vec![(0, 65_535), (0, 65_535), (0, 65_535)],
         );
         // 成功后在途登记必须清空（等待方不会悬挂在残留登记上）
         assert!(inner.in_flight.lock().expect("in-flight lock").is_empty());

@@ -36,6 +36,7 @@ pub async fn get_user_playlists(
     state: State<'_, AppState>,
 ) -> AppResult<Value> {
     match platform.as_str() {
+        "qq" => super::qq_library_cmd::user_playlists(&state).await,
         "netease" => {
             // 在独立作用域内取值，确保 MutexGuard 在 await 前释放
             let uid = {

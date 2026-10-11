@@ -20,6 +20,7 @@ export interface PlatformAuth {
 }
 
 export interface AuthStatusResponse {
+  qq: PlatformAuth & { platform: string }
   netease: PlatformAuth & { platform: string }
   bilibili: PlatformAuth & { platform: string }
   youtube: PlatformAuth & { platform: string }
@@ -41,6 +42,7 @@ function mapAuth(raw: any): PlatformAuth {
 }
 
 export const useAuthStore = defineStore('auth', () => {
+  const qq = ref<PlatformAuth>(emptyAuth())
   const netease = ref<PlatformAuth>(emptyAuth())
   const bilibili = ref<PlatformAuth>(emptyAuth())
   const youtube = ref<PlatformAuth>(emptyAuth())
@@ -49,11 +51,12 @@ export const useAuthStore = defineStore('auth', () => {
   const loggingIn = ref<string | null>(null)
   // 启动时的登录态检查是否已经返回（无论成败）；返回前各平台 loggedIn 都还是默认的 false
   const statusChecked = ref(false)
+  let qqProfileRefreshAttempted = false
   const youtubeProfileRefreshAttempted = ref(false)
   const youtubeProfileRefreshing = ref(false)
 
   const isAnyLoggedIn = computed(() =>
-    netease.value.loggedIn || bilibili.value.loggedIn || youtube.value.loggedIn
+    qq.value.loggedIn || netease.value.loggedIn || bilibili.value.loggedIn || youtube.value.loggedIn
   )
 
   /** 启动时检查所有平台登录状态 */
@@ -61,12 +64,17 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       const status = await invoke<any>('check_auth_status')
       // 账号没变就保留原对象：页面按对象身份判断换号，设置页、同步后的例行检查不能让首页整页重载
-      for (const [target, raw] of [[netease, status.netease], [bilibili, status.bilibili], [youtube, status.youtube]] as const) {
+      for (const [target, raw] of [[qq, status.qq], [netease, status.netease], [bilibili, status.bilibili], [youtube, status.youtube]] as const) {
         const next = mapAuth(raw)
         if (!sameAuth(target.value, next)) target.value = next
       }
       if (needsYoutubeProfileRefresh(youtube.value)) {
         void refreshYoutubeProfile()
+      }
+      if (qq.value.loggedIn && (!qq.value.avatarUrl || !qq.value.nickname || /^\d+$/.test(qq.value.nickname)) && !qqProfileRefreshAttempted) {
+        qqProfileRefreshAttempted = true
+        void invoke<any>('refresh_qq_profile').then(info => { qq.value = mapAuth(info) })
+          .catch(error => log.warn('Failed to refresh QQ profile:', error))
       }
     } catch (e) {
       log.error('Failed to check auth status:', e)
@@ -106,6 +114,7 @@ export const useAuthStore = defineStore('auth', () => {
   // 平台 key -> 显示名映射
   const platformLabel = (key: string) => {
     const map: Record<string, string> = {
+      qq: t('player.source_qq'),
       netease: t('settings.netease_account'),
       bilibili: t('settings.bilibili_account'),
       youtube: t('settings.youtube_account'),
@@ -129,11 +138,12 @@ export const useAuthStore = defineStore('auth', () => {
     key: string,
     command: string,
     target: typeof netease,
+    args?: Record<string, unknown>,
   ) {
     const toast = useToastStore()
     loggingIn.value = key
     try {
-      const info = await invoke<any>(command)
+      const info = await invoke<any>(command, args)
       const mapped = mapAuth(info)
       target.value = mapped
       if (key === 'youtube') {
@@ -157,6 +167,15 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  /** QQ 音乐授权登录 */
+  async function loginQq() {
+    await doLogin('qq', 'login_qq', qq, { provider: 'qq' })
+  }
+
+  async function loginQqWechat() {
+    await doLogin('qq', 'login_qq', qq, { provider: 'wechat' })
+  }
+
   /** 网易云登录 */
   async function loginNetease() {
     await doLogin('netease', 'login_netease', netease)
@@ -178,6 +197,7 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       await invoke('logout', { platform })
       switch (platform) {
+        case 'qq': qq.value = emptyAuth(); break
         case 'netease': netease.value = emptyAuth(); break
         case 'bilibili': bilibili.value = emptyAuth(); break
         case 'youtube': youtube.value = emptyAuth(); break
@@ -215,7 +235,8 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   return {
-    netease, bilibili, youtube, loggingIn, statusChecked, isAnyLoggedIn,
+    qq, netease, bilibili, youtube, loggingIn, statusChecked, isAnyLoggedIn,
+    loginQq, loginQqWechat,
     checkStatus, refreshYoutubeProfile, loginNetease, loginBilibili, loginYoutube, loginWithCookies, logout,
   }
 })

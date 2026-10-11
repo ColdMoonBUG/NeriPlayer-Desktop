@@ -48,6 +48,7 @@
     "no_notifications": "通知なし"
   },
   "explore": {
+    "qq_hint": "QQ Music の楽曲を検索。ログインするとアカウントの権限で再生できます。",
     "title": "探索",
     "search_placeholder": "曲、アーティスト、アルバムを検索...",
     "tab_link": "リンク",
@@ -251,6 +252,7 @@
     "tab_search_hint": "検索"
   },
   "common": {
+    "refresh": "更新",
     "back": "戻る",
     "loading": "読み込み中...",
     "save": "保存",
@@ -661,6 +663,8 @@
     "clear_confirm_btn": "消去する"
   },
   "settings": {
+    "qq_quality": "QQ Music 音質",
+    "qq_wechat_login": "WeChat でログイン",
     "audio_output": "音声出力デバイス",
     "audio_output_default": "システムの既定に従う",
     "audio_output_desc": "デバイス切替時も再生位置を保持し、既定の設定ではシステムの変更に追従します",

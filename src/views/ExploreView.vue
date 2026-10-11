@@ -36,10 +36,9 @@ const searchQuery = ref('')
 const isFocused = ref(false)
 
 // 平台 Tab
-// 探索页不含 QQ 音乐（QQ 的搜索/播放/账号能力仍保留在其它模块）
 // 「链接」页对齐 Android LINK_RECOGNITION：粘贴分享链接直接识别出歌曲、歌单或歌手
-type PlatformTab = 'netease' | 'bilibili' | 'youtube' | 'link'
-const PLATFORM_KEYS: PlatformTab[] = ['netease', 'bilibili', 'youtube', 'link']
+type PlatformTab = 'netease' | 'qq' | 'bilibili' | 'youtube' | 'link'
+const PLATFORM_KEYS: PlatformTab[] = ['netease', 'qq', 'bilibili', 'youtube', 'link']
 // 国际化开启时 YouTube Music 为高优先级来源: tab 提前且作为默认平台
 const ytmFirst = settings.internationalizationEnabled
 const initialPlatform = PLATFORM_KEYS.includes(String(route.query.platform) as PlatformTab)
@@ -52,6 +51,7 @@ const platformTabs = computed(() => {
     { key: 'netease', label: t('settings.netease_account'), icon: '/icons/ic_netease.svg' },
     { key: 'bilibili', label: t('settings.bilibili_account'), icon: '/icons/ic_bilibili.svg' },
     { key: 'youtube', label: t('settings.youtube_account'), icon: '/icons/ic_youtube.svg' },
+    { key: 'qq', label: t('player.source_qq'), icon: '/icons/ic_qq_music.svg' },
   ]
   if (settings.internationalizationEnabled) {
     tabs.unshift(...tabs.splice(2, 1))
@@ -61,7 +61,7 @@ const platformTabs = computed(() => {
 })
 
 // 每个平台记住自己上次选的分类，切回来不用重选
-const searchKinds = ref<Record<Exclude<PlatformTab, 'link'>, ExploreKind>>({ netease: 'songs', bilibili: 'videos', youtube: 'songs' })
+const searchKinds = ref<Record<Exclude<PlatformTab, 'link'>, ExploreKind>>({ netease: 'songs', qq: 'songs', bilibili: 'videos', youtube: 'songs' })
 const activeKind = computed<ExploreKind>(() => activeTab.value === 'link' ? 'songs' : searchKinds.value[activeTab.value])
 const kindOptions = computed(() => activeTab.value === 'link' ? [] : EXPLORE_KINDS[activeTab.value])
 const KIND_ICONS: Record<ExploreKind, string> = {
@@ -630,6 +630,16 @@ onMounted(() => {
       </template>
 
       <!-- 链接 Tab：粘贴分享链接识别 -->
+      <template v-else-if="activeTab === 'qq'">
+        <div class="platform-hero">
+          <span class="tab-icon large" :style="{ maskImage: 'url(/icons/ic_qq_music.svg)' }"></span>
+          <div>
+            <h2>{{ t('player.source_qq') }}</h2>
+            <p>{{ t('explore.qq_hint') }}</p>
+          </div>
+        </div>
+      </template>
+
       <template v-else-if="activeTab === 'link'">
         <div class="platform-hero link">
           <span class="material-symbols-rounded hero-symbol">link</span>

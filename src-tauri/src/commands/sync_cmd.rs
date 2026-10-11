@@ -604,6 +604,7 @@ fn map_android_auth(config: &AndroidConfigFile) -> Option<AuthState> {
         None
     } else {
         Some(AuthState {
+            qq: None,
             netease,
             bilibili,
             youtube,
@@ -696,6 +697,7 @@ struct ImportedConfig {
 
 fn merge_imported_auth(previous: &AuthState, imported: AuthState) -> AuthState {
     AuthState {
+        qq: imported.qq.or_else(|| previous.qq.clone()),
         netease: imported.netease.or_else(|| previous.netease.clone()),
         bilibili: imported.bilibili.or_else(|| previous.bilibili.clone()),
         youtube: imported.youtube.or_else(|| previous.youtube.clone()),
@@ -2862,6 +2864,7 @@ mod tests {
             domain: ".bilibili.com".into(),
         };
         let previous = AuthState {
+            qq: None,
             netease: Some(NeteaseAuth {
                 cookies: vec![],
                 user_id: Some(1),
@@ -2872,6 +2875,7 @@ mod tests {
             youtube: None,
         };
         let imported = AuthState {
+            qq: None,
             netease: None,
             bilibili: Some(BiliAuth { cookies: vec![cookie("new")], mid: None, nickname: None, avatar_url: None }),
             youtube: None,

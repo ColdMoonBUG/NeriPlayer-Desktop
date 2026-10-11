@@ -952,7 +952,221 @@ pub async fn maybe_refresh_youtube_session(app: &AppHandle, state: &AppState, fo
     }
 }
 
-/// 查询所有平台登录状态
+/// YAQMC-compatible QQ / WeChat OAuth; credentials stay in the native process.
+#[tauri::command]
+pub async fn login_qq(
+    provider: Option<String>,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<AuthInfo> {
+    use qqmusic_api::{auth::{exchange_oauth_code, OAuthExchange}, modules::LoginApi, OAuthLoginProvider};
+    let provider = match provider.as_deref().unwrap_or("qq") {
+        "qq" => OAuthLoginProvider::Qq,
+        "wechat" => OAuthLoginProvider::Wechat,
+        _ => return Err(AppError::Api("Unsupported QQ Music login provider".into())),
+    };
+    if let Some(window) = app.get_webview_window("qq-oauth") {
+        let _ = window.set_focus();
+        return Err(AppError::Other("QQ Music login is already open".into()));
+    }
+    let generation = state.qq_auth_generation.fetch_add(1, Ordering::AcqRel) + 1;
+    let csrf = uuid::Uuid::new_v4().simple().to_string();
+    let authorize = LoginApi::build_oauth_authorize_url(provider, &csrf)
+        .map_err(|_| AppError::Api("QQ Music authorization URL unavailable".into()))?;
+    let (sender, receiver) = tokio::sync::oneshot::channel::<url::Url>();
+    let sender = Arc::new(parking_lot::Mutex::new(Some(sender)));
+    let navigation_sender = sender.clone();
+    let window = WebviewWindowBuilder::new(&app, "qq-oauth", WebviewUrl::External(authorize))
+        .main_browser_args(&app)
+        .title("QQ Music")
+        .inner_size(700.0, 640.0)
+        .incognito(true)
+        .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
+        .on_navigation(move |url| {
+            if url.scheme() != "https" || url.port_or_known_default() != Some(443)
+                || !url.username().is_empty() || url.password().is_some() {
+                return false;
+            }
+            let contract = qqmusic_api::auth::oauth_callback_contract(provider);
+            if url.host_str() == Some(contract.host) && url.path() == contract.path {
+                if let Some(sender) = navigation_sender.lock().take() {
+                    let _ = sender.send(url.clone());
+                }
+                return false;
+            }
+            qq_oauth_navigation_allowed(provider, url)
+        })
+        .build().map_err(|e| AppError::Other(format!("QQ Music login window failed: {e}")))?;
+    let closed = track_login_window_close(&window);
+    let callback = tokio::select! {
+        result = receiver => result.map_err(|_| AppError::Other("QQ Music login cancelled".into())),
+        _ = async {
+            while !closed.load(Ordering::Acquire) {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        } => Err(AppError::Other("QQ Music login cancelled".into())),
+        _ = tokio::time::sleep(Duration::from_secs(300)) => Err(AppError::Other("QQ Music login timed out".into())),
+    };
+    let _ = window.destroy();
+    drop(sender);
+    let code = validate_qq_oauth_callback(provider, &callback?, &csrf)?;
+    let api = state.qq().with_credential(None).api()?;
+    let session = exchange_oauth_code(&api, OAuthExchange {
+        provider, code: &code, gtk: None, cookie_header: "",
+        now_ms: chrono::Utc::now().timestamp_millis() as u64,
+    }, qqmusic_api::CancellationToken::new()).await
+        .map_err(|_| AppError::Api("QQ Music login exchange failed; please retry authorization".into()))?;
+    let profile = api.user.get_homepage(&session.credential.encrypt_uin, Some(&session.credential)).await.ok();
+    let qq_auth = crate::auth::state::QqAuth {
+        nickname: profile.as_ref().map(|p| p.base_info.name.clone()).filter(|s| !s.is_empty())
+            .or_else(|| Some(session.credential.str_musicid())),
+        avatar_url: profile.map(|p| p.base_info.avatar).filter(|s| !s.is_empty()),
+        credential: session.credential,
+        expires_at_ms: session.expires_at_ms,
+    };
+    let info = qq_auth.info();
+    let mut auth = state.auth.lock();
+    if state.qq_auth_generation.load(Ordering::Acquire) != generation {
+        return Err(AppError::Other("QQ Music login cancelled".into()));
+    }
+    auth.qq = Some(qq_auth);
+    cookies::save_auth(&app, &auth);
+    Ok(info)
+}
+
+#[tauri::command]
+pub async fn refresh_qq_profile(app: AppHandle, state: State<'_, AppState>) -> AppResult<AuthInfo> {
+    let generation = state.qq_auth_generation.load(Ordering::Acquire);
+    let current = state.auth.lock().qq.clone()
+        .filter(|auth| auth.info().logged_in)
+        .ok_or_else(|| AppError::Other("QQ Music not logged in".into()))?;
+    let api = state.qq().api()?;
+    let profile = api.user.get_homepage(&current.credential.encrypt_uin, Some(&current.credential)).await
+        .map_err(|error| crate::api::qq::client::qq_api_error("profile", &error))?;
+    let mut auth = state.auth.lock();
+    if state.qq_auth_generation.load(Ordering::Acquire) != generation {
+        return Err(AppError::Other("QQ Music account changed".into()));
+    }
+    let saved = auth.qq.as_mut().filter(|saved| {
+        saved.credential.musicid == current.credential.musicid
+            && saved.credential.musickey == current.credential.musickey
+            && saved.credential.encrypt_uin == current.credential.encrypt_uin
+    })
+        .ok_or_else(|| AppError::Other("QQ Music account changed".into()))?;
+    if !profile.base_info.name.is_empty() { saved.nickname = Some(profile.base_info.name); }
+    if !profile.base_info.avatar.is_empty() {
+        saved.avatar_url = Some(profile.base_info.avatar.replacen("http://", "https://", 1));
+    }
+    let info = saved.info();
+    cookies::save_auth(&app, &auth);
+    Ok(info)
+}
+
+fn qq_oauth_navigation_allowed(provider: qqmusic_api::OAuthLoginProvider, url: &url::Url) -> bool {
+    let hosts: &[&str] = match provider {
+        qqmusic_api::OAuthLoginProvider::Qq => &["graph.qq.com", "connect.qq.com", "openmobile.qq.com", "open.mobile.qq.com", "qm.qq.com", "xui.ptlogin2.qq.com", "ssl.ptlogin2.qq.com", "ssl.ptlogin2.graph.qq.com", "ui.ptlogin2.qq.com"],
+        qqmusic_api::OAuthLoginProvider::Wechat => &["open.weixin.qq.com", "lp.open.weixin.qq.com"],
+    };
+    url.host_str().is_some_and(|host| hosts.contains(&host))
+}
+
+fn validate_qq_oauth_callback(provider: qqmusic_api::OAuthLoginProvider, url: &url::Url, csrf: &str) -> AppResult<String> {
+    let contract = qqmusic_api::auth::oauth_callback_contract(provider);
+    let one = |key: &str| {
+        let values: Vec<_> = url.query_pairs().filter(|(k, _)| k == key).map(|(_, v)| v.into_owned()).collect();
+        if values.len() == 1 { values.into_iter().next() } else { None }
+    };
+    if url.scheme() != "https" || url.port_or_known_default() != Some(443)
+        || !url.username().is_empty() || url.password().is_some()
+        || url.host_str() != Some(contract.host) || url.path() != contract.path
+        || one("login_type").as_deref() != Some(contract.login_type)
+        || one("surl").as_deref() != Some(contract.surl)
+        || one("state").as_deref() != Some(csrf)
+    {
+        return Err(AppError::Api("QQ Music authorization callback rejected".into()));
+    }
+    if url.query_pairs().any(|(key, _)| key == "error") {
+        return Err(AppError::Other("QQ Music login cancelled".into()));
+    }
+    one("code").filter(|code| !code.is_empty() && code.len() <= 2048 && !code.bytes().any(|b| b.is_ascii_control()))
+        .ok_or_else(|| AppError::Api("QQ Music authorization code missing".into()))
+}
+
+#[cfg(test)]
+mod qq_oauth_tests {
+    use super::*;
+
+    struct LoginFixture { accepted: bool }
+
+    #[async_trait::async_trait]
+    impl qqmusic_api::ApiTransport for LoginFixture {
+        async fn execute(&self, request: qqmusic_api::TransportRequest) -> qqmusic_api::Result<qqmusic_api::TransportResponse> {
+            let qqmusic_api::HttpBody::Json(body) = request.body else { panic!("OAuth must send JSON") };
+            assert_eq!(body["req"]["param"]["code"], "test-code");
+            let login_type = body["comm"]["tmeLoginType"].as_i64().unwrap();
+            assert!(matches!(login_type, 1 | 2));
+            assert_eq!(body["req"]["method"], if login_type == 2 { "QQLogin" } else { "Login" });
+            let payload = serde_json::json!({ "code": 0, "req": {
+                "code": if self.accepted { 0 } else { 1000 },
+                "data": { "musicid": 123, "musickey": "fixture-only", "encryptUin": "fixture-euin" }
+            }});
+            Ok(qqmusic_api::TransportResponse {
+                status: 200, final_url: request.url, headers: vec![], body: serde_json::to_vec(&payload).unwrap(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn qq_oauth_exchange_produces_restorable_playback_credentials_and_rejects_denial() {
+        for provider in [qqmusic_api::OAuthLoginProvider::Qq, qqmusic_api::OAuthLoginProvider::Wechat] {
+            for accepted in [true, false] {
+                let api = qqmusic_api::Client::new_with_transport(None, Some(qqmusic_api::Platform::Web),
+                    Arc::new(LoginFixture { accepted }));
+                let session = qqmusic_api::auth::exchange_oauth_code(&api, qqmusic_api::auth::OAuthExchange {
+                    provider, code: "test-code", gtk: None, cookie_header: "", now_ms: 1_000,
+                }, qqmusic_api::CancellationToken::new()).await;
+                if !accepted { assert!(session.is_err()); continue; }
+                let session = session.unwrap();
+                assert_eq!(session.credential.musicid, 123);
+                assert_eq!(session.credential.musickey, "fixture-only");
+                assert_eq!(session.credential.login_type, if matches!(provider, qqmusic_api::OAuthLoginProvider::Qq) { 2 } else { 1 });
+                let saved = serde_json::to_string(&session.credential).unwrap();
+                let restored = serde_json::from_str(&saved).unwrap();
+                let http = state_test_http();
+                let playback = crate::api::qq::client::QqMusicClient::new(&http).with_credential(Some(restored)).api().unwrap();
+                assert_eq!(playback.credential().musickey, "fixture-only");
+                assert!(session.expires_at_ms > 1_000);
+            }
+        }
+    }
+
+    fn state_test_http() -> reqwest::Client {
+        reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap()
+    }
+
+    #[test]
+    fn qq_oauth_validates_provider_state_and_unique_callback_fields() {
+        use qqmusic_api::OAuthLoginProvider::{Qq, Wechat};
+        for provider in [Qq, Wechat] {
+            let contract = qqmusic_api::auth::oauth_callback_contract(provider);
+            let mut callback = url::Url::parse("https://y.qq.com/portal/wx_redirect.html").unwrap();
+            callback.query_pairs_mut().append_pair("login_type", contract.login_type)
+                .append_pair("surl", contract.surl).append_pair("state", "expected").append_pair("code", "test-code");
+            assert_eq!(validate_qq_oauth_callback(provider, &callback, "expected").unwrap(), "test-code");
+            assert!(validate_qq_oauth_callback(provider, &callback, "wrong-state").is_err());
+            let other = if matches!(provider, Qq) { Wechat } else { Qq };
+            assert!(validate_qq_oauth_callback(other, &callback, "expected").is_err());
+            for key in ["state", "code", "surl", "login_type"] {
+                let mut duplicate = callback.clone();
+                duplicate.query_pairs_mut().append_pair(key, "injected");
+                assert!(validate_qq_oauth_callback(provider, &duplicate, "expected").is_err());
+            }
+            callback.set_host(Some("y.qq.com.evil.example")).unwrap();
+            assert!(validate_qq_oauth_callback(provider, &callback, "expected").is_err());
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn check_auth_status(state: State<'_, AppState>) -> AppResult<AuthStatusResponse> {
     let auth = state.auth.lock();
@@ -999,6 +1213,8 @@ pub async fn clear_debug_cookie_storage(
 
         let previous_auth = {
             let mut auth = state.auth.lock();
+            state.qq_auth_generation.fetch_add(1, Ordering::AcqRel);
+            if let Some(window) = app.get_webview_window("qq-oauth") { let _ = window.destroy(); }
             std::mem::take(&mut *auth)
         };
         for platform in ["netease", "bilibili", "youtube"] {
@@ -1026,6 +1242,11 @@ pub async fn logout(platform: String, app: AppHandle, state: State<'_, AppState>
     // 清除内存状态
     match platform.as_str() {
         "netease" => auth.netease = None,
+        "qq" => {
+            state.qq_auth_generation.fetch_add(1, Ordering::AcqRel);
+            if let Some(window) = app.get_webview_window("qq-oauth") { let _ = window.destroy(); }
+            auth.qq = None;
+        },
         "bilibili" => auth.bilibili = None,
         "youtube" => auth.youtube = None,
         _ => return Err(AppError::Other(format!("Unknown platform: {}", platform))),

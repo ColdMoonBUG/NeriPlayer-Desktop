@@ -10,7 +10,7 @@ export interface SettingsSearchEntry {
 }
 
 export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
-  { section: 'accounts', title: 'settings.accounts', desc: 'settings.accounts_desc', keywords: ['NetEase', '网易云', 'Bilibili', 'B站', '哔哩哔哩', 'YouTube', 'login', '登录'] },
+  { section: 'accounts', title: 'settings.accounts', desc: 'settings.accounts_desc', keywords: ['NetEase', '网易云', 'QQ', '微信', 'WeChat', 'Bilibili', 'B站', '哔哩哔哩', 'YouTube', 'login', '登录'] },
   { section: 'general', title: 'settings.default_screen' },
   { section: 'general', title: 'settings.close_to_tray', desc: 'settings.close_to_tray_desc' },
   { section: 'general', title: 'settings.internationalization' },
@@ -55,6 +55,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
   { section: 'downloads', title: 'settings.download_embed_lyrics', desc: 'settings.download_embed_lyrics_desc' },
   { section: 'downloads', title: 'settings.download_follow_playback_quality', desc: 'settings.download_follow_playback_quality_desc' },
   { section: 'downloads', title: 'settings.netease_quality' },
+  { section: 'downloads', title: 'settings.qq_quality' },
   { section: 'downloads', title: 'settings.youtube_quality' },
   { section: 'downloads', title: 'settings.bili_quality' },
   { section: 'downloads', title: 'settings.download_format' },
@@ -97,6 +98,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
   { section: 'playback_sources', title: 'settings.netease_local_source_fallback', desc: 'settings.netease_local_source_fallback_desc' },
   { section: 'playback_sources', title: 'settings.netease_auto_source_switch', desc: 'settings.netease_auto_source_switch_desc' },
   { section: 'quality', title: 'settings.netease_quality' },
+  { section: 'quality', title: 'settings.qq_quality' },
   { section: 'quality', title: 'settings.youtube_quality' },
   { section: 'quality', title: 'settings.bili_quality' },
   { section: 'storage', title: 'settings.cache_limit' },

@@ -49,6 +49,7 @@
     "test:album-display": "node scripts/test-album-display.mjs",
     "test:local-playlists": "node scripts/test-local-playlists.mjs",
     "test:search-store": "node scripts/test-search-store.mjs",
+    "test:qq-auth": "node scripts/test-qq-auth.mjs",
     "test:escape-close": "node scripts/test-escape-close.mjs",
     "test:settings-integrity": "node scripts/test-settings-integrity.mjs",
     "test:shortcut-settings": "node scripts/test-shortcut-settings.mjs",
