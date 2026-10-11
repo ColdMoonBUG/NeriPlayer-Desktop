@@ -51,6 +51,7 @@
     "test:download-file-actions": "node scripts/test-download-file-actions.mjs",
     "test:album-display": "node scripts/test-album-display.mjs",
     "test:local-playlists": "node scripts/test-local-playlists.mjs",
+    "test:library-navigation": "node scripts/test-library-navigation.mjs",
     "test:search-store": "node scripts/test-search-store.mjs",
     "test:escape-close": "node scripts/test-escape-close.mjs",
     "test:settings-integrity": "node scripts/test-settings-integrity.mjs",

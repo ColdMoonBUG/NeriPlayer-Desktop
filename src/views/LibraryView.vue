@@ -821,6 +821,15 @@ onUnmounted(() => {
         >
           <span class="material-symbols-rounded">bar_chart</span>
         </button>
+        <button
+          v-if="!isMultiSelectMode"
+          class="header-action"
+          :title="t('home.recent_play')"
+          :aria-label="t('home.recent_play')"
+          @click="router.push({ name: 'recent' })"
+        >
+          <span class="material-symbols-rounded">history</span>
+        </button>
         <button v-if="activeTab === 0 && localCategory === 'playlists' && !isMultiSelectMode" class="header-action" @click="enterMultiSelect()" :title="t('common.multi_select')">
           <span class="material-symbols-rounded">checklist</span>
         </button>
