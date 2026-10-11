@@ -40,6 +40,7 @@ function trigger() {
 const vue = {
   ref: value => ({ value }),
   shallowRef: value => ({ value }),
+  computed: getter => ({ get value() { return getter() } }),
   watch: (source, callback) => {
     watchers.push({ source, callback, last: source() })
     return () => {}
@@ -107,6 +108,7 @@ const { useCurrentLyricsStore } = await loadModule('../src/stores/currentLyrics.
     loadLyricsSingleFlight: (_, loader) => loader(),
   },
   '@/modules/lyrics/lyricsFormat': {
+    ...await loadModule('../src/modules/lyrics/lyricsFormat.ts', {}),
     mapBackendLyrics: value => value,
     materializeStoredLyrics: async () => synced,
     mergeParsedLyricsWithRomanization: value => value,
@@ -422,5 +424,40 @@ supplementRequests.at(-1).resolve(enriched)
 await flush()
 assert.equal(store.lines[0].translation, '翻译0')
 releaseSupplement()
+
+// 所有显示入口过滤同一份歌词，原始数组和真实歌词时间轴不被改写
+const creditVerse = { ...wordTimed[0], translation: '真正的翻译', roman: 'roman' }
+const dirtyLyrics = [line(0, '键盘：韦伟'), creditVerse, line(3000, 'Backing Vocals: Jane')]
+store.replace(dirtyLyrics)
+assert.deepEqual(store.lines.map(entry => entry.text), ['第一行'], '编辑替换也不能显示制作署名')
+assert.deepEqual(dirtyLyrics.map(entry => entry.text), ['键盘：韦伟', '第一行', 'Backing Vocals: Jane'])
+assert.deepEqual(store.lines[0], creditVerse, '正文、逐字时间轴、翻译与音译保留')
+
+player.currentTrack = { id: 'local:credits.flac', source: 'local', title: '本地歌曲', artist: '人' }
+trigger()
+store.replace(dirtyLyrics)
+assert.deepEqual(store.lines.map(entry => entry.text), ['第一行'], '本地歌词只在显示时过滤署名')
+
+store.replace([line(0, 'MIDI程序：韦伟')])
+assert.deepEqual(store.lines, [], '只有明确制作信息时不显示牛皮癣')
+
+const dirtySecondary = line(1000, 'Hello')
+dirtySecondary.translation = 'Mixing Engineer: John Smith'
+dirtySecondary.roman = 'Guitar: John Smith'
+store.replace([dirtySecondary])
+assert.deepEqual(store.lines, [{ ...line(1000, 'Hello'), translation: undefined, roman: undefined }], '残留在副轨的署名不显示')
+assert.equal(dirtySecondary.translation, 'Mixing Engineer: John Smith', '显示过滤不改原始副轨')
+
+const attachedSecondary = [
+  { ...line(1000, 'Hello'), translation: '编曲：张三', roman: 'Producer: John' },
+  { ...line(2000, 'World'), translation: '词：徐若瑄', roman: 'Lyrics by Alice' },
+  line(3000, 'Break'),
+  { ...line(4000, 'After'), translation: '词：徐若瑄', roman: 'Lyrics by Alice' },
+]
+store.replace(attachedSecondary)
+assert.deepEqual(store.lines.map(entry => [entry.translation, entry.roman]), [
+  [undefined, undefined], [undefined, undefined], [undefined, undefined], ['词：徐若瑄', 'Lyrics by Alice'],
+], '已有副轨也按连续制作信息块过滤，缺失副轨作为边界')
+assert.equal(attachedSecondary[1].translation, '词：徐若瑄', '副轨上下文过滤保留原始数据')
 
 console.log('current lyrics store tests passed')

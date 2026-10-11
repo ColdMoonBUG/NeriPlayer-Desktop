@@ -1,5 +1,5 @@
 // 去掉匹配来的歌词里的「牛皮藓」：制作信息行、歌名歌手标题行等非歌词内容
-// 规则对齐 Android EditableLyricSanitizer（sanitizeMatchedEditableLyrics），按已解析的歌词行处理
+// 按已解析的歌词行处理，正文过滤与副轨对齐共用规则
 use regex::Regex;
 use std::sync::OnceLock;
 
@@ -8,33 +8,117 @@ use super::parser::LyricLine;
 
 const LEADING_METADATA_SCAN_LINES: usize = 8;
 const TRAILING_METADATA_SCAN_LINES: usize = 4;
-const SHORT_IDENTITY_LINE_DURATION_MS: u64 = 2_500;
-const EDGE_IDENTITY_LINE_START_MS: u64 = 12_000;
 
-const EDGE_CREDIT_PREFIXES: &[&str] = &[
-    "lyrics by", "lyric by", "written by", "composed by", "arranged by", "produced by",
-    "performed by", "music by", "words by",
-    "作词", "作詞", "填词", "填詞", "作曲", "编曲", "編曲", "制作", "制作人", "演唱", "歌手", "词曲", "詞曲",
+const CREDIT_ROLES: &[&str] = &[
+    "作词", "作詞", "填词", "填詞", "作曲", "词曲", "詞曲", "编曲", "編曲", "制作人", "製作人", "制作", "製作",
+    "出品", "出品人", "联合出品", "聯合出品", "营销", "營銷", "策划", "策劃", "企划", "企劃", "监制", "監製",
+    "统筹", "統籌", "发行", "發行", "宣传", "宣傳", "推广", "推廣", "宣传推广", "宣傳推廣", "宣发", "宣發",
+    "混音", "母带", "母帶", "录音", "錄音", "和声", "和聲", "和音", "配唱", "演唱", "歌手", "原唱", "翻唱",
+    "词", "詞", "曲", "吉他", "电吉他", "電吉他", "木吉他", "贝斯", "貝斯", "鼓", "键盘", "鍵盤", "钢琴", "鋼琴",
+    "弦乐", "弦樂", "弦乐编写", "弦樂編寫", "弦乐编曲", "弦樂編曲", "和声编写", "和聲編寫", "和声编唱", "和聲編唱",
+    "和声演唱", "和聲演唱", "和声设计", "和聲設計", "和声编配", "和聲編配", "口哨", "midi程序", "midi编程", "midi編程",
+    "录音师", "錄音師", "混音师", "混音師", "母带工程师", "母帶工程師", "录音室", "錄音室", "录音棚", "錄音棚",
+    "混音室", "母带后期", "母帶後期", "人声编辑", "人聲編輯", "音频编辑", "音頻編輯", "配唱制作人", "配唱製作人",
+    "音乐制作", "音樂製作", "音乐总监", "音樂總監", "制作公司", "製作公司", "版权", "版權", "版权所有", "版權所有",
+    "鸣谢", "鳴謝", "特别鸣谢", "特別鳴謝", "封面设计", "封面設計", "文案", "op", "sp",
+    "lyric", "lyrics", "word", "words", "music", "lyricist", "composer", "arranger", "producer", "co-producer",
+    "mix", "mixing", "mixengineer", "mixingengineer", "mastering", "masteringengineer", "recording", "recordingengineer",
+    "vocal", "vocals", "vocalist", "vocalproduction", "vocalproducer", "vocalarrangement", "vocalediting",
+    "backingvocals", "backgroundvocals", "harmony", "harmonies", "guitar", "guitars", "acousticguitar", "electricguitar",
+    "bass", "drum", "drums", "keyboard", "keyboards", "piano", "strings", "stringarrangement", "midiprogramming", "programming",
+    "artist", "singer", "title", "album", "copyright", "publisher", "label", "distribution", "promotion", "credits",
+    "lyricby", "lyricsby", "wordby", "wordsby", "writtenby", "composedby", "arrangedby", "producedby", "performedby", "sungby",
+    "musicby", "mixedby", "masteredby", "recordedby", "publishedby", "distributedby",
 ];
 
-fn english_credit_re() -> &'static Regex {
+const AMBIGUOUS_CREDIT_ROLES: &[&str] = &[
+    "词", "詞", "曲", "鼓", "吉他", "贝斯", "貝斯", "键盘", "鍵盤", "弦乐", "弦樂", "和声", "和聲", "和音", "口哨",
+    "lyric", "lyrics", "word", "words", "music", "vocal", "vocals", "guitar", "guitars", "bass", "drum", "drums",
+    "keyboard", "keyboards", "strings",
+];
+
+fn contributor_name_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(
-            r"(?i)^\s*(?:lyrics?|words?|written|composed|arranged|produced|performed|sung|music)\s+by\s*[:：-]?\s*.+$|^\s*(?:lyrics?|composer|lyricist|producer|arranger|vocal(?:s)?|artist|singer|title|album)\s*[:：-]\s*.+$",
-        )
-        .unwrap()
+    RE.get_or_init(|| Regex::new(
+        r"^(?:[\p{Han}]{2,4}|@\S+|[\p{Lu}\p{N}][\p{L}\p{N}.'_-]*(?:\s+(?:[\p{Lu}\p{N}][\p{L}\p{N}.'_-]*|de|van|von|da|del)){0,5})$",
+    ).unwrap())
+}
+
+fn contributor_separator_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?i)\s+and\s+|[/／&、,，+;；]").unwrap())
+}
+
+fn is_contributor_list(value: &str) -> bool {
+    static SENTENCE_PREFIX: OnceLock<Regex> = OnceLock::new();
+    let sentence_prefix = SENTENCE_PREFIX.get_or_init(|| Regex::new(
+        r"(?i)^(?:i|you|he|she|it|we|they|me|us|my|your|his|her|its|our|their|a|an|the|this|that|these|those)\b|^(?:我|你|他|她|它|想|爱|愛|在|是|不|别|別|没|沒)",
+    ).unwrap());
+    contributor_separator_re().split(value).all(|name| {
+        let name = name.trim();
+        let name = name.split(['(', '（']).next().unwrap_or("").trim();
+        let name = if name.starts_with('@') { name } else { name.split('@').next().unwrap_or("").trim() };
+        !sentence_prefix.is_match(name) && contributor_name_re().is_match(name)
     })
 }
 
-fn chinese_credit_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(
-            r"(?i)^\s*(?:作词|作詞|填词|填詞|作曲|编曲|編曲|制作人?|演唱|歌手|词曲|詞曲|词|詞|曲|和声|和聲|混音|母带|母帶|录音|錄音|监制|監製|原唱|翻唱|出品|OP|SP)\s*[:：/／-]\s*.+$",
-        )
-        .unwrap()
+fn normalize_role(role: &str) -> String {
+    role.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_lowercase()
+}
+
+fn is_labelled_credit(role: &str, value: &str, has_context: bool) -> bool {
+    if value.trim().is_empty() { return false; }
+    role.split(['/', '／', '&', '、', ',', '，', '+']).all(|role| {
+        let role = normalize_role(role);
+        CREDIT_ROLES.contains(&role.as_str())
+            && (has_context || !["词", "詞", "曲"].contains(&role.as_str()))
+            && (!(AMBIGUOUS_CREDIT_ROLES.contains(&role.as_str()) || role.ends_with("by")) || is_contributor_list(value))
     })
+}
+
+/// 正文过滤和副轨对齐共用角色规则，含糊的短标签还需符合署名格式
+pub(super) fn is_lyric_credit_metadata_line(text: &str) -> bool {
+    let text = text.trim();
+    if let Some((role, value)) = text.split_once([':', '：']) {
+        return is_labelled_credit(role, value, false);
+    }
+    static SEPARATED: OnceLock<Regex> = OnceLock::new();
+    let separated = SEPARATED.get_or_init(|| Regex::new(
+        r"(?i)^\s*(作词|作詞|填词|填詞|作曲|编曲|編曲|制作人|製作人|producer|composer|arranger|lyricist)\s*[-/／]\s*(\S.*?)\s*$",
+    ).unwrap());
+    if separated.is_match(text) { return true; }
+    false
+}
+
+fn is_possible_contextual_credit(text: &str) -> bool {
+    let text = text.trim();
+    if let Some((role, value)) = text.split_once([':', '：']) {
+        return is_labelled_credit(role, value, true);
+    }
+    static ATTRIBUTION: OnceLock<Regex> = OnceLock::new();
+    let attribution = ATTRIBUTION.get_or_init(|| Regex::new(
+        r"(?i)^\s*((?:lyrics?|words?|written|composed|arranged|produced|performed|sung|music|mixed|mastered|recorded|published|distributed)\s+by)\s+(\S.*?)\s*$",
+    ).unwrap());
+    attribution.captures(text).is_some_and(|caps| {
+        let name = caps[2].trim();
+        is_contributor_list(name)
+    })
+}
+
+/// 短标签和无分隔符的署名只在连续的制作信息块内过滤
+pub(super) fn lyric_credit_metadata_mask(texts: &[&str]) -> Vec<bool> {
+    let mut credits: Vec<bool> = texts.iter().map(|text| is_lyric_credit_metadata_line(text)).collect();
+    let possible: Vec<bool> = texts.iter().zip(&credits)
+        .map(|(text, credit)| *credit || is_possible_contextual_credit(text)).collect();
+    let mut start = 0;
+    while start < texts.len() {
+        if !possible[start] { start += 1; continue; }
+        let mut end = start + 1;
+        while end < texts.len() && possible[end] { end += 1; }
+        if credits[start..end].iter().any(|credit| *credit) { credits[start..end].fill(true); }
+        start = end;
+    }
+    credits
 }
 
 fn artist_separator_re() -> &'static Regex {
@@ -60,49 +144,14 @@ fn artist_terms(artist: &str) -> Vec<String> {
     unique
 }
 
-fn contains_phrase(text: &str, phrase: &str) -> bool {
-    if text.is_empty() || phrase.is_empty() {
-        return false;
-    }
-    if text == phrase
-        || text.starts_with(&format!("{phrase} "))
-        || text.ends_with(&format!(" {phrase}"))
-        || text.contains(&format!(" {phrase} "))
-    {
-        return true;
-    }
-    !phrase.is_ascii() && text.contains(phrase)
-}
-
-fn is_credit_line(text: &str, is_edge: bool) -> bool {
-    let trimmed = text.trim();
-    if english_credit_re().is_match(trimmed) || chinese_credit_re().is_match(trimmed) {
-        return true;
-    }
-    if !is_edge {
-        return false;
-    }
-    let normalized = normalize_text(trimmed);
-    EDGE_CREDIT_PREFIXES.iter().any(|prefix| {
-        let prefix = normalize_text(prefix);
-        normalized == prefix || normalized.starts_with(&format!("{prefix} "))
-    })
-}
-
 fn is_song_identity_line(line: &LyricLine, context: &SanitizeContext) -> bool {
     let normalized = normalize_text(&line.text);
-    if normalized.is_empty() {
+    if normalized.is_empty() || context.title.is_empty() || !line.text.contains(['-', '－', '–', '—', '/', '／', '|']) {
         return false;
     }
-    let has_title = contains_phrase(&normalized, &context.title);
-    let has_artist = context.artist_terms.iter().any(|term| contains_phrase(&normalized, term));
-    let has_album = contains_phrase(&normalized, &context.album);
-    if has_title && (has_artist || has_album) {
-        return true;
-    }
-    line.duration_ms <= SHORT_IDENTITY_LINE_DURATION_MS
-        && line.start_ms <= EDGE_IDENTITY_LINE_START_MS
-        && normalized == context.title
+    context.artist_terms.iter().chain(std::iter::once(&context.album))
+        .filter(|term| !term.is_empty() && **term != context.title)
+        .any(|term| normalized == format!("{} {term}", context.title) || normalized == format!("{term} {}", context.title))
 }
 
 fn should_remove(line: &LyricLine, index: usize, count: usize, context: &SanitizeContext) -> bool {
@@ -110,14 +159,20 @@ fn should_remove(line: &LyricLine, index: usize, count: usize, context: &Sanitiz
         return false;
     }
     let is_edge = index < LEADING_METADATA_SCAN_LINES || index + TRAILING_METADATA_SCAN_LINES >= count;
-    if is_credit_line(&line.text, is_edge) {
-        return true;
-    }
     is_edge && is_song_identity_line(line, context)
 }
 
-/// 去掉制作信息行和开头/结尾的歌名歌手标题行；去完什么都不剩时原样返回
+/// 明确的制作信息可全部移除，身份行删完没有正文时保留以免误伤
 pub fn sanitize_matched_lines(lines: Vec<LyricLine>, title: &str, artist: &str, album: &str) -> Vec<LyricLine> {
+    let credits = lyric_credit_metadata_mask(&lines.iter().map(|line| line.text.as_str()).collect::<Vec<_>>());
+    let translation_credits = lyric_credit_metadata_mask(&lines.iter().map(|line| line.translation.as_deref().unwrap_or("")).collect::<Vec<_>>());
+    let roman_credits = lyric_credit_metadata_mask(&lines.iter().map(|line| line.roman.as_deref().unwrap_or("")).collect::<Vec<_>>());
+    let lines: Vec<LyricLine> = lines.into_iter().enumerate().filter_map(|(index, mut line)| {
+        if credits[index] { return None; }
+        if translation_credits[index] { line.translation = None; }
+        if roman_credits[index] { line.roman = None; }
+        Some(line)
+    }).collect();
     let context = SanitizeContext {
         title: normalize_text(title),
         artist_terms: artist_terms(artist),
@@ -183,9 +238,9 @@ mod tests {
     }
 
     #[test]
-    fn nothing_left_keeps_the_original() {
+    fn explicit_credits_without_lyrics_leave_no_display_lines() {
         let lines = sanitize_matched_lines(parse_auto("[00:01.00]作词：某人"), "x", "y", "");
-        assert_eq!(texts(&lines), vec!["作词：某人"]);
+        assert!(lines.is_empty());
     }
 
     #[test]
@@ -197,5 +252,73 @@ mod tests {
             "",
         );
         assert_eq!(texts(&lines), vec!["Hello", "World"]);
+    }
+
+    #[test]
+    fn multilingual_credits_are_removed_without_damaging_verses() {
+        let fixtures: serde_json::Value = serde_json::from_str(include_str!("fixtures/credit-lines.json")).unwrap();
+        for value in fixtures["credits"].as_array().unwrap() {
+            let text = value.as_str().unwrap();
+            let lrc = format!("[00:01.00]{text}\n[00:03.00]真正的歌词");
+            assert_eq!(texts(&sanitize_matched_lines(parse_auto(&lrc), "Song", "Artist", "")),
+                vec!["真正的歌词"], "未过滤署名：{text}");
+        }
+        for value in fixtures["lyrics"].as_array().unwrap() {
+            let text = value.as_str().unwrap();
+            if text.is_empty() { continue; }
+            let lrc = format!("[00:01.00]{text}\n[00:03.00]真正的歌词");
+            assert_eq!(texts(&sanitize_matched_lines(parse_auto(&lrc), "Song", "Artist", "")),
+                vec![text, "真正的歌词"], "误伤歌词：{text}");
+        }
+        for value in fixtures["contextualCredits"].as_array().unwrap() {
+            let text = value.as_str().unwrap();
+            let lrc = format!("[00:01.00]编曲：张三\n[00:02.00]{text}\n[00:03.00]真正的歌词");
+            assert_eq!(texts(&sanitize_matched_lines(parse_auto(&lrc), "Song", "Artist", "")),
+                vec!["真正的歌词"], "制作信息块内漏掉署名：{text}");
+            let standalone = format!("[00:02.00]{text}\n[00:03.00]真正的歌词");
+            assert_eq!(texts(&sanitize_matched_lines(parse_auto(&standalone), "Song", "Artist", "")),
+                vec![text, "真正的歌词"], "单独出现的含糊署名应保留：{text}");
+        }
+    }
+
+    #[test]
+    fn title_words_and_short_title_verses_are_kept_at_song_edges() {
+        let lrc = "[00:00.00]Love\n[00:02.00]Love will keep us alive\n[00:04.00]Song Artist forever\n[00:06.00]Love";
+        assert_eq!(texts(&sanitize_matched_lines(parse_auto(lrc), "Love", "Artist", "Love")),
+            vec!["Love", "Love will keep us alive", "Song Artist forever", "Love"]);
+        assert_eq!(texts(&sanitize_matched_lines(parse_auto(lrc), "Song", "Artist", "")),
+            vec!["Love", "Love will keep us alive", "Song Artist forever", "Love"]);
+    }
+
+    #[test]
+    fn credits_in_the_middle_are_removed_and_word_timings_are_preserved() {
+        let mut lines = parse_auto("[10000,1000](10000,500,0)你(10500,500,0)好");
+        let verse = lines[0].clone();
+        lines.extend(parse_auto("[00:11.00]MIDI程序：韦伟"));
+        lines.push(verse.clone());
+        let result = sanitize_matched_lines(lines, "Song", "Artist", "");
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].start_ms, verse.start_ms);
+        assert_eq!(result[0].duration_ms, verse.duration_ms);
+        assert_eq!(result[0].words[1].start_ms, verse.words[1].start_ms);
+        assert_eq!(result[0].words[1].duration_ms, verse.words[1].duration_ms);
+    }
+
+    #[test]
+    fn attached_secondary_credits_use_context_and_keep_missing_track_boundaries() {
+        let mut lines = parse_auto("[00:01.00]Hello\n[00:02.00]World\n[00:03.00]Break\n[00:04.00]After");
+        lines[0].translation = Some("编曲：张三".into());
+        lines[0].roman = Some("Producer: John".into());
+        for index in [1, 3] {
+            lines[index].translation = Some("词：徐若瑄".into());
+            lines[index].roman = Some("Lyrics by Alice".into());
+        }
+        let result = sanitize_matched_lines(lines, "Song", "Artist", "");
+        for line in &result[..3] {
+            assert_eq!(line.translation, None);
+            assert_eq!(line.roman, None);
+        }
+        assert_eq!(result[3].translation.as_deref(), Some("词：徐若瑄"));
+        assert_eq!(result[3].roman.as_deref(), Some("Lyrics by Alice"));
     }
 }

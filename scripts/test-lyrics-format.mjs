@@ -31,7 +31,45 @@ const {
   resolveKnownNeteaseLyricSongId,
   shouldBackfillNeteaseRomanization,
   toEditableRomanizationText,
+  isLyricCreditMetadataLine,
+  filterLyricCreditMetadataLines,
 } = await loadTsModule('../src/modules/lyrics/lyricsFormat.ts')
+
+const creditFixtures = JSON.parse(await readFile(
+  new URL('../src-tauri/src/lyrics/fixtures/credit-lines.json', import.meta.url), 'utf8',
+))
+for (const text of creditFixtures.credits) {
+  assert.equal(isLyricCreditMetadataLine(text), true, `制作署名应被识别：${text}`)
+}
+for (const text of creditFixtures.lyrics) {
+  assert.equal(isLyricCreditMetadataLine(text), false, `真实或不明确的歌词应保留：${text}`)
+}
+for (const text of creditFixtures.contextualCredits) {
+  const context = [
+    { startMs: 0, durationMs: 1000, text: '编曲：张三', words: [] },
+    { startMs: 1000, durationMs: 1000, text, words: [] },
+    { startMs: 2000, durationMs: 1000, text: 'Hello', words: [] },
+  ]
+  assert.deepEqual(filterLyricCreditMetadataLines(context).map(line => line.text), ['Hello'], `制作信息块内过滤：${text}`)
+  assert.deepEqual(filterLyricCreditMetadataLines([context[1]]), [context[1]], `单独出现时保留：${text}`)
+  assert.deepEqual(mergeParsedLyricsWithTranslations(context,
+    [{ startMs: 1000, durationMs: 2000, text: '你好', words: [] }]).map(line => line.translation),
+  [undefined, undefined, '你好'], `制作信息块不能抢走翻译：${text}`)
+}
+
+const adjacentCredit = mergeParsedLyricsWithTranslations(
+  [{ startMs: 0, durationMs: 1000, text: 'MIDI Programming: John Smith', words: [] },
+    { startMs: 1000, durationMs: 2000, text: 'Hello', words: [] }],
+  [{ startMs: 500, durationMs: 1000, text: '你好', words: [] }],
+)
+assert.deepEqual(adjacentCredit.map(line => line.translation), [undefined, '你好'])
+const ambiguousRoleVerse = mergeParsedLyricsWithTranslations(
+  [{ startMs: 1000, durationMs: 2000, text: '词：说不出口的爱', words: [] },
+    { startMs: 3000, durationMs: 2000, text: 'Another verse', words: [] }],
+  [{ startMs: 1000, durationMs: 2000, text: 'Words I cannot say', words: [] },
+    { startMs: 3000, durationMs: 2000, text: '另一句', words: [] }],
+)
+assert.deepEqual(ambiguousRoleVerse.map(line => line.translation), ['Words I cannot say', '另一句'])
 
 const wordLine = {
   startMs: 10000,

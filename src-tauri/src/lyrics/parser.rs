@@ -2,6 +2,7 @@
 use serde::Serialize;
 use regex::Regex;
 use std::sync::OnceLock;
+use super::sanitize::lyric_credit_metadata_mask;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct LyricLine {
@@ -193,29 +194,6 @@ pub fn parse_lrc(content: &str) -> Vec<LyricLine> {
 const TRANSLATION_ALIGNMENT_TOLERANCE_MS: u64 = 450;
 const TRANSLATION_CLOSEST_MATCH_TOLERANCE_MS: u64 = 2000;
 
-const LYRIC_CREDIT_METADATA_ROLES: &[&str] = &[
-    "作词", "作詞", "作曲", "编曲", "編曲", "制作人", "製作人", "制作", "製作",
-    "出品", "出品人", "联合出品", "聯合出品", "营销", "營銷", "策划", "策劃",
-    "企划", "企劃", "监制", "監製", "统筹", "統籌", "发行", "發行", "混音",
-    "母带", "母帶", "录音", "錄音", "和声", "和聲", "和音", "配唱", "演唱",
-    "原唱", "词", "詞", "曲", "吉他", "贝斯", "貝斯", "鼓", "键盘", "鍵盤",
-    "弦乐", "弦樂", "录音师", "錄音師", "混音师", "混音師", "母带工程师",
-    "制作公司", "版权", "版權", "鸣谢", "鳴謝", "特别鸣谢", "特別鳴謝",
-    "op", "sp", "lyricist", "composer", "arranger", "producer", "mixing",
-    "mastering", "recording", "vocal", "guitar", "bass", "drums", "keyboard",
-    "strings",
-];
-
-/// 制作信息行（「作词 : xxx」「OP: xxx」），对齐 Android isLyricCreditMetadataLine
-fn is_lyric_credit_metadata_line(text: &str) -> bool {
-    static CREDIT_RE: OnceLock<Regex> = OnceLock::new();
-    let re = CREDIT_RE.get_or_init(|| Regex::new(r"^\s*([\p{L}·]{1,12})\s*[:：]\s*\S").unwrap());
-    re.captures(text)
-        .and_then(|caps| caps.get(1))
-        .map(|role| LYRIC_CREDIT_METADATA_ROLES.contains(&role.as_str().trim().to_lowercase().as_str()))
-        .unwrap_or(false)
-}
-
 /// 「//」之类的未翻译占位，占住这一行但不显示
 fn is_untranslated_placeholder_text(text: &str) -> bool {
     let normalized: Vec<char> = text
@@ -295,14 +273,17 @@ fn decide_translation_for_line(
 /// 同一时间戳的多行（制作信息与正文同刻）作为一组，翻译向组尾对齐；制作信息翻译直接丢弃。
 /// 网易云翻译与 YRC 行首常差 0.5~1s，单纯 450ms 最近匹配会整行丢翻译。
 fn match_translations_to_line_indices(lines: &[LyricLine], translations: &[LyricLine]) -> Vec<(usize, String)> {
+    let translation_credits = lyric_credit_metadata_mask(&translations.iter().map(|line| line.text.as_str()).collect::<Vec<_>>());
     let mut effective: Vec<&LyricLine> = translations
         .iter()
-        .filter(|t| !t.text.trim().is_empty() && !is_lyric_credit_metadata_line(&t.text))
+        .zip(translation_credits)
+        .filter_map(|(line, credit)| (!credit && !line.text.trim().is_empty()).then_some(line))
         .collect();
     effective.sort_by_key(|t| t.start_ms);
     // 原文里的制作信息行不接收翻译：它常紧挨着第一句正文，会把第一句的翻译抢走
+    let credits = lyric_credit_metadata_mask(&lines.iter().map(|line| line.text.as_str()).collect::<Vec<_>>());
     let body: Vec<usize> = (0..lines.len())
-        .filter(|&index| !is_lyric_credit_metadata_line(&lines[index].text))
+        .filter(|&index| !credits[index])
         .collect();
     let candidates: Vec<usize> = if body.is_empty() { (0..lines.len()).collect() } else { body };
     let spans: Vec<TimedSpan> = candidates.iter().map(|&index| line_span(&lines[index])).collect();
@@ -390,6 +371,48 @@ mod tests {
         assert_eq!(body.translation.as_deref(), Some("你好世界"));
         let credit = lines.iter().find(|l| l.text.contains("作词")).unwrap();
         assert_eq!(credit.translation, None);
+    }
+
+    #[test]
+    fn multilingual_credit_detection_matches_display_filter_fixtures() {
+        let fixtures: serde_json::Value = serde_json::from_str(include_str!("fixtures/credit-lines.json")).unwrap();
+        for value in fixtures["credits"].as_array().unwrap() {
+            let text = value.as_str().unwrap();
+            assert!(crate::lyrics::sanitize::is_lyric_credit_metadata_line(text), "未识别署名：{text}");
+        }
+        for value in fixtures["lyrics"].as_array().unwrap() {
+            let text = value.as_str().unwrap();
+            assert!(!crate::lyrics::sanitize::is_lyric_credit_metadata_line(text), "误伤歌词：{text}");
+        }
+    }
+
+    #[test]
+    fn midi_credit_does_not_take_the_first_verse_translation() {
+        let mut lines = parse_lrc("[00:00.00]MIDI Programming: John Smith\n[00:01.00]Hello");
+        merge_translation(&mut lines, "[00:00.50]你好");
+        assert_eq!(lines[0].translation, None);
+        assert_eq!(lines[1].translation.as_deref(), Some("你好"));
+    }
+
+    #[test]
+    fn ambiguous_role_verse_keeps_its_translation() {
+        let mut lines = parse_lrc("[00:01.00]词：说不出口的爱\n[00:03.00]Another verse");
+        merge_translation(&mut lines, "[00:01.00]Words I cannot say\n[00:03.00]另一句");
+        assert_eq!(lines[0].translation.as_deref(), Some("Words I cannot say"));
+        assert_eq!(lines[1].translation.as_deref(), Some("另一句"));
+    }
+
+    #[test]
+    fn contextual_credits_do_not_take_the_first_verse_translation() {
+        let fixtures: serde_json::Value = serde_json::from_str(include_str!("fixtures/credit-lines.json")).unwrap();
+        for value in fixtures["contextualCredits"].as_array().unwrap() {
+            let text = value.as_str().unwrap();
+            let mut lines = parse_lrc(&format!("[00:00.00]编曲：张三\n[00:01.00]{text}\n[00:02.00]Hello"));
+            merge_translation(&mut lines, "[00:01.00]你好");
+            assert_eq!(lines[0].translation, None);
+            assert_eq!(lines[1].translation, None, "含糊署名有明确制作信息上下文：{text}");
+            assert_eq!(lines[2].translation.as_deref(), Some("你好"));
+        }
     }
 
     #[test]

@@ -2,7 +2,7 @@
 // 默认偏移按这份歌词记下的来源算，两边的偏移也就一致。
 // 只在有界面用到时才取词：正在播放页、桌面歌词各自 acquire，都 release 后换歌不再联网
 import { defineStore } from 'pinia'
-import { ref, shallowRef, watch } from 'vue'
+import { computed, ref, shallowRef, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { usePlayerStore, type LyricLine, type TrackInfo } from '@/stores/player'
 import { useSettingsStore } from '@/stores/settings'
@@ -10,6 +10,7 @@ import { getCachedLyrics, saveCachedLyrics } from '@/modules/lyrics/lyricsCache'
 import { hasWordTimedLyrics, loadLyricsSingleFlight } from '@/modules/lyrics/lyricsRequest'
 import {
   mapBackendLyrics,
+  filterLyricCreditMetadataLines,
   materializeStoredLyrics,
   mergeParsedLyricsWithRomanization,
   mergeWordTimedLyricsWithBaseline,
@@ -261,5 +262,6 @@ export const useCurrentLyricsStore = defineStore('currentLyrics', () => {
     lines.value = next
   }
 
-  return { lines, loading, acquire, replace }
+  const displayLines = computed(() => filterLyricCreditMetadataLines(lines.value))
+  return { lines: displayLines, loading, acquire, replace }
 })

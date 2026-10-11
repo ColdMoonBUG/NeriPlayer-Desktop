@@ -163,6 +163,8 @@ Automatic retrieval combines local lyrics, platform track IDs, caches and multi-
 
 When Kugou lyrics lack translation or romanization, background completion tries NetEase first, then QQ Music if translation is still missing. Only high-confidence results matching the title, artist and duration are used. Completion preserves Kugou's original lyrics, word timings and offset, updates the cache, and respects secondary tracks the user has confirmed or cleared.
 
+Lyric displays filter explicit Chinese and English production, instrument, distribution and promotion credits, including MIDI programming, backing vocals and multi-word English roles. Ambiguous short labels and ordinary lyric sentences are kept, along with their word timings, translations and romanization. Display filtering does not rewrite local files or existing stored lyrics.
+
 Offsets can be set per source or per track. Check the track version and duration when manually matching, editing or importing lyrics; live performances, covers and edited versions may need a new match.
 
 ### Desktop lyrics, tray and media keys
