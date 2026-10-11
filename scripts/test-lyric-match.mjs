@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
+import * as vue from 'vue'
+import { compileScript, parse } from 'vue/compiler-sfc'
 import ts from 'typescript'
 
 // 歌词匹配的前端部分：默认平台、结果校验映射、来源标签、时长显示（打分在后端 matcher.rs）
@@ -28,8 +30,12 @@ async function loadModule(relativePath, dependencies) {
 const format = await loadModule('../src/modules/lyrics/lyricsFormat.ts', {})
 const invocations = []
 let reply = []
+let invokeMatch = async () => reply
 const match = await loadModule('../src/modules/lyrics/lyricMatch.ts', {
-  '@tauri-apps/api/core': { invoke: async (command, args) => { invocations.push({ command, args }); return reply } },
+  '@tauri-apps/api/core': {
+    invoke: async (command, args) => { invocations.push({ command, args }); return invokeMatch(args) },
+    Channel: class { constructor(onmessage) { this.onmessage = onmessage || (() => {}) } },
+  },
   './lyricsFormat': format,
 })
 
@@ -83,4 +89,189 @@ const editable = format.toEditableLyricsText(results[0].lines)
 assert.match(editable, /^\[1000,2000\]\(1000,500,0\)夢/)
 assert.equal(format.toEditableTranslationText(results[0].lines), '[00:01.00]如果这是梦')
 
-console.log('lyric match tests passed')
+const descriptor = parse(await readFile(new URL('../src/components/LyricsMatchPanel.vue', import.meta.url), 'utf8')).descriptor
+const script = compileScript(descriptor, { id: 'lyric-match-panel-test', genDefaultAs: 'component', inlineTemplate: true })
+const compiledPanel = ts.transpileModule(script.content, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText
+const renderer = vue.createRenderer({
+  createElement: type => ({ type, tagName: type.toUpperCase(), children: [], props: {}, addEventListener() {}, removeEventListener() {}, getRootNode: () => null }),
+  createText: text => ({ type: 'text', text }), createComment: text => ({ type: 'comment', text }),
+  setText: (node, text) => { node.text = text },
+  setElementText: (node, text) => { node.text = text; node.children = [] },
+  patchProp: (node, key, _previous, value) => { node.props[key] = value },
+  parentNode: node => node.parent,
+  nextSibling: node => node.parent?.children[node.parent.children.indexOf(node) + 1] || null,
+  insert(node, parent, anchor) {
+    if (node.parent) node.parent.children.splice(node.parent.children.indexOf(node), 1)
+    node.parent = parent
+    const index = anchor ? parent.children.indexOf(anchor) : -1
+    if (index < 0) parent.children.push(node)
+    else parent.children.splice(index, 0, node)
+  },
+  remove(node) { node.parent.children.splice(node.parent.children.indexOf(node), 1); node.parent = null },
+})
+const flush = async () => { await Promise.resolve(); await Promise.resolve(); await vue.nextTick() }
+globalThis.Document = class {}
+globalThis.ShadowRoot = class {}
+function deferred() {
+  let resolve, reject
+  const promise = new Promise((accept, fail) => { resolve = accept; reject = fail })
+  return { promise, resolve, reject }
+}
+function mountPanel() {
+  const picks = []
+  const dependencies = {
+    vue,
+    'vue-i18n': { useI18n: () => ({ t: key => key }) },
+    '@/modules/lyrics/lyricMatch': match,
+    '@/utils/logger': { createLogger: () => ({ warn() {} }) },
+  }
+  const component = new Function('require', 'exports', 'HTMLElement', `${compiledPanel}\nreturn component`)(name => {
+    assert.ok(name in dependencies, `unexpected panel dependency: ${name}`)
+    return dependencies[name]
+  }, {}, class {})
+  const root = { children: [] }
+  const app = renderer.createApp(component, {
+    title: 'Lemon', artist: '米津玄師', album: 'STRAY SHEEP', durationMs: 255000,
+    playbackSource: 'netease', preferWordTimed: true, applyLabel: 'apply', onPick: result => picks.push(result),
+  })
+  app.mount(root)
+  const find = className => {
+    const found = []
+    const visit = node => {
+      if (String(node.props?.class || '').split(/\s+/).includes(className)) found.push(node)
+      for (const child of node.children || []) visit(child)
+    }
+    visit(root)
+    return found
+  }
+  return { find, picks, stop: () => app.unmount() }
+}
+function pendingSearches() {
+  const pending = []
+  invokeMatch = args => {
+    const command = { ...deferred(), args }
+    pending.push(command)
+    return command.promise
+  }
+  return pending
+}
+function progress(command, value) { command.args.onResults?.onmessage(value) }
+let total = 0, failed = 0
+async function test(name, run) {
+  total++
+  try { await run(); console.log(`PASS ${name}`) }
+  catch (error) { failed++; console.error(`FAIL ${name}: ${error.stack}`) }
+}
+
+await test('opening the panel and selecting sources never searches until an explicit action', async () => {
+  invocations.length = 0
+  invokeMatch = async () => []
+  const panel = mountPanel()
+  try {
+    await flush()
+    panel.find('lyric-match-chip')[2].props.onClick()
+    await flush()
+    assert.equal(invocations.length, 0, 'opening or changing a source must not issue network commands')
+    panel.find('lyric-match-search')[0].props.onClick()
+    await flush()
+    assert.equal(invocations.length, 1)
+    assert.deepEqual(invocations[0].args.request.sources, ['kugou', 'netease', 'qq', 'amll_ttml'])
+  } finally { panel.stop() }
+})
+
+await test('completed source candidates remain visible and applicable while other sources are pending', async () => {
+  const pending = pendingSearches()
+  const panel = mountPanel()
+  try {
+    pending.length = 0
+    panel.find('lyric-match-input')[0].props.onKeydown({ key: 'Enter' })
+    const command = pending[0]
+    progress(command, [backendResult])
+    await flush()
+    assert.equal(panel.find('lyric-match-item').length, 1, 'a slow source must not hide completed source results')
+    panel.find('lyric-match-head')[0].props.onClick()
+    await flush()
+    panel.find('lyric-match-apply')[0].props.onClick()
+    assert.equal(panel.picks[0].id, '1')
+    assert.equal(panel.picks[0].lines[0].startMs, 1000)
+    command.resolve([backendResult]); await flush()
+  } finally { panel.stop() }
+})
+
+await test('later ranked candidates preserve the expanded candidate and its apply action', async () => {
+  const pending = pendingSearches()
+  const panel = mountPanel()
+  try {
+    pending.length = 0
+    panel.find('lyric-match-search')[0].props.onClick()
+    const command = pending[0]
+    progress(command, [backendResult]); await flush()
+    assert.equal(panel.find('lyric-match-head').length, 1, 'partial candidates must be previewable')
+    panel.find('lyric-match-head')[0].props.onClick(); await flush()
+    const higher = { ...backendResult, id: 'higher', source: 'netease', score: 300 }
+    progress(command, [higher, backendResult]); await flush()
+    assert.equal(panel.find('lyric-match-preview').length, 1)
+    panel.find('lyric-match-apply')[0].props.onClick()
+    assert.equal(panel.picks[0].id, '1', 'ranking changes must not switch the preview to a different candidate')
+    command.resolve([higher, backendResult]); await flush()
+  } finally { panel.stop() }
+})
+
+await test('changing sources cancels the active view without starting a replacement search', async () => {
+  const pending = pendingSearches()
+  const panel = mountPanel()
+  try {
+    pending.length = 0
+    panel.find('lyric-match-search')[0].props.onClick()
+    const command = pending[0]
+    panel.find('lyric-match-chip')[0].props.onClick(); await flush()
+    assert.equal(pending.length, 1)
+    progress(command, [backendResult]); command.resolve([backendResult]); await flush()
+    assert.equal(panel.find('lyric-match-item').length, 0, 'results for the previous source selection must be ignored')
+    assert.equal(panel.find('lyric-match-search')[0].props.disabled, false)
+  } finally { panel.stop() }
+})
+
+await test('a newer explicit search ignores old progress and completion, including after unmount', async () => {
+  const pending = pendingSearches()
+  const panel = mountPanel()
+  try {
+    pending.length = 0
+    const input = panel.find('lyric-match-input')[0]
+    input.props.onKeydown({ key: 'Enter' })
+    input.props['onUpdate:modelValue']('Lemon official')
+    await flush()
+    panel.find('lyric-match-input')[0].props.onKeydown({ key: 'Enter' })
+    assert.equal(pending.length, 2)
+    const current = { ...backendResult, id: 'current' }
+    progress(pending[1], [current]); await flush()
+    progress(pending[0], [backendResult]); pending[0].resolve([backendResult]); await flush()
+    assert.equal(panel.find('lyric-match-head').length, 1, 'the latest search must expose its completed source')
+    panel.find('lyric-match-head')[0].props.onClick(); await flush()
+    panel.find('lyric-match-apply')[0].props.onClick()
+    assert.equal(panel.picks[0].id, 'current')
+    panel.stop()
+    progress(pending[1], [backendResult]); pending[1].resolve([current]); await flush()
+    assert.equal(panel.find('lyric-match-item').length, 0)
+  } finally { if (panel.find('lyric-match').length) panel.stop() }
+})
+
+await test('final command results cannot be overwritten by a delayed partial snapshot', async () => {
+  const pending = pendingSearches()
+  const snapshots = []
+  const finished = match.matchLyrics({ keyword: 'Lemon', title: 'Lemon', artist: '米津玄師', durationMs: 255000, preferWordTimed: true, sources: ['kugou'] }, value => snapshots.push(value))
+  const command = pending[0]
+  progress(command, [backendResult])
+  await flush()
+  assert.equal(snapshots.length, 1)
+  const final = { ...backendResult, id: 'final' }
+  command.resolve([final])
+  assert.equal((await finished)[0].id, 'final')
+  progress(command, [backendResult])
+  assert.equal(snapshots.length, 1, 'channel delivery may finish after invoke; final results remain authoritative')
+})
+
+console.log(`Lyric match regressions: ${total - failed} passed, ${failed} failed`)
+if (failed) process.exitCode = 1

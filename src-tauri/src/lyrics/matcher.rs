@@ -11,6 +11,7 @@ use crate::api::lrclib::{LrcLibClient, LrcLibResult};
 use crate::api::netease::client::{NeteaseClient, NeteaseLyrics, NeteaseSearchResult};
 use crate::api::qq::client::{QqMusicClient, QqSearchResult};
 use crate::api::transport::FallbackHttp;
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::cmp::{Ordering, Reverse};
@@ -25,8 +26,9 @@ use unicode_normalization::UnicodeNormalization;
 const MAX_SOURCE_RESULTS: usize = 5;
 const MAX_DETAIL_RESULTS: usize = 4;
 const MAX_RESULTS: usize = 20;
-/// 单个平台的总预算：慢的平台不拖住已经返回的结果太久
+/// 单个平台的总预算，到期保留已完成的候选
 const SOURCE_BUDGET: Duration = Duration::from_secs(15);
+const QUERY_BUDGET_DIVISOR: u32 = 3;
 
 const MIN_MATCH_SCORE: i32 = 35;
 const WORD_TIMED_BONUS: i32 = 36;
@@ -184,7 +186,7 @@ impl LyricMatcher {
         Self { transport, netease }
     }
 
-    pub async fn find(&self, request: MatchRequest) -> Vec<RankedMatch> {
+    pub async fn find(&self, request: MatchRequest, on_results: impl FnMut(&[RankedMatch])) -> Vec<RankedMatch> {
         let request = MatchRequest {
             keyword: request.keyword.trim().to_owned(),
             title: request.title.trim().to_owned(),
@@ -197,53 +199,48 @@ impl LyricMatcher {
         }
         let searches = MatchSource::SEARCH_ORDER
             .into_iter()
-            .filter(|source| request.sources.contains(source))
-            .map(|source| {
+            .enumerate()
+            .filter(|(_, source)| request.sources.contains(source))
+            .map(|(index, source)| {
                 let request = &request;
                 async move {
                     let started = Instant::now();
-                    let found = match tokio::time::timeout(SOURCE_BUDGET, self.search(source, request)).await {
-                        Ok(found) => found,
-                        Err(_) => {
-                            log::warn!(target: "lyric-match", "source={source:?} timed out after {}s", SOURCE_BUDGET.as_secs());
-                            Vec::new()
-                        }
-                    };
+                    let deadline = tokio::time::Instant::now() + SOURCE_BUDGET;
+                    let found = self.search(source, request, deadline).await;
                     log::info!(
                         target: "lyric-match",
                         "source={source:?} candidates={} elapsed_ms={}",
                         found.len(),
                         started.elapsed().as_millis(),
                     );
-                    found
+                    (index, found)
                 }
             });
-        let candidates = futures_util::future::join_all(searches).await.into_iter().flatten().collect();
-        rank(&request, candidates)
+        rank_searches(&request, searches, on_results).await
     }
 
-    async fn search(&self, source: MatchSource, request: &MatchRequest) -> Vec<MatchCandidate> {
+    async fn search(&self, source: MatchSource, request: &MatchRequest, deadline: tokio::time::Instant) -> Vec<MatchCandidate> {
         let queries = search_queries(request, source.domestic());
         match source {
-            MatchSource::Netease => self.search_netease(request, &queries).await,
-            MatchSource::Qq => self.search_qq(request, &queries).await,
-            MatchSource::Kugou => self.search_kugou(request, &queries).await,
-            MatchSource::AmllTtml => self.search_amll(request, &queries).await,
-            MatchSource::Lrclib => self.search_lrclib(request, &queries).await,
+            MatchSource::Netease => self.search_netease(request, &queries, deadline).await,
+            MatchSource::Qq => self.search_qq(request, &queries, deadline).await,
+            MatchSource::Kugou => self.search_kugou(request, &queries, deadline).await,
+            MatchSource::AmllTtml => self.search_amll(request, &queries, deadline).await,
+            MatchSource::Lrclib => self.search_lrclib(request, &queries, deadline).await,
         }
     }
 
-    async fn search_netease(&self, request: &MatchRequest, queries: &[String]) -> Vec<MatchCandidate> {
+    async fn search_netease(&self, request: &MatchRequest, queries: &[String], deadline: tokio::time::Instant) -> Vec<MatchCandidate> {
         let client = &self.netease;
-        let hits = collect(queries, |song: &NeteaseSearchResult| song.id.to_string(), |query| {
+        let hits = collect(queries, deadline, |song: &NeteaseSearchResult| song.id.to_string(), |query| {
             async move { log_failure("netease search", client.search(&query, MAX_SOURCE_RESULTS as u32, 0).await) }
         })
         .await;
-        let mut found = Vec::new();
-        for song in for_detail(request, hits, |song| (song.name.clone(), song.artists.join("/"), song.duration_ms)) {
-            let Some(lyrics) = log_failure("netease lyric", client.get_lyrics(song.id).await) else { continue };
-            let Some((lines, format)) = netease_lines(&lyrics) else { continue };
-            found.push(MatchCandidate {
+        let songs = for_detail(request, hits, |song| (song.name.clone(), song.artists.join("/"), song.duration_ms));
+        collect_details(songs, deadline, |song| async move {
+            let lyrics = log_failure("netease lyric", client.get_lyrics(song.id).await)?;
+            let (lines, format) = netease_lines(&lyrics)?;
+            Some(MatchCandidate {
                 id: song.id.to_string(),
                 source: MatchSource::Netease,
                 artist: song.artists.join("/"),
@@ -253,74 +250,73 @@ impl LyricMatcher {
                 lines,
                 format,
                 source_score: 4,
-            });
-        }
-        found
+            })
+        }).await
     }
 
-    async fn search_qq(&self, request: &MatchRequest, queries: &[String]) -> Vec<MatchCandidate> {
+    async fn search_qq(&self, request: &MatchRequest, queries: &[String], deadline: tokio::time::Instant) -> Vec<MatchCandidate> {
         let client = QqMusicClient::with_transport(self.transport.clone());
-        let hits = collect(queries, |song: &QqSearchResult| song.song_mid.clone(), |query| {
+        let hits = collect(queries, deadline, |song: &QqSearchResult| song.song_mid.clone(), |query| {
             let client = &client;
             async move { log_failure("qq search", client.search(&query, 1, MAX_SOURCE_RESULTS as u32).await) }
         })
         .await;
-        let mut found = Vec::new();
-        for song in for_detail(request, hits, |song| (song.song_name.clone(), song.artists.join("/"), song.duration_ms)) {
-            let Some((Some(lrc), translation)) = log_failure("qq lyric", client.get_lyrics(&song.song_mid).await) else {
-                continue;
-            };
-            let mut lines = parser::parse_lrc(&lrc);
-            if lines.is_empty() {
-                continue;
+        let songs = for_detail(request, hits, |song| (song.song_name.clone(), song.artists.join("/"), song.duration_ms));
+        collect_details(songs, deadline, |song| {
+            let client = &client;
+            async move {
+                let (lrc, translation) = log_failure("qq lyric", client.get_lyrics(&song.song_mid).await)?;
+                let mut lines = parser::parse_lrc(&lrc?);
+                if lines.is_empty() { return None; }
+                if let Some(translation) = translation.as_deref().filter(|value| !value.trim().is_empty()) {
+                    parser::merge_translation(&mut lines, translation);
+                }
+                Some(MatchCandidate {
+                    id: song.song_mid,
+                    source: MatchSource::Qq,
+                    artist: song.artists.join("/"),
+                    title: song.song_name,
+                    album: song.album_name,
+                    duration_ms: song.duration_ms,
+                    lines,
+                    format: LyricFormat::Lrc,
+                    source_score: 3,
+                })
             }
-            if let Some(translation) = translation.as_deref().filter(|value| !value.trim().is_empty()) {
-                parser::merge_translation(&mut lines, translation);
-            }
-            found.push(MatchCandidate {
-                id: song.song_mid,
-                source: MatchSource::Qq,
-                artist: song.artists.join("/"),
-                title: song.song_name,
-                album: song.album_name,
-                duration_ms: song.duration_ms,
-                lines,
-                format: LyricFormat::Lrc,
-                source_score: 3,
-            });
-        }
-        found
+        }).await
     }
 
-    async fn search_kugou(&self, request: &MatchRequest, queries: &[String]) -> Vec<MatchCandidate> {
+    async fn search_kugou(&self, request: &MatchRequest, queries: &[String], deadline: tokio::time::Instant) -> Vec<MatchCandidate> {
         let client = ExternalLyricsClient::new(self.transport.clone());
-        let hits = collect(queries, |song: &KugouSong| song.hash.clone(), |query| {
+        let hits = collect(queries, deadline, |song: &KugouSong| song.hash.clone(), |query| {
             let client = &client;
             async move { client.kugou_songs(&query).await }
         })
         .await;
-        let mut found = Vec::new();
-        for song in for_detail(request, hits, |song| (song.title.clone(), song.artist.clone(), song.duration)) {
-            let Some(lines) = client.kugou_lyrics(&song).await else { continue };
-            let format = if external::has_word_timing(&lines) { LyricFormat::Yrc } else { LyricFormat::Lrc };
-            found.push(MatchCandidate {
-                id: song.hash,
-                source: MatchSource::Kugou,
-                title: song.title,
-                artist: song.artist,
-                album: song.album,
-                duration_ms: song.duration,
-                lines,
-                format,
-                source_score: 4,
-            });
-        }
-        found
+        let songs = for_detail(request, hits, |song| (song.title.clone(), song.artist.clone(), song.duration));
+        collect_details(songs, deadline, |song| {
+            let client = &client;
+            async move {
+                let lines = client.kugou_lyrics(&song).await?;
+                let format = if external::has_word_timing(&lines) { LyricFormat::Yrc } else { LyricFormat::Lrc };
+                Some(MatchCandidate {
+                    id: song.hash,
+                    source: MatchSource::Kugou,
+                    title: song.title,
+                    artist: song.artist,
+                    album: song.album,
+                    duration_ms: song.duration,
+                    lines,
+                    format,
+                    source_score: 4,
+                })
+            }
+        }).await
     }
 
-    async fn search_amll(&self, request: &MatchRequest, queries: &[String]) -> Vec<MatchCandidate> {
+    async fn search_amll(&self, request: &MatchRequest, queries: &[String], deadline: tokio::time::Instant) -> Vec<MatchCandidate> {
         let client = ExternalLyricsClient::new(self.transport.clone());
-        let mut hits = collect(queries, |entry: &AmllEntry| entry.file.clone(), |query| {
+        let mut hits = collect(queries, deadline, |entry: &AmllEntry| entry.file.clone(), |query| {
             let client = &client;
             async move { client.amll_search(&query).await }
         })
@@ -328,28 +324,31 @@ impl LyricMatcher {
         hits.sort_by_cached_key(|entry| {
             Reverse((external::identity_score(&request.title, &request.artist, &entry.titles, &entry.artists), entry.score))
         });
-        let mut found = Vec::new();
-        for entry in hits.into_iter().take(MAX_DETAIL_RESULTS) {
-            let Some(lines) = client.amll_lyrics(&entry.file).await else { continue };
-            found.push(MatchCandidate {
-                title: entry.titles.first().cloned().unwrap_or_default(),
-                artist: entry.artists.join("/"),
-                album: entry.albums.first().cloned().unwrap_or_default(),
-                duration_ms: external::lyric_end(&lines),
-                source_score: (entry.score / 20).min(10) as i32,
-                id: entry.file,
-                source: MatchSource::AmllTtml,
-                lines,
-                format: LyricFormat::Ttml,
-            });
-        }
-        found
+        hits.truncate(MAX_DETAIL_RESULTS);
+        collect_details(hits, deadline, |entry| {
+            let client = &client;
+            async move {
+                let lines = client.amll_lyrics(&entry.file).await?;
+                Some(MatchCandidate {
+                    title: entry.titles.first().cloned().unwrap_or_default(),
+                    artist: entry.artists.join("/"),
+                    album: entry.albums.first().cloned().unwrap_or_default(),
+                    duration_ms: external::lyric_end(&lines),
+                    source_score: (entry.score / 20).min(10) as i32,
+                    id: entry.file,
+                    source: MatchSource::AmllTtml,
+                    lines,
+                    format: LyricFormat::Ttml,
+                })
+            }
+        }).await
     }
 
-    async fn search_lrclib(&self, request: &MatchRequest, queries: &[String]) -> Vec<MatchCandidate> {
+    async fn search_lrclib(&self, request: &MatchRequest, queries: &[String], deadline: tokio::time::Instant) -> Vec<MatchCandidate> {
         let client = LrcLibClient::with_transport(self.transport.clone());
         let hits = collect(
             queries,
+            deadline,
             |result: &LrcLibResult| format!("{}:{}:{}", result.track_name, result.artist_name, result.duration.round()),
             |query| {
                 let client = &client;
@@ -383,6 +382,27 @@ impl LyricMatcher {
             })
             .collect()
     }
+}
+
+async fn rank_searches<Fut>(
+    request: &MatchRequest,
+    searches: impl IntoIterator<Item = Fut>,
+    mut on_results: impl FnMut(&[RankedMatch]),
+) -> Vec<RankedMatch>
+where
+    Fut: Future<Output = (usize, Vec<MatchCandidate>)>,
+{
+    let mut pending: FuturesUnordered<_> = searches.into_iter().collect();
+    let mut batches = Vec::new();
+    let mut results = Vec::new();
+    while let Some(batch) = pending.next().await {
+        batches.push(batch);
+        // 按平台原顺序合并，保持同分候选和去重的选择稳定
+        batches.sort_by_key(|(index, _)| *index);
+        results = rank(request, batches.iter().flat_map(|(_, found)| found.iter().cloned()).collect());
+        on_results(&results);
+    }
+    results
 }
 
 fn log_failure<T>(what: &str, result: crate::error::AppResult<T>) -> Option<T> {
@@ -424,15 +444,21 @@ fn search_queries(request: &MatchRequest, domestic: bool) -> Vec<String> {
 }
 
 /// 每个搜索词取前 5 条，按 key 去重保序
-async fn collect<T, Search, Fut>(queries: &[String], key: impl Fn(&T) -> String, search: Search) -> Vec<T>
+async fn collect<T, Search, Fut>(queries: &[String], deadline: tokio::time::Instant, key: impl Fn(&T) -> String, search: Search) -> Vec<T>
 where
     Search: Fn(String) -> Fut,
     Fut: Future<Output = Option<Vec<T>>>,
 {
     let mut seen = HashSet::new();
     let mut found = Vec::new();
-    for query in queries {
-        let Some(items) = search(query.clone()).await else { continue };
+    // 搜索只用总预算的三分之一，为已命中的歌曲保留歌词详情时间
+    let started = tokio::time::Instant::now();
+    let query_deadline = started + deadline.saturating_duration_since(started) / QUERY_BUDGET_DIVISOR;
+    let batches = futures_util::future::join_all(queries.iter().map(|query| {
+        let search = &search;
+        async move { tokio::time::timeout_at(query_deadline, search(query.clone())).await.ok().flatten() }
+    })).await;
+    for items in batches.into_iter().flatten() {
         for item in items.into_iter().take(MAX_SOURCE_RESULTS) {
             if seen.insert(key(&item)) {
                 found.push(item);
@@ -440,6 +466,17 @@ where
         }
     }
     found
+}
+
+async fn collect_details<T, Load, Fut>(items: Vec<T>, deadline: tokio::time::Instant, load: Load) -> Vec<MatchCandidate>
+where
+    Load: Fn(T) -> Fut,
+    Fut: Future<Output = Option<MatchCandidate>>,
+{
+    futures_util::future::join_all(items.into_iter().map(|item| {
+        let load = &load;
+        async move { tokio::time::timeout_at(deadline, load(item)).await.ok().flatten() }
+    })).await.into_iter().flatten().collect()
 }
 
 /// 取详情前的初筛：时长明显不对的不取，其余按「时长相符、标题、歌手、时长」排前 4 个
@@ -1147,6 +1184,97 @@ mod tests {
         assert_eq!(search_queries(&request, true), ["爱你 王心凌", "爱你"], "国内平台繁转简后搜");
     }
 
+    #[tokio::test]
+    async fn query_searches_start_together_and_deduplicate_in_query_order() {
+        let queries = vec!["keyword".to_owned(), "metadata".to_owned(), "title".to_owned()];
+        let started = std::cell::RefCell::new(Vec::new());
+        let (release, blocked) = tokio::sync::oneshot::channel::<()>();
+        let blocked = std::cell::RefCell::new(Some(blocked));
+        let search = |query: String| {
+            started.borrow_mut().push(query.clone());
+            let blocked = if query == "keyword" { blocked.borrow_mut().take() } else { None };
+            async move {
+                if let Some(blocked) = blocked { let _ = blocked.await; }
+                Some(vec![("same-id".to_owned(), query.clone()), (query.clone(), query)])
+            }
+        };
+        let found = collect(&queries, tokio::time::Instant::now() + SOURCE_BUDGET, |item: &(String, String)| item.0.clone(), search);
+        let mut found = std::pin::pin!(found);
+        assert!(futures_util::poll!(&mut found).is_pending());
+        assert_eq!(*started.borrow(), ["keyword", "metadata", "title"], "a pending query must not delay the others");
+        release.send(()).unwrap();
+        assert_eq!(found.await, [
+            ("same-id".to_owned(), "keyword".to_owned()),
+            ("keyword".to_owned(), "keyword".to_owned()),
+            ("metadata".to_owned(), "metadata".to_owned()),
+            ("title".to_owned(), "title".to_owned()),
+        ]);
+    }
+
+    #[tokio::test]
+    async fn completed_sources_are_ranked_before_a_pending_source_finishes() {
+        let request = request("Lemon", "米津玄師", 255_000);
+        let fast = candidate(MatchSource::Netease, "Lemon", "米津玄師", 255_000);
+        let mut duplicate = fast.clone();
+        duplicate.id = "duplicate".into();
+        let mut slow = candidate(MatchSource::Kugou, "Lemon", "米津玄師", 300_000);
+        slow.lines[0].words = vec![parser::LyricWord { start_ms: 0, duration_ms: 400, text: "line".into() }];
+        slow.format = LyricFormat::Yrc;
+        let (release, blocked) = tokio::sync::oneshot::channel::<()>();
+        let searches = [
+            (0, Some(blocked), vec![slow]),
+            (1, None, vec![fast, duplicate]),
+        ].into_iter().map(|(index, blocked, found)| async move {
+            if let Some(blocked) = blocked { let _ = blocked.await; }
+            (index, found)
+        });
+        let snapshots = std::cell::RefCell::new(Vec::new());
+        let results = rank_searches(&request, searches, |results| {
+            snapshots.borrow_mut().push(results.iter().map(|result| result.source).collect::<Vec<_>>());
+        });
+        let mut results = std::pin::pin!(results);
+        assert!(futures_util::poll!(&mut results).is_pending());
+        assert_eq!(*snapshots.borrow(), [vec![MatchSource::Netease]], "fast candidates must be available before the slow source completes");
+        release.send(()).unwrap();
+        assert_eq!(results.await.iter().map(|result| result.source).collect::<Vec<_>>(), [MatchSource::Kugou, MatchSource::Netease]);
+        assert_eq!(*snapshots.borrow(), [vec![MatchSource::Netease], vec![MatchSource::Kugou, MatchSource::Netease]], "snapshots retain content deduplication and word-timed preference");
+    }
+
+    #[tokio::test]
+    async fn detail_requests_start_together_and_keep_completed_candidates_at_the_deadline() {
+        let started = std::cell::RefCell::new(Vec::new());
+        let found = collect_details(vec!["slow", "fast"], tokio::time::Instant::now() + Duration::from_millis(50), |id| {
+            started.borrow_mut().push(id);
+            async move {
+                if id == "slow" { std::future::pending::<()>().await; }
+                let mut found = candidate(MatchSource::Netease, "Lemon", "米津玄師", 255_000);
+                found.id = id.into();
+                Some(found)
+            }
+        });
+        let mut found = std::pin::pin!(found);
+        assert!(futures_util::poll!(&mut found).is_pending());
+        assert_eq!(*started.borrow(), ["slow", "fast"]);
+        assert_eq!(found.await.iter().map(|candidate| candidate.id.as_str()).collect::<Vec<_>>(), ["fast"], "a timed-out detail must not discard the completed detail");
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_query_leaves_time_for_completed_hits_to_fetch_lyrics() {
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(120);
+        let queries = vec!["slow".to_owned(), "fast".to_owned()];
+        let hits = collect(&queries, deadline, |id: &String| id.clone(), |query| async move {
+            if query == "slow" { std::future::pending::<()>().await; }
+            Some(vec![query])
+        }).await;
+        let found = collect_details(hits, deadline, |id| async move {
+            tokio::task::yield_now().await;
+            let mut found = candidate(MatchSource::Netease, "Lemon", "米津玄師", 255_000);
+            found.id = id;
+            Some(found)
+        }).await;
+        assert_eq!(found.iter().map(|candidate| candidate.id.as_str()).collect::<Vec<_>>(), ["fast"], "query timeouts must leave a detail budget for successful hits");
+    }
+
     /// 访问真实平台，手动运行：cargo test --lib live_match -- --ignored --nocapture
     /// 这里没有登录态，网易云会拒绝匿名搜索；应用里用的是带 cookie 的客户端
     #[tokio::test]
@@ -1157,7 +1285,7 @@ mod tests {
         let matcher = LyricMatcher::new(transport.clone(), NeteaseClient::with_transport(transport));
         for (title, artist, duration_ms) in [("Lemon", "米津玄師", 255_000), ("unravel", "TK from 凛として時雨", 239_000)] {
             let started = Instant::now();
-            let results = matcher.find(request(title, artist, duration_ms)).await;
+            let results = matcher.find(request(title, artist, duration_ms), |_| {}).await;
             eprintln!("== {title} / {artist}: {} results in {} ms", results.len(), started.elapsed().as_millis());
             for result in &results {
                 eprintln!(

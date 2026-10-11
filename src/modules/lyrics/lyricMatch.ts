@@ -1,5 +1,5 @@
 // 歌词「匹配」：按所选平台搜候选歌词（后端 match_lyrics 打分排序，对齐 Android EditableLyricsMatcher）
-import { invoke } from '@tauri-apps/api/core'
+import { Channel, invoke } from '@tauri-apps/api/core'
 import type { LyricLine } from '@/stores/player'
 import { mapBackendLyrics } from './lyricsFormat'
 
@@ -83,8 +83,17 @@ export function normalizeLyricMatchResults(raw: unknown): LyricMatchResult[] {
   return results
 }
 
-export async function matchLyrics(request: LyricMatchRequest): Promise<LyricMatchResult[]> {
-  return normalizeLyricMatchResults(await invoke('match_lyrics', { request }))
+export async function matchLyrics(
+  request: LyricMatchRequest,
+  onResults?: (results: LyricMatchResult[]) => void,
+): Promise<LyricMatchResult[]> {
+  const channel = new Channel<unknown>(raw => onResults?.(normalizeLyricMatchResults(raw)))
+  try {
+    return normalizeLyricMatchResults(await invoke('match_lyrics', { request, onResults: channel }))
+  } finally {
+    // 大快照可能晚于最终响应到达，结束后不再采纳增量
+    channel.onmessage = () => {}
+  }
 }
 
 /** 写回 syncPayload 的 matchedLyricSource，与偏移来源、Android MusicPlatform 一致 */

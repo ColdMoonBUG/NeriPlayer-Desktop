@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // 歌词匹配面板：选平台、改关键字，列出打过分的候选；点开先预览，确认后再应用
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   LYRIC_MATCH_SOURCES,
@@ -57,8 +57,8 @@ function sourceLabel(source: LyricMatchSource): string {
   }
 }
 
-function resultKey(result: LyricMatchResult, index: number): string {
-  return `${result.source}:${result.id}:${index}`
+function resultKey(result: LyricMatchResult): string {
+  return `${result.source}:${result.id}`
 }
 
 function toggleSource(source: LyricMatchSource) {
@@ -66,6 +66,12 @@ function toggleSource(source: LyricMatchSource) {
   if (next.has(source)) next.delete(source)
   else next.add(source)
   selectedSources.value = LYRIC_MATCH_SOURCES.filter(value => next.has(value))
+  generation++
+  searching.value = false
+  searched.value = false
+  results.value = []
+  error.value = ''
+  expandedKey.value = null
 }
 
 const noSource = computed(() => selectedSources.value.length === 0)
@@ -76,6 +82,7 @@ async function search() {
   const request = ++generation
   searching.value = true
   error.value = ''
+  results.value = []
   expandedKey.value = null
   try {
     const found = await matchLyrics({
@@ -86,6 +93,10 @@ async function search() {
       durationMs: props.durationMs,
       preferWordTimed: props.preferWordTimed,
       sources: [...selectedSources.value],
+    }, partial => {
+      if (request !== generation) return
+      results.value = partial
+      searched.value = true
     })
     if (request !== generation) return
     results.value = found
@@ -123,7 +134,6 @@ function revealPreview(element: unknown) {
   element.parentElement?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
 }
 
-onMounted(() => { void search() })
 onUnmounted(() => { generation++ })
 </script>
 
@@ -162,14 +172,14 @@ onUnmounted(() => { generation++ })
     <div v-else-if="error" class="lyric-match-status error">{{ t('player.lyrics_match_failed', { error }) }}</div>
     <div v-else-if="searched && results.length === 0" class="lyric-match-status">{{ t('player.lyrics_match_empty') }}</div>
 
-    <div v-if="!searching && results.length" class="lyric-match-results">
+    <div v-if="results.length" class="lyric-match-results">
       <div
-        v-for="(result, index) in results"
-        :key="resultKey(result, index)"
+        v-for="result in results"
+        :key="resultKey(result)"
         class="lyric-match-item"
-        :class="{ expanded: expandedKey === resultKey(result, index) }"
+        :class="{ expanded: expandedKey === resultKey(result) }"
       >
-        <button class="lyric-match-head" @click="toggleExpanded(resultKey(result, index))">
+        <button class="lyric-match-head" @click="toggleExpanded(resultKey(result))">
           <span class="lyric-match-source-icon" :style="{ maskImage: `url(${SOURCE_ICONS[result.source]})` }"></span>
           <span class="lyric-match-info">
             <span class="lyric-match-title">{{ result.title || '—' }}</span>
@@ -182,7 +192,7 @@ onUnmounted(() => { generation++ })
             <span v-if="result.hasRomanization" class="lyric-match-tag">{{ t('player.lyrics_match_has_romanization') }}</span>
           </span>
         </button>
-        <div v-if="expandedKey === resultKey(result, index)" :ref="revealPreview" class="lyric-match-preview">
+        <div v-if="expandedKey === resultKey(result)" :ref="revealPreview" class="lyric-match-preview">
           <!-- 按钮放在预览前面：面板窄，放在末尾要先滚动才点得到 -->
           <div class="lyric-match-preview-actions">
             <button class="lyric-match-apply" @click="emit('pick', result)">
