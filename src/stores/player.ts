@@ -543,6 +543,8 @@ export const usePlayerStore = defineStore('player', () => {
     requestGeneration: 0,
   })
   let loadedPlaybackRequestToken = 0
+  // 队列选中项可能先于音频变更，记录后端时长实际属于哪首歌
+  const loadedPlaybackTrackKey = ref<string | null>(null)
   let deferredPlaybackSeek: DeferredPlaybackSeek | null = null
   let _speedInvokeTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -1930,6 +1932,7 @@ export const usePlayerStore = defineStore('player', () => {
       commitTrack()
       durationMs.value = dur || track.durationMs
       loadedPlaybackRequestToken = token
+      loadedPlaybackTrackKey.value = JSON.stringify([track.playlistKey ?? null, track.id])
       const deferredSeek = deferredPlaybackSeek?.requestGeneration === token
         ? deferredPlaybackSeek
         : null
@@ -3247,7 +3250,7 @@ export const usePlayerStore = defineStore('player', () => {
   return {
     isPlaying, currentTrack, currentBiliVideoSkipTarget, positionMs, durationMs, queue, queueIndex,
     repeatMode, shuffleEnabled, volume, lyrics, playError, isLoadingAudio, isLoadingAudioSlow,
-    hasPlaybackSession,
+    hasPlaybackSession, loadedPlaybackTrackKey,
     audioLevel, beatImpulse, audioInfo, isPlayingFromDownload, isPlayingFromCache,
     lastCommandSource, lastCommandSequence, lastSeekCommand, isRemoteSyncGuardActive,
     playbackSpeed, currentStreamUrl, sleepTimerMode, sleepRemainingSeconds,

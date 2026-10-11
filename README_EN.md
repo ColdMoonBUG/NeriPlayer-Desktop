@@ -161,6 +161,8 @@ Settings → Lyrics → Long Note Animation Threshold allows values from 300 to 
 
 Automatic retrieval combines local lyrics, platform track IDs, caches and multi-source matching. Settings → Lyrics lets you select a default lyric source and control word-synced priority, falling back to automatic selection if no suitable result is found. With word-synced priority enabled, Bilibili tries word-synced sources first. Manual matching supports NetEase, QQ Music, Kugou, LRCLIB and AMLL TTML: edit keywords, select sources, preview and confirm results as candidates arrive.
 
+When Kugou lyrics lack translation or romanization, background completion tries NetEase first, then QQ Music if translation is still missing. Only high-confidence results matching the title, artist and duration are used. Completion preserves Kugou's original lyrics, word timings and offset, updates the cache, and respects secondary tracks the user has confirmed or cleared.
+
 Offsets can be set per source or per track. Check the track version and duration when manually matching, editing or importing lyrics; live performances, covers and edited versions may need a new match.
 
 ### Desktop lyrics, tray and media keys

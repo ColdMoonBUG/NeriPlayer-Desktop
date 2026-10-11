@@ -42,6 +42,7 @@
     "test:lyric-offset": "node scripts/test-lyric-offset.mjs",
     "test:now-playing-background": "node scripts/test-now-playing-background.mjs",
     "test:lyrics-format": "node scripts/test-lyrics-format.mjs",
+    "test:lyrics-supplement": "node scripts/test-lyrics-supplement.mjs",
     "test:download-cancellation": "node scripts/test-download-cancellation.mjs",
     "test:download-queue": "node scripts/test-download-queue.mjs",
     "test:download-settings": "node scripts/test-download-settings.mjs",

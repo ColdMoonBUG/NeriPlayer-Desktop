@@ -26,6 +26,7 @@ import {
   preferredLyricMatchSource,
 } from '@/modules/lyrics/lyricsFetch'
 import { lyricSourceOf, rememberLyricSource } from '@/modules/lyrics/lyricSource'
+import { kugouSecondaryLyricNeeds, mergeKugouSecondaryLyrics, supplementKugouLyrics } from '@/modules/lyrics/lyricsSupplement'
 import { getPlaybackSourceKind } from '@/modules/playback/playbackSource'
 import { playbackSessionTrackKey } from '@/modules/playback/playbackRequest'
 import { createLogger } from '@/utils/logger'
@@ -33,7 +34,7 @@ import { summarizeLogError } from '@/utils/logSanitizer'
 
 const log = createLogger('lyrics')
 
-/** 逐字升级、音译补全返回时，歌词还是不是发起时那首歌（时长常在起播后才补上，不参与比较） */
+/** 逐字升级、副轨补全返回时，歌词还是不是发起时那首歌（时长常在起播后才补上，不参与比较） */
 function sameSong(left: TrackInfo | null | undefined, right: TrackInfo | null | undefined): boolean {
   return !!left && !!right && left.id === right.id && left.title === right.title && left.artist === right.artist
 }
@@ -97,13 +98,45 @@ export const useCurrentLyricsStore = defineStore('currentLyrics', () => {
       rememberLyricSource(current, source)
       lines.value = merged
       cache(current, merged)
+      backfillSecondaryLyrics(current, id)
     }).catch(error => log.warn('word timed lyric upgrade unavailable:', summarizeLogError(error)))
   }
 
-  // 歌词没带音译时（同步载荷、旧缓存、非网易云来源），后台从网易云补上
-  function backfillRomanization(track: TrackInfo, id: number) {
+  function supplementDurationMs(track: TrackInfo): number {
+    if (track.durationMs > 0) return track.durationMs
+    // 只借用当前已加载音频的后端时长，队列删除可能只改变选中曲目
+    return player.hasPlaybackSession && !player.isLoadingAudio && player.loadedPlaybackTrackKey === durationTrackKey(track)
+      ? player.durationMs || 0 : 0
+  }
+
+  function durationTrackKey(track: TrackInfo): string {
+    return JSON.stringify([track.playlistKey ?? null, track.id])
+  }
+
+  // 酷狗缺少副轨时跨平台补全，主歌词和逐字时间轴继续使用酷狗
+  function backfillSecondaryLyrics(requestedTrack: TrackInfo, id: number) {
+    const track = player.currentTrack
+    if (!track || id !== request || !sameSong(track, requestedTrack)) return
+    if (normalizeLyricSource(lyricSourceOf(track)) === 'kugou') {
+      const needs = kugouSecondaryLyricNeeds(lines.value, track.syncPayload, lyricSourceOf(track))
+      if (!needs.translation && !needs.romanization) return
+      void supplementKugouLyrics({ ...track, durationMs: supplementDurationMs(track) }, lines.value, needs).then((supplement) => {
+        const current = player.currentTrack
+        if (id !== request || !sameSong(current, track) || !current) return
+        const remaining = kugouSecondaryLyricNeeds(lines.value, current.syncPayload, lyricSourceOf(current))
+        if (!remaining.translation && !remaining.romanization) return
+        const baseline = lines.value
+        const merged = mergeKugouSecondaryLyrics(baseline, supplement, remaining)
+        if (!merged.some((line, index) => line.translation !== baseline[index].translation || line.roman !== baseline[index].roman)) return
+        lines.value = merged
+        cache(current, merged)
+      }).catch(error => log.warn('kugou secondary lyrics unavailable:', summarizeLogError(error)))
+      return
+    }
+
     if (!shouldBackfillNeteaseRomanization(track.syncPayload, lines.value)) return
     const stillWanted = () => id === request && sameSong(player.currentTrack, track)
+      && normalizeLyricSource(lyricSourceOf(player.currentTrack)) !== 'kugou'
       && shouldBackfillNeteaseRomanization(player.currentTrack?.syncPayload, lines.value)
     const songId = resolveKnownNeteaseLyricSongId(track)
     void fetchNeteaseRomanization(track, songId).then(async (text) => {
@@ -140,7 +173,7 @@ export const useCurrentLyricsStore = defineStore('currentLyrics', () => {
         lines.value = synced
         if (synced.length) {
           cache(track, synced)
-          backfillRomanization(track, id)
+          backfillSecondaryLyrics(track, id)
         }
         return
       }
@@ -155,14 +188,14 @@ export const useCurrentLyricsStore = defineStore('currentLyrics', () => {
           rememberLyricSource(track, preferred.source)
           lines.value = preferred.lines
           cache(track, preferred.lines)
-          backfillRomanization(track, id)
+          backfillSecondaryLyrics(track, id)
           return
         }
       }
 
       if (cached?.length) {
         if (!preferredSource) upgradeWordTimed(track, id)
-        backfillRomanization(track, id)
+        backfillSecondaryLyrics(track, id)
         return
       }
 
@@ -177,7 +210,7 @@ export const useCurrentLyricsStore = defineStore('currentLyrics', () => {
       if (id !== request) return
       lines.value = fetched.lines
       upgradeWordTimed(track, id)
-      backfillRomanization(track, id)
+      backfillSecondaryLyrics(track, id)
     } catch (error) {
       log.error('lyrics not loaded:', { trackId: track.id, error: summarizeLogError(error) })
       const restored = await getCachedLyrics(track)
@@ -197,6 +230,15 @@ export const useCurrentLyricsStore = defineStore('currentLyrics', () => {
     loadedKey = null
     lines.value = []
     loading.value = false
+  })
+
+  // 起播时未知的时长补齐后，才有条件可靠地匹配其他平台
+  watch(() => player.currentTrack ? supplementDurationMs(player.currentTrack) : 0, (durationMs) => {
+    const track = player.currentTrack
+    if (track && durationMs && durationMs > 0 && consumers > 0 && !loading.value && loadedKey === loadKey()
+      && normalizeLyricSource(lyricSourceOf(track)) === 'kugou') {
+      backfillSecondaryLyrics(track, request)
+    }
   })
 
   /** 界面开始显示歌词；返回的函数在界面关闭时调用 */
