@@ -786,6 +786,8 @@
     "lyric_blur": "歌詞ぼかし",
     "lyric_blur_desc": "非アクティブ行をぼかし",
     "blur_strength": "ぼかし強度",
+    "lyric_emphasis_threshold": "ロングノートアニメーションの判定時間",
+    "lyric_emphasis_threshold_desc": "この時間以上続く単語でロングノートアニメーションを表示します。値を小さくすると発生しやすくなります。単語単位の高度なアニメーションが有効な場合のみ適用されます。",
     "netease_offset": "網易雲歌詞オフセット",
     "qq_offset": "QQ音楽歌詞オフセット",
     "kugou_offset": "Kugou 歌詞オフセット",

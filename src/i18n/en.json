@@ -786,6 +786,8 @@
     "lyric_blur": "Lyrics Blur",
     "lyric_blur_desc": "Blur inactive lyric lines",
     "blur_strength": "Blur Strength",
+    "lyric_emphasis_threshold": "Long Note Animation Threshold",
+    "lyric_emphasis_threshold_desc": "Words lasting at least this long trigger the long note animation. Lower values trigger it more often. Requires advanced word animations.",
     "netease_offset": "Netease Lyrics Offset",
     "qq_offset": "QQ Music Lyrics Offset",
     "kugou_offset": "Kugou Lyrics Offset",

@@ -676,6 +676,11 @@ watch(() => settings.advancedLyrics, () => {
   reloadLyrics()
 })
 
+watch(() => settings.lyricEmphasisThresholdMs, () => {
+  // 等 CSS 阈值更新后再重建词动画，保持播放时间不变
+  reloadLyrics()
+}, { flush: 'post' })
+
 watch([() => settings.showTranslation, () => settings.showRomanization], () => {
   reloadLyrics()
 })
@@ -712,7 +717,10 @@ watch(() => props.seekSeq, (seq, oldSeq) => {
     :class="{
       'lyrics-scroll--ready': isLayoutReady,
     }"
-    :style="{ '--lyric-font-scale': settings.lyricFontScale }"
+    :style="{
+      '--lyric-font-scale': settings.lyricFontScale,
+      '--amll-lp-emphasis-threshold-ms': settings.lyricEmphasisThresholdMs,
+    }"
     @contextmenu="onLyricContextMenu"
   />
   <ContextMenu

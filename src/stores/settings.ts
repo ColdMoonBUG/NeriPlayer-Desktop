@@ -60,6 +60,7 @@ export interface AppSettings {
   showRomanization: boolean
   lyricBlur: boolean
   lyricBlurAmount: number
+  lyricEmphasisThresholdMs: number
   cloudMusicOffset: number
   qqMusicOffset: number
   kugouOffset: number
@@ -159,6 +160,10 @@ export const ENHANCED_BLUR_RADIUS_STEP = 4
 // 对齐 Android LyricDefaultOffset ±5000ms，按 50ms 对齐
 export const LYRIC_DEFAULT_OFFSET_RANGE_MS = 5000
 export const LYRIC_DEFAULT_OFFSET_STEP_MS = 50
+export const LYRIC_EMPHASIS_THRESHOLD_DEFAULT_MS = 700
+export const LYRIC_EMPHASIS_THRESHOLD_MIN_MS = 300
+export const LYRIC_EMPHASIS_THRESHOLD_MAX_MS = 2000
+export const LYRIC_EMPHASIS_THRESHOLD_STEP_MS = 50
 const NETEASE_QUALITIES = ['standard', 'higher', 'exhigh', 'lossless', 'hires', 'jyeffect', 'sky', 'jymaster']
 const QQ_QUALITIES = ['standard', 'high', 'lossless']
 const YOUTUBE_QUALITIES = ['low', 'medium', 'high', 'very_high']
@@ -200,6 +205,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   showRomanization: false,
   lyricBlur: true,
   lyricBlurAmount: 1.5,
+  lyricEmphasisThresholdMs: LYRIC_EMPHASIS_THRESHOLD_DEFAULT_MS,
   cloudMusicOffset: 1000,
   qqMusicOffset: 500,
   kugouOffset: 0,
@@ -292,6 +298,7 @@ const LEGACY_KEYS: Partial<Record<SettingKey, string>> = {
   showTranslation: 'show_translation',
   lyricBlur: 'lyric_blur',
   lyricBlurAmount: 'lyric_blur_amount',
+  lyricEmphasisThresholdMs: 'lyric_emphasis_threshold_ms',
   cloudMusicOffset: 'cloud_offset',
   qqMusicOffset: 'qq_offset',
   coverStyle: 'cover_style',
@@ -462,6 +469,7 @@ function normalizeSnapshot(input: unknown): AppSettings {
   result.crossfadeInDuration = clampInteger(result.crossfadeInDuration, 0, 10000)
   result.crossfadeOutDuration = clampInteger(result.crossfadeOutDuration, 0, 10000)
   result.lyricBlurAmount = clamp(result.lyricBlurAmount, 0, 8)
+  result.lyricEmphasisThresholdMs = normalizeLyricEmphasisThresholdMs(result.lyricEmphasisThresholdMs)
   result.cloudMusicOffset = normalizeLyricDefaultOffset(result.cloudMusicOffset, DEFAULT_SETTINGS.cloudMusicOffset)
   result.qqMusicOffset = normalizeLyricDefaultOffset(result.qqMusicOffset, DEFAULT_SETTINGS.qqMusicOffset)
   result.kugouOffset = normalizeLyricDefaultOffset(result.kugouOffset, DEFAULT_SETTINGS.kugouOffset)
@@ -514,6 +522,12 @@ export function normalizeLyricDefaultOffset(value: number, fallback: number): nu
   if (!Number.isFinite(value)) return fallback
   const aligned = Math.round(value / LYRIC_DEFAULT_OFFSET_STEP_MS) * LYRIC_DEFAULT_OFFSET_STEP_MS
   return Math.min(LYRIC_DEFAULT_OFFSET_RANGE_MS, Math.max(-LYRIC_DEFAULT_OFFSET_RANGE_MS, aligned)) || 0
+}
+
+export function normalizeLyricEmphasisThresholdMs(value: number): number {
+  if (!Number.isFinite(value)) return LYRIC_EMPHASIS_THRESHOLD_DEFAULT_MS
+  const aligned = Math.round(Math.round(value) / LYRIC_EMPHASIS_THRESHOLD_STEP_MS) * LYRIC_EMPHASIS_THRESHOLD_STEP_MS
+  return Math.min(LYRIC_EMPHASIS_THRESHOLD_MAX_MS, Math.max(LYRIC_EMPHASIS_THRESHOLD_MIN_MS, aligned))
 }
 
 /** 声道平衡 -1（只剩左声道）～1（只剩右声道），按 0.01 取整；非数值时居中（对齐 Android） */
@@ -585,6 +599,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const showRomanization = ref(initial.showRomanization)
   const lyricBlur = ref(initial.lyricBlur)
   const lyricBlurAmount = ref(initial.lyricBlurAmount)
+  const lyricEmphasisThresholdMs = ref(initial.lyricEmphasisThresholdMs)
   const cloudMusicOffset = ref(initial.cloudMusicOffset)
   const qqMusicOffset = ref(initial.qqMusicOffset)
   const kugouOffset = ref(initial.kugouOffset)
@@ -654,7 +669,7 @@ export const useSettingsStore = defineStore('settings', () => {
     showAudioBitrate, showAudioFormat, showAudioChannels, showAudioSampleRate, showAudioBitDepth,
     fadeInDuration, fadeOutDuration, crossfadeNext, crossfadeInDuration,
     crossfadeOutDuration, keepProgress, rememberLongFormProgress, keepPlaybackMode, showTranslation,
-    showRomanization, lyricBlur, lyricBlurAmount, cloudMusicOffset, qqMusicOffset, kugouOffset, lrclibOffset,
+    showRomanization, lyricBlur, lyricBlurAmount, lyricEmphasisThresholdMs, cloudMusicOffset, qqMusicOffset, kugouOffset, lrclibOffset,
     amllTtmlOffset, coverStyle,
     advancedLyrics, preferWordTimedLyrics, defaultLyricSource, dynamicBackground, colorMode, audioReactive, coverBlurBg,
     coverBlurAmount, coverBlurDarken, neteaseQuality, qqMusicQuality,
@@ -752,7 +767,7 @@ export const useSettingsStore = defineStore('settings', () => {
     crossfade, normalizeVolume, multichannelDrc, volumeBalance, fadeIn, fadeInDuration, fadeOutDuration,
     crossfadeNext, crossfadeInDuration, crossfadeOutDuration,
     keepProgress, rememberLongFormProgress, keepPlaybackMode, showTranslation, showRomanization,
-    lyricBlur, lyricBlurAmount,
+    lyricBlur, lyricBlurAmount, lyricEmphasisThresholdMs,
     cloudMusicOffset, qqMusicOffset, kugouOffset, lrclibOffset, amllTtmlOffset,
     advancedLyrics, preferWordTimedLyrics, defaultLyricSource, dynamicBackground,
     colorMode, audioReactive, coverBlurBg, coverBlurAmount, coverBlurDarken,

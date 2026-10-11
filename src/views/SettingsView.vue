@@ -37,10 +37,14 @@ import {
   COVER_BLUR_PX_PER_UNIT,
   LYRIC_DEFAULT_OFFSET_RANGE_MS,
   LYRIC_DEFAULT_OFFSET_STEP_MS,
+  LYRIC_EMPHASIS_THRESHOLD_MAX_MS,
+  LYRIC_EMPHASIS_THRESHOLD_MIN_MS,
+  LYRIC_EMPHASIS_THRESHOLD_STEP_MS,
   LYRIC_FONT_SCALE_MAX,
   LYRIC_FONT_SCALE_MIN,
   LYRIC_FONT_SCALE_STEP,
   normalizeLyricDefaultOffset,
+  normalizeLyricEmphasisThresholdMs,
   MAX_COVER_BLUR_AMOUNT,
   MAX_MEDIA_CACHE_SIZE_MB,
   MIN_MEDIA_CACHE_SIZE_MB,
@@ -101,7 +105,7 @@ const {
   fadeIn, fadeInDuration, fadeOutDuration,
   crossfadeNext, crossfadeInDuration, crossfadeOutDuration,
   keepProgress, rememberLongFormProgress, keepPlaybackMode,
-  showTranslation, showRomanization, lyricBlur, lyricBlurAmount,
+  showTranslation, showRomanization, lyricBlur, lyricBlurAmount, lyricEmphasisThresholdMs,
   advancedLyrics, preferWordTimedLyrics, defaultLyricSource, dynamicBackground, colorMode, audioReactive,
   coverBlurBg, coverBlurAmount, coverBlurDarken,
   neteaseQuality, youtubeQuality, biliQuality,
@@ -2321,6 +2325,29 @@ useEscapeClose(
       </div>
       <CustomSelect class="settings-select" :model-value="defaultLyricSource" :options="defaultLyricSourceOptions"
         :label="t('settings.default_lyric_source')" @update:model-value="changeDefaultLyricSource" />
+    </div>
+
+    <div class="setting-card">
+      <div class="setting-icon-wrap"><span class="material-symbols-rounded">graphic_eq</span></div>
+      <div class="setting-info">
+        <div class="setting-title">{{ t('settings.lyric_emphasis_threshold') }}</div>
+        <div class="setting-desc">{{ t('settings.lyric_emphasis_threshold_desc') }}</div>
+        <EditableRangeValue
+          :model-value="lyricEmphasisThresholdMs"
+          class="setting-desc"
+          :min="LYRIC_EMPHASIS_THRESHOLD_MIN_MS"
+          :max="LYRIC_EMPHASIS_THRESHOLD_MAX_MS"
+          :step="LYRIC_EMPHASIS_THRESHOLD_STEP_MS"
+          :display-value="`${lyricEmphasisThresholdMs}ms`"
+          input-suffix="ms"
+          :aria-label="t('settings.lyric_emphasis_threshold')"
+          @update:model-value="lyricEmphasisThresholdMs = normalizeLyricEmphasisThresholdMs($event)"
+        />
+      </div>
+      <input type="range" class="m3-slider" :value="lyricEmphasisThresholdMs"
+        :min="LYRIC_EMPHASIS_THRESHOLD_MIN_MS" :max="LYRIC_EMPHASIS_THRESHOLD_MAX_MS" :step="LYRIC_EMPHASIS_THRESHOLD_STEP_MS"
+        :aria-label="t('settings.lyric_emphasis_threshold')"
+        @input="lyricEmphasisThresholdMs = normalizeLyricEmphasisThresholdMs(Number(($event.target as HTMLInputElement).value))" />
     </div>
 
     <div class="setting-card">

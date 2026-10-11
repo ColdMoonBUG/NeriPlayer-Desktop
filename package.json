@@ -19,6 +19,7 @@
     "test:bilibili-cover-cache": "node scripts/test-bilibili-cover-cache.mjs",
     "test:lyrics-request": "node scripts/test-lyrics-request.mjs",
     "test:lyrics-foreground": "node scripts/test-lyrics-foreground.mjs",
+    "test:lyric-animation": "node scripts/test-lyric-animation.mjs",
     "test:desktop-lyrics": "node scripts/test-desktop-lyrics.mjs",
     "test:current-lyrics": "node scripts/test-current-lyrics.mjs",
     "test:playback-request": "node scripts/playback-request.test.mjs",

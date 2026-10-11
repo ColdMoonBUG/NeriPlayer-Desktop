@@ -786,6 +786,8 @@
     "lyric_blur": "歌詞模糊",
     "lyric_blur_desc": "非活躍歌詞行高斯模糊",
     "blur_strength": "模糊強度",
+    "lyric_emphasis_threshold": "長音動畫觸發時長",
+    "lyric_emphasis_threshold_desc": "字詞時長達到此值即可觸發長音動畫，數值越小越容易觸發，僅在逐字進階動畫開啟時生效",
     "netease_offset": "網易雲歌詞偏移",
     "qq_offset": "QQ 音樂歌詞偏移",
     "kugou_offset": "酷狗歌詞偏移",

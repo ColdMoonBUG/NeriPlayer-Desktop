@@ -786,6 +786,8 @@
     "lyric_blur": "歌词模糊",
     "lyric_blur_desc": "非活跃歌词行高斯模糊",
     "blur_strength": "模糊强度",
+    "lyric_emphasis_threshold": "长音动画触发时长",
+    "lyric_emphasis_threshold_desc": "字词时长达到此值即可触发长音动画，数值越小越容易触发，仅在逐字高级动画开启时生效",
     "netease_offset": "网易云歌词偏移",
     "qq_offset": "QQ 音乐歌词偏移",
     "kugou_offset": "酷狗歌词偏移",
