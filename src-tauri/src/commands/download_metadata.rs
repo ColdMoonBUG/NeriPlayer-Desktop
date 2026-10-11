@@ -9,7 +9,9 @@ use lofty::probe::Probe;
 use lofty::tag::{ItemKey, ItemValue, Tag, TagItem, TagType};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -374,6 +376,34 @@ fn insert_custom(tag: &mut Tag, name: &str, value: Option<&str>) {
     }
 }
 
+fn read_cover_picture(path: &Path) -> AppResult<Picture> {
+    let bytes = std::fs::read(path)?;
+    let mut picture = match Picture::from_reader(&mut Cursor::new(&bytes)) {
+        Ok(picture) => picture,
+        Err(_) => {
+            // 下载封面可能是 WebP，转为标签库和外部播放器支持的 PNG
+            let mut reader = image::ImageReader::new(Cursor::new(&bytes)).with_guessed_format()?;
+            let mut limits = image::Limits::default();
+            limits.max_image_width = Some(8_192);
+            limits.max_image_height = Some(8_192);
+            limits.max_alloc = Some(128 * 1024 * 1024);
+            reader.limits(limits);
+            let image = reader
+                .decode()
+                .map_err(|error| AppError::Metadata(error.to_string()))?;
+            let mut encoded = Cursor::new(Vec::new());
+            image
+                .write_to(&mut encoded, image::ImageFormat::Png)
+                .map_err(|error| AppError::Metadata(error.to_string()))?;
+            encoded.set_position(0);
+            Picture::from_reader(&mut encoded)
+                .map_err(|error| AppError::Metadata(error.to_string()))?
+        }
+    };
+    picture.set_pic_type(PictureType::CoverFront);
+    Ok(picture)
+}
+
 pub(crate) fn prepare_audio_tags(
     audio: &Path,
     metadata: &DownloadMetadata,
@@ -455,18 +485,15 @@ pub(crate) fn prepare_audio_tags(
     if tag.comment().is_none() {
         tag.set_comment(serde_json::json!({"app": "NeriPlayer", "stableKey": metadata.stable_key, "mediaUri": metadata.media_uri}).to_string());
     }
-    if let Some(cover) = metadata
+    let expected_cover = metadata
         .cover_path
         .as_deref()
         .and_then(|reference| resolve_asset(audio, reference, "Covers"))
-    {
-        if let Ok(mut file) = std::fs::File::open(cover) {
-            if let Ok(mut picture) = Picture::from_reader(&mut file) {
-                picture.set_pic_type(PictureType::CoverFront);
-                tag.remove_picture_type(PictureType::CoverFront);
-                tag.push_picture(picture);
-            }
-        }
+        .map(|cover| read_cover_picture(&cover))
+        .transpose()?;
+    if let Some(picture) = &expected_cover {
+        tag.remove_picture_type(PictureType::CoverFront);
+        tag.push_picture(picture.clone());
     }
     tagged
         .save_to_path(prepared.path(), WriteOptions::default())
@@ -480,9 +507,20 @@ pub(crate) fn prepare_audio_tags(
     let tag = verified
         .primary_tag()
         .ok_or_else(|| AppError::Metadata("写入的音频标签无法读回".into()))?;
+    // 分片 MP4 的头部时长可能为零，仍需确认写标签后的音频可解码且时长可信
+    let has_verified_duration = !verified.properties().duration().is_zero()
+        || super::validate_download_audio(
+            prepared.path(),
+            None,
+            None,
+            metadata
+                .verified_audio_duration_ms
+                .unwrap_or(metadata.duration_ms),
+            &AtomicBool::new(false),
+        )? > 0;
     if tag.title().as_deref() != metadata.name.as_deref()
         || tag.artist().as_deref() != metadata.artist.as_deref()
-        || verified.properties().duration().is_zero()
+        || !has_verified_duration
         || metadata.stable_key.as_deref().is_some_and(|expected| {
             tag.get_string(&custom_key(tag_type, "NERI_STABLE_KEY")) != Some(expected)
         })
@@ -503,11 +541,13 @@ pub(crate) fn prepare_audio_tags(
             .is_some_and(|expected| {
                 tag.get_string(&custom_key(tag_type, "NERI_LYRICS_ROMANIZED")) != Some(expected)
             })
-        || metadata
-            .cover_path
-            .as_deref()
-            .is_some_and(|reference| resolve_asset(audio, reference, "Covers").is_some())
-            && tag.pictures().is_empty()
+        || expected_cover.as_ref().is_some_and(|expected| {
+            !tag.pictures().iter().any(|picture| {
+                // MP4 的 covr 不保存封面类型，回读时按实际图片数据校验
+                (tag_type == TagType::Mp4Ilst || picture.pic_type() == PictureType::CoverFront)
+                    && picture.data() == expected.data()
+            })
+        })
     {
         return Err(AppError::Metadata("音频标签写入验证失败".into()));
     }
@@ -582,6 +622,7 @@ mod tests {
             metadata.original_translated_lyric.as_deref()
         );
         assert_eq!(tag.pictures().len(), 1);
+        assert_eq!(tag.pictures()[0].pic_type(), PictureType::CoverFront);
         prepared.persist(&audio).unwrap();
         let final_size = std::fs::metadata(&audio).unwrap().len();
         assert!(final_size > original.len() as u64);
@@ -589,6 +630,83 @@ mod tests {
             final_size,
             std::fs::metadata(&audio).unwrap().len()
         ));
+    }
+
+    #[test]
+    fn fragmented_mp4_cover_is_embedded_and_audio_packets_remain_decodable() {
+        let root = tempfile::tempdir().unwrap();
+        let audio = root.path().join("Song.m4a");
+        let mut metadata = fixture(&audio);
+        let mut original = include_bytes!("../audio/fixtures/hls-init.mp4").to_vec();
+        original.extend_from_slice(include_bytes!("../audio/fixtures/hls-segment.m4s"));
+        std::fs::write(&audio, &original).unwrap();
+        assert!(lofty::read_from_path(&audio)
+            .unwrap()
+            .properties()
+            .duration()
+            .is_zero());
+        metadata.verified_audio_duration_ms = Some(192);
+        let cover = root.path().join("Covers").join("Song.jpg");
+        std::fs::create_dir_all(cover.parent().unwrap()).unwrap();
+        image::RgbImage::from_pixel(2, 2, image::Rgb([40, 80, 120]))
+            .save(&cover)
+            .unwrap();
+        let cover_bytes = std::fs::read(&cover).unwrap();
+        metadata.cover_path = Some(cover.to_string_lossy().to_string());
+
+        let prepared = prepare_audio_tags(&audio, &metadata, false).unwrap();
+        assert_eq!(std::fs::read(&audio).unwrap(), original);
+        let tagged = lofty::probe::Probe::open(prepared.path())
+            .unwrap()
+            .guess_file_type()
+            .unwrap()
+            .read()
+            .unwrap();
+        let picture = tagged.primary_tag().unwrap().pictures().first().unwrap();
+        assert_eq!(picture.data(), cover_bytes);
+        assert_eq!(picture.mime_type(), Some(&lofty::picture::MimeType::Jpeg));
+        assert_eq!(
+            super::super::validate_download_audio(
+                prepared.path(),
+                None,
+                None,
+                192,
+                &std::sync::atomic::AtomicBool::new(false)
+            )
+            .unwrap(),
+            192
+        );
+        let decoder = crate::audio::remote::SymphoniaAudioDecoder::new_file(prepared.path())
+            .unwrap();
+        assert_eq!(decoder.count(), 9_216, "写入标签后每个音频包仍可完整解码");
+    }
+
+    #[test]
+    fn webp_download_cover_is_embedded_in_a_supported_picture_format() {
+        let root = tempfile::tempdir().unwrap();
+        let audio = root.path().join("Song.aac");
+        let mut metadata = fixture(&audio);
+        let cover = root.path().join("Covers").join("Song.webp");
+        std::fs::create_dir_all(cover.parent().unwrap()).unwrap();
+        image::RgbImage::from_pixel(2, 2, image::Rgb([40, 80, 120]))
+            .save(&cover)
+            .unwrap();
+        metadata.cover_path = Some(cover.to_string_lossy().to_string());
+        let prepared = prepare_audio_tags(&audio, &metadata, false).unwrap();
+        let tagged = lofty::probe::Probe::open(prepared.path())
+            .unwrap()
+            .guess_file_type()
+            .unwrap()
+            .read()
+            .unwrap();
+        let picture = tagged.primary_tag().unwrap().pictures().first().unwrap();
+        assert!(matches!(
+            picture.mime_type(),
+            Some(lofty::picture::MimeType::Png | lofty::picture::MimeType::Jpeg)
+        ));
+        let decoded = image::load_from_memory(picture.data()).unwrap().to_rgb8();
+        assert_eq!(decoded.dimensions(), (2, 2));
+        assert_eq!(decoded.get_pixel(0, 0).0, [40, 80, 120]);
     }
 
     #[test]
