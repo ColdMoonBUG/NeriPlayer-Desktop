@@ -82,6 +82,11 @@ type RichPlayerLyricWord = PlayerLyricWord & {
   ruby?: PlayerRubyWord[]
 }
 
+const hasTranslation = computed(() => props.lyrics.some(line => line.translation?.trim()))
+const hasRomanization = computed(() => props.lyrics.some(line =>
+  line.roman?.trim() || line.words?.some(word => (word as RichPlayerLyricWord).romanWord?.trim()),
+))
+
 const offsetMs = computed(() => {
   // 必须由上层传入有效偏移; 不再回退到网易云全局默认,
   // 否则 YouTube/B站/本地在漏传时会被错误套上 +1000ms
@@ -711,18 +716,47 @@ watch(() => props.seekSeq, (seq, oldSeq) => {
 </script>
 
 <template>
-  <div
-    ref="hostRef"
-    class="lyrics-scroll"
-    :class="{
-      'lyrics-scroll--ready': isLayoutReady,
-    }"
-    :style="{
-      '--lyric-font-scale': settings.lyricFontScale,
-      '--amll-lp-emphasis-threshold-ms': settings.lyricEmphasisThresholdMs,
-    }"
-    @contextmenu="onLyricContextMenu"
-  />
+  <div class="lyrics-view" :style="{ '--lyric-font-scale': settings.lyricFontScale }">
+    <div
+      ref="hostRef"
+      class="lyrics-scroll"
+      :class="{
+        'lyrics-scroll--ready': isLayoutReady,
+      }"
+      :style="{
+        '--amll-lp-emphasis-threshold-ms': settings.lyricEmphasisThresholdMs,
+      }"
+      @contextmenu="onLyricContextMenu"
+    />
+    <div v-if="hasTranslation || hasRomanization" class="lyrics-display-controls" role="group" :aria-label="t('settings.lyrics')">
+      <button
+        v-if="hasTranslation"
+        type="button"
+        class="lyrics-display-toggle"
+        :class="{ active: settings.showTranslation }"
+        :title="t('settings.show_translation')"
+        :aria-label="t('settings.show_translation')"
+        :aria-pressed="settings.showTranslation"
+        @click.stop="settings.showTranslation = !settings.showTranslation"
+      >
+        <span class="material-symbols-rounded" aria-hidden="true">translate</span>
+        <span>{{ t('player.lyrics_editor_translation') }}</span>
+      </button>
+      <button
+        v-if="hasRomanization"
+        type="button"
+        class="lyrics-display-toggle"
+        :class="{ active: settings.showRomanization }"
+        :title="t('settings.show_romanization')"
+        :aria-label="t('settings.show_romanization')"
+        :aria-pressed="settings.showRomanization"
+        @click.stop="settings.showRomanization = !settings.showRomanization"
+      >
+        <span class="material-symbols-rounded" aria-hidden="true">record_voice_over</span>
+        <span>{{ t('player.lyrics_editor_romanization') }}</span>
+      </button>
+    </div>
+  </div>
   <ContextMenu
     :open="lyricMenu.show"
     :x="lyricMenu.x"
@@ -734,6 +768,117 @@ watch(() => props.seekSeq, (seq, oldSeq) => {
 </template>
 
 <style scoped lang="scss">
+.lyrics-view {
+  --amll-lp-font-size: calc(max(max(5vh, 2.5vw), 12px) * var(--lyric-font-scale, 1));
+  // 与 AMLL 行组横向留白保持一致
+  --lyric-line-padding-x: var(--amll-lp-font-size);
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  isolation: isolate;
+}
+
+.lyrics-display-controls {
+  position: absolute;
+  z-index: 3;
+  bottom: 16px;
+  left: var(--lyric-line-padding-x);
+  display: flex;
+  gap: 2px;
+  max-width: calc(100% - var(--lyric-line-padding-x) - 12px);
+  padding: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(20px);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(6px);
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.lyrics-view:hover .lyrics-display-controls {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.lyrics-display-controls:has(:focus-visible) {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.lyrics-display-toggle {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.6);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease;
+
+  .material-symbols-rounded {
+    flex-shrink: 0;
+    font-size: 20px;
+  }
+
+  span:last-child {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: white;
+  }
+
+  &.active {
+    background: rgba(255, 255, 255, 0.16);
+    color: white;
+  }
+
+  &:focus-visible {
+    outline: 2px solid rgba(255, 255, 255, 0.8);
+    outline-offset: 2px;
+  }
+}
+
+@media screen and (max-width: 500px) {
+  .lyrics-view {
+    --lyric-line-padding-x: 20px;
+  }
+}
+
+@media (hover: none), (pointer: coarse) {
+  .lyrics-display-controls {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lyrics-display-controls,
+  .lyrics-display-toggle {
+    transition: none;
+  }
+}
+
 .lyrics-scroll {
   width: 100%;
   height: 100%;
@@ -757,7 +902,6 @@ watch(() => props.seekSeq, (seq, oldSeq) => {
     transparent 94%
   );
   --amll-lp-color: white;
-  --amll-lp-font-size: calc(max(max(5vh, 2.5vw), 12px) * var(--lyric-font-scale, 1));
 }
 
 :deep(.amll-lyric-player [class*="interludeDots"]) {

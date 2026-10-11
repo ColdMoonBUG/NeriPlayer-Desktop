@@ -157,6 +157,8 @@ Clearing the app cache does not delete audio you downloaded. Cloud sync does not
 
 Now Playing uses [applemusic-like-lyrics](https://github.com/amll-dev/applemusic-like-lyrics) for character/word highlighting, translation, romanization, blur and font-size adjustment, alongside a cover-colored WebGL fluid background, audio response or a blurred-cover background.
 
+Hover over the lyrics to reveal translation and romanization toggles at the bottom left. Each toggle appears only when its content is available; romanization includes both line and word annotations. Each can be enabled independently or together, sharing the display preferences in Settings → Lyrics. The controls also appear on keyboard focus and stay visible on touch devices.
+
 Settings → Lyrics → Long Note Animation Threshold allows values from 300 to 2000ms, with a default of 700ms. Lower values trigger the effect more often; advanced word animations must be enabled.
 
 Automatic retrieval combines local lyrics, platform track IDs, caches and multi-source matching. Settings → Lyrics lets you select a default lyric source and control word-synced priority, falling back to automatic selection if no suitable result is found. With word-synced priority enabled, Bilibili tries word-synced sources first. Manual matching supports NetEase, QQ Music, Kugou, LRCLIB and AMLL TTML: edit keywords, select sources, preview and confirm results as candidates arrive.
