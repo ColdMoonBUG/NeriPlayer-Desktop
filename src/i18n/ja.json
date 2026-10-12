@@ -1336,7 +1336,9 @@
   "lyrics": {
     "copy_line": "この行をコピー",
     "copy_all": "歌詞をすべてコピー",
-    "seek_here": "この行へジャンプ"
+    "seek_here": "この行へジャンプ",
+    "show_display_controls": "翻訳/ローマ字ボタンを表示",
+    "hide_display_controls": "翻訳/ローマ字ボタンを非表示"
   },
   "desktop_lyrics": {
     "menu_bar": "macOS のメニューバーに歌詞を表示",

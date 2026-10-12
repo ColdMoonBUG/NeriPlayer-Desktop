@@ -1336,7 +1336,9 @@
   "lyrics": {
     "copy_line": "複製這一句",
     "copy_all": "複製全部歌詞",
-    "seek_here": "跳到這一句"
+    "seek_here": "跳到這一句",
+    "show_display_controls": "顯示翻譯/音譯按鈕",
+    "hide_display_controls": "隱藏翻譯/音譯按鈕"
   },
   "desktop_lyrics": {
     "menu_bar": "在 macOS 選單列顯示歌詞",

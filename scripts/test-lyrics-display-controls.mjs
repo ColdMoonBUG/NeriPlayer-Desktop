@@ -19,6 +19,9 @@ class ListenerTarget {
     this.listeners.get(type).add(listener)
   }
   removeEventListener(type, listener) { this.listeners.get(type)?.delete(listener) }
+  dispatch(type, event) {
+    for (const listener of [...(this.listeners.get(type) ?? [])]) listener(event)
+  }
 }
 
 function element(type) {
@@ -86,13 +89,23 @@ async function mount({ lyrics = richLyrics, settingOverrides = {} } = {}) {
     lyricBlur: true, lyricBlurAmount: 1, lyricFontScale: 1, lyricEmphasisThresholdMs: 1000,
     ...settingOverrides,
   })
+  const clipboardWrites = []
+  const menu = {}
   const dependencies = {
     vue,
     '@amll-core/lyric-player/dom/index.ts': { DomLyricPlayer: FakeDomLyricPlayer },
     '@/stores/settings': { useSettingsStore: () => settings },
     'vue-i18n': { useI18n: () => ({ t: key => key }) },
-    '@tauri-apps/plugin-clipboard-manager': { writeText: async () => {} },
-    '@/components/ui/ContextMenu.vue': { default: { inheritAttrs: false, setup: () => () => null } },
+    '@tauri-apps/plugin-clipboard-manager': { writeText: async text => { clipboardWrites.push(text) } },
+    '@/components/ui/ContextMenu.vue': { default: {
+      props: ['open', 'x', 'y', 'items'], emits: ['click', 'update:open'], inheritAttrs: false,
+      setup(props, { emit }) {
+        menu.props = props
+        menu.click = item => emit('click', item)
+        menu.close = () => emit('update:open', false)
+        return () => null
+      },
+    } },
     '@/utils/contextMenu': { createContextMenuItem: (label, options) => ({ label, ...options }) },
   }
   const component = new Function(
@@ -135,6 +148,7 @@ async function mount({ lyrics = richLyrics, settingOverrides = {} } = {}) {
   }
   const findButton = setting => find(node => node.type === 'button' && node.props['aria-label'] === `settings.${setting}`) ?? null
   const findControls = () => find(node => node.props?.role === 'group' && node.props['aria-label'] === 'settings.lyrics') ?? null
+  const host = find(node => typeof node.props?.class === 'string' && node.props.class.split(' ').includes('lyrics-scroll'))
   const button = setting => {
     const node = findButton(setting)
     assert.ok(node, `missing lyrics display button: settings.${setting}`)
@@ -142,6 +156,41 @@ async function mount({ lyrics = richLyrics, settingOverrides = {} } = {}) {
   }
   return {
     settings, player, props, clock, seekEvents, settle, button, findButton, findControls,
+    host, menu, clipboardWrites,
+    async controlsContextMenu() {
+      const controls = findControls()
+      assert.ok(controls, 'available controls must exist before hiding')
+      assert.equal(typeof controls.props.onContextmenu, 'function', 'controls must handle their own right click')
+      const event = contextMenuEvent()
+      controls.props.onContextmenu(event)
+      await settle()
+      assert.ok(event.prevented, 'the controls context menu must prevent the native menu')
+      assert.ok(event.stopped, 'the controls context menu must not reach the lyric menu handler')
+      return event
+    },
+    async hideControls() {
+      await this.controlsContextMenu()
+      await this.selectMenu('hide-display-controls')
+    },
+    async lineContextMenu(overrides = {}) {
+      const event = contextMenuEvent({ type: 'line-contextmenu', lineIndex: 0, ...overrides })
+      player.dispatch('line-contextmenu', event)
+      await settle()
+      return event
+    },
+    async hostContextMenu() {
+      const event = contextMenuEvent()
+      host.props.onContextmenu(event)
+      await settle()
+      return event
+    },
+    async selectMenu(id) {
+      const item = menu.props.items.find(item => item.id === id)
+      assert.ok(item, `missing lyric menu action: ${id}`)
+      menu.click(item)
+      await settle()
+    },
+    async dismissMenu() { menu.close(); await settle() },
     async click(setting) {
       const node = button(setting)
       assert.ok(!node.props.disabled, 'display preferences must remain available')
@@ -175,6 +224,34 @@ function assertAuxiliaryLyrics(player, translation, romanization, romanWords) {
   assert.equal(player.lines[0].translatedLyric, translation)
   assert.equal(player.lines[0].romanLyric, romanization)
   assert.deepEqual(player.lines[0].words.map(word => word.romanWord ?? ''), romanWords)
+}
+
+function contextMenuEvent(overrides = {}) {
+  return {
+    type: 'contextmenu', clientX: 240, clientY: 320, prevented: false, stopped: false,
+    preventDefault() { this.prevented = true },
+    stopPropagation() { this.stopped = true },
+    ...overrides,
+  }
+}
+
+const hideControlsItem = { id: 'hide-display-controls', label: 'lyrics.hide_display_controls' }
+const showControlsItem = { id: 'show-display-controls', label: 'lyrics.show_display_controls' }
+
+function assertMenu(menu, x, y, items) {
+  assert.equal(menu.props.open, true)
+  assert.equal(menu.props.x, x)
+  assert.equal(menu.props.y, y)
+  assert.deepEqual(menu.props.items.map(({ id, label }) => ({ id, label })), items)
+}
+
+function assertLyricMenu(menu, x, y, displayItem = null) {
+  assertMenu(menu, x, y, [
+    { id: 'copy-line', label: 'lyrics.copy_line' },
+    { id: 'copy-all', label: 'lyrics.copy_all' },
+    { id: 'seek', label: 'lyrics.seek_here' },
+    ...(displayItem ? [displayItem] : []),
+  ])
 }
 
 let total = 0, failed = 0
@@ -293,6 +370,134 @@ await test('display controls respond when auxiliary source lyrics arrive and dis
     r.assertAvailable(false, true)
     assert.equal(String(r.button('show_romanization').props['aria-pressed']), 'true')
     assertAuxiliaryLyrics(r.player, '', '', ['', 'ci'])
+    r.assertPlaybackUnchanged()
+  } finally { r.stop() }
+})
+
+await test('right clicking display controls opens a hide menu and changes visibility only when its action is selected', async () => {
+  const r = await mount({ settingOverrides: { showTranslation: true } })
+  try {
+    const settingsBefore = { ...r.settings }
+    await r.controlsContextMenu()
+    assertMenu(r.menu, 240, 320, [hideControlsItem])
+    r.assertAvailable(true, true)
+    r.assertPressed(true, false)
+    assert.deepEqual({ ...r.settings }, settingsBefore)
+    assertAuxiliaryLyrics(r.player, 'Translated lyric', '', ['', ''])
+    r.assertPlaybackUnchanged()
+    await r.dismissMenu()
+    assert.equal(r.menu.props.open, false)
+    r.assertAvailable(true, true)
+    await r.controlsContextMenu()
+    await r.selectMenu('hide-display-controls')
+    assert.equal(r.menu.props.open, false)
+    r.assertAvailable(false, false)
+    r.host.dispatch('pointerdown', { type: 'pointerdown' })
+    r.host.dispatch('keydown', { type: 'keydown', key: 'Tab' })
+    r.props.lyrics = [...richLyrics]
+    await r.settle()
+    r.assertAvailable(false, false)
+    assert.deepEqual({ ...r.settings }, settingsBefore)
+    r.assertPlaybackUnchanged()
+  } finally { r.stop() }
+})
+
+await test('lyric line menus show a visibility action while retaining copy and seek actions', async () => {
+  const r = await mount({ lyrics: [richLyrics[0], {
+    startMs: 6000, durationMs: 10000, text: 'Another lyric', words: [],
+  }] })
+  try {
+    await r.hideControls()
+    const opened = await r.lineContextMenu({ lineIndex: 1, clientX: 350, clientY: 375 })
+    assert.ok(opened.prevented)
+    assert.ok(opened.stopped)
+    assertLyricMenu(r.menu, 350, 375, showControlsItem)
+    r.assertAvailable(false, false)
+    assert.deepEqual(r.clipboardWrites, [])
+    r.assertPlaybackUnchanged()
+    await r.selectMenu('copy-line')
+    assert.deepEqual(r.clipboardWrites, ['Another lyric'])
+    assert.equal(r.menu.props.open, false)
+    r.assertAvailable(false, false)
+    await r.lineContextMenu({ lineIndex: 1 })
+    await r.selectMenu('copy-all')
+    assert.deepEqual(r.clipboardWrites, ['Another lyric', '歌词\nAnother lyric'])
+    assert.equal(r.menu.props.open, false)
+    r.assertAvailable(false, false)
+    await r.lineContextMenu({ lineIndex: 1 })
+    await r.selectMenu('seek')
+    assert.deepEqual(r.seekEvents, [6000])
+    assert.equal(r.menu.props.open, false)
+    r.assertAvailable(false, false)
+    assert.equal(r.clock.value, 4200)
+    await r.lineContextMenu({ lineIndex: 1 })
+    assertLyricMenu(r.menu, 240, 320, showControlsItem)
+    await r.selectMenu('show-display-controls')
+    r.assertAvailable(true, true)
+    r.assertPressed(false, false)
+    assert.equal(r.menu.props.open, false)
+    assert.deepEqual(r.seekEvents, [6000])
+    await r.lineContextMenu({ lineIndex: 1 })
+    assertLyricMenu(r.menu, 240, 320, hideControlsItem)
+    r.assertAvailable(true, true)
+    await r.selectMenu('hide-display-controls')
+    r.assertAvailable(false, false)
+    assert.equal(r.menu.props.open, false)
+    assert.deepEqual([r.settings.showTranslation, r.settings.showRomanization], [false, false])
+  } finally { r.stop() }
+})
+
+await test('host context menus restore hidden controls only when the show action is selected', async () => {
+  const r = await mount()
+  try {
+    await r.hideControls()
+    const opened = await r.hostContextMenu()
+    assert.ok(opened.prevented)
+    assertMenu(r.menu, 240, 320, [showControlsItem])
+    r.assertAvailable(false, false)
+    r.assertPlaybackUnchanged()
+    await r.dismissMenu()
+    assert.equal(r.menu.props.open, false)
+    r.assertAvailable(false, false)
+    await r.hostContextMenu()
+    await r.selectMenu('show-display-controls')
+    r.assertAvailable(true, true)
+    assert.equal(r.menu.props.open, false)
+    r.player.currentLyricGroups = [{ element: {
+      isConnected: true, getBoundingClientRect: () => ({ top: 300, height: 40 }),
+    } }]
+    await r.hostContextMenu()
+    assertLyricMenu(r.menu, 240, 320, hideControlsItem)
+    r.assertAvailable(true, true)
+    await r.selectMenu('hide-display-controls')
+    r.assertAvailable(false, false)
+    await r.hostContextMenu()
+    assertLyricMenu(r.menu, 240, 320, showControlsItem)
+    await r.selectMenu('copy-line')
+    assert.deepEqual(r.clipboardWrites, ['歌词'])
+    assert.equal(r.menu.props.open, false)
+    r.assertAvailable(false, false)
+    await r.hostContextMenu()
+    await r.selectMenu('show-display-controls')
+    r.assertAvailable(true, true)
+    assert.equal(r.menu.props.open, false)
+    r.assertPlaybackUnchanged()
+  } finally { r.stop() }
+})
+
+await test('lyrics without auxiliary tracks keep copy and seek menu actions without a controls visibility action', async () => {
+  const r = await mount({ lyrics: [plainLine] })
+  try {
+    await r.lineContextMenu()
+    assertLyricMenu(r.menu, 240, 320)
+    r.assertAvailable(false, false)
+    await r.dismissMenu()
+    r.player.currentLyricGroups = [{ element: {
+      isConnected: true, getBoundingClientRect: () => ({ top: 300, height: 40 }),
+    } }]
+    await r.hostContextMenu()
+    assertLyricMenu(r.menu, 240, 320)
+    r.assertAvailable(false, false)
     r.assertPlaybackUnchanged()
   } finally { r.stop() }
 })
