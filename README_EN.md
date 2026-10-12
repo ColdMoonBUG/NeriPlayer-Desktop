@@ -157,7 +157,9 @@ Clearing the app cache does not delete audio you downloaded. Cloud sync does not
 
 Now Playing uses [applemusic-like-lyrics](https://github.com/amll-dev/applemusic-like-lyrics) for character/word highlighting, translation, romanization, blur and font-size adjustment, alongside a cover-colored WebGL fluid background, audio response or a blurred-cover background.
 
-Hover over the lyrics to reveal translation and romanization toggles at the bottom left. Each toggle appears only when its content is available; romanization includes both line and word annotations. Each can be enabled independently or together, sharing the display preferences in Settings → Lyrics. The controls also appear on keyboard focus and stay visible on touch devices.
+Settings → Appearance provides separate interface and Now Playing lyrics fonts, with common presets, custom installed font names and live previews. Defaults retain the original fonts, and the interface font does not affect lyrics. MiSans and Inter are bundled; other fonts require system installation and fall back to the default when unavailable. Desktop lyrics retain their independent font setting.
+
+Hover over the lyrics to reveal translation and romanization toggles at the bottom center. Each toggle appears only when its content is available; romanization includes both line and word annotations. Each can be enabled independently or together, sharing the display preferences in Settings → Lyrics. The controls also appear on keyboard focus and stay visible on touch devices. Right-click the controls and select the hide action. Right-click any lyric line to show or hide the controls from the existing copy and seek menu; dismissing the menu leaves their visibility unchanged.
 
 Settings → Lyrics → Long Note Animation Threshold allows values from 300 to 2000ms, with a default of 700ms. Lower values trigger the effect more often; advanced word animations must be enabled.
 
@@ -165,7 +167,7 @@ Automatic retrieval combines local lyrics, platform track IDs, caches and multi-
 
 When Kugou lyrics lack translation or romanization, background completion tries NetEase first, then QQ Music if translation is still missing. Only high-confidence results matching the title, artist and duration are used. Completion preserves Kugou's original lyrics, word timings and offset, updates the cache, and respects secondary tracks the user has confirmed or cleared.
 
-Lyric displays filter explicit Chinese and English production, instrument, distribution and promotion credits, including MIDI programming, backing vocals and multi-word English roles. Ambiguous short labels and ordinary lyric sentences are kept, along with their word timings, translations and romanization. Display filtering does not rewrite local files or existing stored lyrics.
+Lyric displays filter explicit Chinese and English production, instrument, distribution and promotion credits, including MIDI programming, backing vocals, multi-word English roles and `by:` uploader credits. Delimited title-and-artist lines at the start or end are also filtered against the current track, including cached, local and synced lyrics. Ambiguous short labels and ordinary lyric sentences are kept, along with their word timings, translations and romanization. Display filtering does not rewrite local files or existing stored lyrics.
 
 Offsets can be set per source or per track. Check the track version and duration when manually matching, editing or importing lyrics; live performances, covers and edited versions may need a new match.
 
