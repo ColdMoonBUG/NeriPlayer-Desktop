@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, watch, type Ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { createLogger } from '@/utils/logger'
-import { normalizeDesktopLyricsStyle, type DesktopLyricsStyle } from '@/modules/desktopLyrics/style'
+import { normalizeDesktopLyricsStyle, sanitizeFontFamily, type DesktopLyricsStyle } from '@/modules/desktopLyrics/style'
 import { normalizeShortcutBindings, type ShortcutBindings } from '@/modules/shortcuts/bindings'
 
 const log = createLogger('settings')
@@ -25,6 +25,8 @@ export interface AppSettings {
   formatVersion: number
   darkMode: ThemeMode
   themeColor: string
+  appFontFamily: string
+  lyricFontFamily: string
   locale: string
   defaultScreen: string
   /** 关闭主窗口时收进托盘继续播放；关掉后关闭即退出 */
@@ -173,6 +175,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   formatVersion: SETTINGS_FORMAT_VERSION,
   darkMode: 'dark',
   themeColor: 'purple',
+  appFontFamily: '',
+  lyricFontFamily: '',
   locale: detectLocale(),
   defaultScreen: 'home',
   closeToTray: true,
@@ -272,6 +276,8 @@ const DEFAULT_SETTINGS: AppSettings = {
 const LEGACY_KEYS: Partial<Record<SettingKey, string>> = {
   darkMode: 'dark_mode',
   themeColor: 'theme_color',
+  appFontFamily: 'app_font_family',
+  lyricFontFamily: 'lyric_font_family',
   defaultScreen: 'default_screen',
   showCoverBadge: 'cover_badge',
   showNowPlayingTitle: 'np_title',
@@ -426,6 +432,8 @@ function normalizeSnapshot(input: unknown): AppSettings {
   }
 
   if (!['system', 'dark', 'light'].includes(result.darkMode)) result.darkMode = DEFAULT_SETTINGS.darkMode
+  result.appFontFamily = sanitizeFontFamily(result.appFontFamily)
+  result.lyricFontFamily = sanitizeFontFamily(result.lyricFontFamily)
   if (!['disc', 'card'].includes(result.coverStyle)) result.coverStyle = DEFAULT_SETTINGS.coverStyle
   // 旧版只有「封面动态取色」开关
   const legacyDynamicColor = (source as { dynamicColor?: unknown }).dynamicColor
@@ -567,6 +575,8 @@ export const useSettingsStore = defineStore('settings', () => {
   const initial = normalizeSnapshot(readLegacySnapshot())
   const darkMode = ref<ThemeMode>(initial.darkMode)
   const themeColor = ref(initial.themeColor)
+  const appFontFamily = ref(initial.appFontFamily)
+  const lyricFontFamily = ref(initial.lyricFontFamily)
   const locale = ref(initial.locale)
   const defaultScreen = ref(initial.defaultScreen)
   const closeToTray = ref(initial.closeToTray)
@@ -663,7 +673,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const globalShortcutsEnabled = ref(initial.globalShortcutsEnabled)
 
   const settingRefs: SettingRefs = {
-    darkMode, themeColor, locale, defaultScreen, closeToTray, showCoverBadge,
+    darkMode, themeColor, appFontFamily, lyricFontFamily, locale, defaultScreen, closeToTray, showCoverBadge,
     showNowPlayingTitle, showToolbarDock, showQualitySwitch, showAudioCodec,
     showAudioSpec, lyricFontScale, crossfade, normalizeVolume, multichannelDrc, volumeBalance, fadeIn,
     showAudioBitrate, showAudioFormat, showAudioChannels, showAudioSampleRate, showAudioBitDepth,
@@ -760,7 +770,7 @@ export const useSettingsStore = defineStore('settings', () => {
 
   return {
     isHydrated, hydrate, snapshot, applySnapshot,
-    darkMode, themeColor, locale, coverStyle,
+    darkMode, themeColor, appFontFamily, lyricFontFamily, locale, coverStyle,
     defaultScreen, closeToTray, showCoverBadge, showNowPlayingTitle, showToolbarDock,
     showQualitySwitch, showAudioCodec, showAudioSpec, lyricFontScale,
     showAudioBitrate, showAudioFormat, showAudioChannels, showAudioSampleRate, showAudioBitDepth,

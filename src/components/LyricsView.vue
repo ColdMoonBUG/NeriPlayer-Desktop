@@ -520,7 +520,7 @@ function syncPlayerElementSize(): boolean {
   return width > 0 && height > 0
 }
 
-function syncMountedGroupSizes(): boolean {
+function syncMountedGroupSizes(refreshMasks = false): boolean {
   if (!lyricPlayer) return false
   let changed = false
 
@@ -534,6 +534,7 @@ function syncMountedGroupSizes(): boolean {
 
     const previous = lyricPlayer.lyricGroupSize.get(group)
     if (
+      refreshMasks ||
       !previous ||
       Math.abs(previous[0] - width) > SIZE_EPSILON ||
       Math.abs(previous[1] - height) > SIZE_EPSILON
@@ -548,16 +549,16 @@ function syncMountedGroupSizes(): boolean {
   return changed
 }
 
-function forceLayoutAtCurrentTime(): boolean {
+function forceLayoutAtCurrentTime(refreshMasks = false): boolean {
   if (!lyricPlayer) return false
   const hasPlayerSize = syncPlayerElementSize()
   const time = Math.max(0, Math.round(amllTimeMs.value))
 
   lyricPlayer.setCurrentTime(time, true)
-  const changedBeforeLayout = syncMountedGroupSizes()
+  const changedBeforeLayout = syncMountedGroupSizes(refreshMasks)
   void lyricPlayer.calcLayout(true, true)
   lyricPlayer.update(0)
-  const changedAfterLayout = syncMountedGroupSizes()
+  const changedAfterLayout = syncMountedGroupSizes(refreshMasks)
 
   if (changedBeforeLayout || changedAfterLayout) {
     void lyricPlayer.calcLayout(true, true)
@@ -587,12 +588,16 @@ function scheduleFontReadyLayout(token: number): void {
 
   void fonts.ready.then(() => {
     if (!lyricPlayer || token !== layoutSyncToken) return
-    scheduleLayoutSync()
+    scheduleLayoutSync(false, true)
   })
 }
 
+function onFontsLoaded(): void {
+  // 首次使用的字体可能在下一帧排版后才开始加载
+  scheduleLayoutSync(false, true)
+}
 /// hide：新歌词首次排版时先隐藏，避免行从屏幕外飞入；缩放、字号等重排保持可见
-function scheduleLayoutSync(hide = false): void {
+function scheduleLayoutSync(hide = false, refreshMasks = false): void {
   if (!lyricPlayer) return
   if (layoutFrameId) cancelAnimationFrame(layoutFrameId)
 
@@ -608,7 +613,7 @@ function scheduleLayoutSync(hide = false): void {
       if (!lyricPlayer || token !== layoutSyncToken) return
 
       pass += 1
-      const hasPlayerSize = forceLayoutAtCurrentTime()
+      const hasPlayerSize = forceLayoutAtCurrentTime(refreshMasks && pass === 1)
       const needsMorePasses =
         pass < LAYOUT_SETTLE_PASSES ||
         (!hasPlayerSize && pass < LAYOUT_SETTLE_MAX_PASSES)
@@ -669,6 +674,7 @@ onMounted(() => {
       wakeTarget.addEventListener(type, wakeFrameLoop, { passive: true })
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
+    document.fonts?.addEventListener?.('loadingdone', onFontsLoaded)
     window.addEventListener('focus', syncForeground)
 
     startResizeObserver()
@@ -678,6 +684,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   document.removeEventListener('visibilitychange', onVisibilityChange)
+  document.fonts?.removeEventListener?.('loadingdone', onFontsLoaded)
   window.removeEventListener('focus', syncForeground)
   stopFrameLoop()
   cancelLayoutSync()
@@ -715,9 +722,9 @@ watch([() => settings.lyricBlur, () => settings.lyricBlurAmount], () => {
   syncLyricOptions()
 })
 
-watch(() => settings.lyricFontScale, () => {
-  scheduleLayoutSync()
-})
+watch([() => settings.lyricFontScale, () => settings.lyricFontFamily], () => {
+  scheduleLayoutSync(false, true)
+}, { flush: 'post' })
 
 watch(() => props.isPlaying, () => {
   syncPlayState()
@@ -935,6 +942,7 @@ watch(() => props.seekSeq, (seq, oldSeq) => {
 
 :deep(.amll-lyric-player) {
   text-align: left;
+  font-family: var(--lyric-font-family, var(--font-family-default));
   font-weight: 850;
   font-variation-settings: 'wght' 850;
   -webkit-font-smoothing: antialiased;

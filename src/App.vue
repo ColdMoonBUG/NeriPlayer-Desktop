@@ -16,6 +16,7 @@ import { syncFrequencyDelayMs, useSyncStore } from '@/stores/sync'
 import { useAuthStore } from '@/stores/auth'
 import { useRecommendStore } from '@/stores/recommend'
 import { useSettingsStore } from '@/stores/settings'
+import { applyFontSettings } from '@/modules/settings/fonts'
 import { HISTORY_CHANGED_EVENT } from '@/stores/history'
 import { useLikedSongsStore } from '@/stores/likedSongs'
 import { useDownloadStore } from '@/stores/download'
@@ -52,6 +53,11 @@ document.documentElement.classList.add(`platform-${detectPlatform()}`)
 const appLog = createLogger('app')
 const player = usePlayerStore()
 const settingsStore = useSettingsStore()
+watch(
+  () => [settingsStore.appFontFamily, settingsStore.lyricFontFamily] as const,
+  ([appFontFamily, lyricFontFamily]) => applyFontSettings(appFontFamily, lyricFontFamily),
+  { immediate: true },
+)
 const likedSongs = useLikedSongsStore()
 const route = useRoute()
 const router = useRouter()

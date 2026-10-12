@@ -61,9 +61,11 @@
      Windows/Linux 默认 36px；macOS 由 .platform-mac 提升为 52px（IDEA 风格） */
   --titlebar-height: 36px;
 
-  --font-family: 'MiSans', 'Inter', -apple-system, BlinkMacSystemFont,
+  --font-family-default: 'MiSans', 'Inter', -apple-system, BlinkMacSystemFont,
     'Segoe UI Variable', 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
     'Microsoft YaHei UI', 'Noto Sans CJK SC', 'Noto Sans', system-ui, sans-serif;
+  --font-family: var(--font-family-default);
+  --lyric-font-family: var(--font-family-default);
   /* 艺术字体（SIL OFL，随包本地加载）：只覆盖拉丁字符，中文自动回落到 MiSans */
   --font-display: 'Fraunces Variable', var(--font-family);
   --font-mono: 'Geist Mono Variable', 'Cascadia Mono', Consolas, var(--font-family);

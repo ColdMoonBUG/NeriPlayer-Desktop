@@ -18,6 +18,8 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
   { section: 'general', title: 'settings.explore_search_history', desc: 'settings.explore_search_history_desc' },
   { section: 'appearance', title: 'settings.dark_mode' },
   { section: 'appearance', title: 'settings.theme_color' },
+  { section: 'appearance', title: 'settings.app_font', desc: 'settings.app_font_desc', keywords: ['字体', '界面字体', 'font', 'typeface', 'family'] },
+  { section: 'appearance', title: 'settings.lyric_font', desc: 'settings.lyric_font_desc', keywords: ['歌词字体', 'font', 'lyrics', 'typeface', 'family'] },
   { section: 'appearance', title: 'settings.color_mode' },
   { section: 'now_playing', title: 'settings.cover_style' },
   { section: 'now_playing', title: 'settings.cover_badge', desc: 'settings.cover_badge_desc' },

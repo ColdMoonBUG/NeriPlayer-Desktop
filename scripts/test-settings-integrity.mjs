@@ -94,6 +94,72 @@ const RUST_INTEGER_KEYS = [...rustStruct.matchAll(/pub (\w+): (?:i32|u32),/g)]
   .map(match => camel(match[1]))
   .filter(key => key !== 'formatVersion')
 
+await regression('old settings keep the default app and lyric fonts', store => {
+  store.applySnapshot({ showTranslation: false })
+  assert.equal(store.appFontFamily, '')
+  assert.equal(store.lyricFontFamily, '')
+  assert.equal(store.snapshot().appFontFamily, '')
+  assert.equal(store.snapshot().lyricFontFamily, '')
+})
+
+await regression('font preferences remove CSS syntax and bound Unicode family names', store => {
+  for (const [value, expected] of [
+    ['  Noto  Sans SC  ', 'Noto Sans SC'],
+    ['思源黑体.1-_ Regular', '思源黑体.1-_ Regular'],
+    ['A"; color:red/*x*/', 'A colorredx'],
+    ['Noto\tSans\nSC', 'NotoSansSC'],
+    ['x'.repeat(80), 'x'.repeat(64)],
+    ['𠮷'.repeat(80), '𠮷'.repeat(64)],
+    [42, ''], [null, ''], [undefined, ''],
+  ]) {
+    store.applySnapshot({ appFontFamily: value, lyricFontFamily: value })
+    assert.equal(store.appFontFamily, expected, String(value))
+    assert.equal(store.lyricFontFamily, expected, String(value))
+    assert.equal(store.snapshot().appFontFamily, expected, String(value))
+    assert.equal(store.snapshot().lyricFontFamily, expected, String(value))
+  }
+})
+
+await regression('app and lyric fonts survive IPC persistence and browser reload', async store => {
+  loadResult = { settings: { appFontFamily: 'Noto Sans SC', lyricFontFamily: '思源宋体' }, persisted: true }
+  await store.hydrate()
+  assert.equal(store.appFontFamily, 'Noto Sans SC')
+  assert.equal(store.lyricFontFamily, '思源宋体')
+  store.appFontFamily = '  MiSans  '
+  store.lyricFontFamily = '  Noto  Serif SC  '
+  await flushPersist()
+  assert.equal(saved.at(-1).appFontFamily, 'MiSans')
+  assert.equal(saved.at(-1).lyricFontFamily, 'Noto Serif SC')
+  assert.equal(JSON.parse(storage.get('neri:app_font_family')), 'MiSans')
+  assert.equal(JSON.parse(storage.get('neri:lyric_font_family')), 'Noto Serif SC')
+  loadResult = { settings: {}, persisted: false }
+  const reloadedInstance = pinia.createPinia()
+  pinia.setActivePinia(reloadedInstance)
+  try {
+    const reloaded = settingsModule.useSettingsStore()
+    await reloaded.hydrate()
+    assert.equal(reloaded.appFontFamily, 'MiSans')
+    assert.equal(reloaded.lyricFontFamily, 'Noto Serif SC')
+  } finally {
+    pinia.disposePinia(reloadedInstance)
+  }
+})
+
+await regression('font preferences survive exported JSON snapshots and config replacement', store => {
+  store.applySnapshot({ appFontFamily: '思源黑体', lyricFontFamily: 'Noto Serif SC', lyricFontScale: 1.25 })
+  const exported = JSON.parse(JSON.stringify({ settings: store.snapshot() }))
+  assert.equal(exported.settings.appFontFamily, '思源黑体')
+  assert.equal(exported.settings.lyricFontFamily, 'Noto Serif SC')
+  store.applySnapshot({ appFontFamily: 'MiSans', lyricFontFamily: 'Caveat' })
+  store.applySnapshot(exported.settings)
+  assert.equal(store.appFontFamily, '思源黑体')
+  assert.equal(store.lyricFontFamily, 'Noto Serif SC')
+  assert.equal(store.lyricFontScale, 1.25)
+  store.applySnapshot({ lyricFontScale: 1 })
+  assert.equal(store.appFontFamily, '')
+  assert.equal(store.lyricFontFamily, '')
+})
+
 await regression('old settings receive the easier long-note threshold', store => {
   store.applySnapshot({ showTranslation: false })
   assert.equal(store.lyricEmphasisThresholdMs, 700)

@@ -148,7 +148,8 @@ function colorPair(value: unknown, fallback: readonly [string, string]): [string
 /** 字体名只留字母、数字、空格和 -_.，防止拼进 CSS 时注入其它声明 */
 export function sanitizeFontFamily(value: unknown): string {
   if (typeof value !== 'string') return ''
-  return value.replace(/[^\p{L}\p{N} ._-]/gu, '').replace(/\s+/g, ' ').trim().slice(0, 64)
+  const family = value.replace(/[^\p{L}\p{N} ._-]/gu, '').replace(/\s+/g, ' ').trim()
+  return Array.from(family).slice(0, 64).join('')
 }
 
 function bounds(value: unknown): DesktopLyricsBounds | null {

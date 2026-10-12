@@ -80,6 +80,7 @@ import {
 import { applyTheme, switchThemeWithRipple, type ThemeMode } from '@/utils/theme'
 import { THEME_COLORS, getSwatchColor, applyThemeColor, getSavedThemeColor, switchThemeColorWithRipple } from '@/utils/themeColor'
 import ShortcutSettings from '@/components/settings/ShortcutSettings.vue'
+import FontFamilyControl from '@/components/settings/FontFamilyControl.vue'
 import { SETTINGS_SEARCH_INDEX } from '@/modules/settings/searchIndex'
 import { isMacPlatform } from '@/modules/shortcuts/platform'
 import { filterAndRank, searchValue } from '@/modules/search/textMatcher'
@@ -98,7 +99,7 @@ const player = usePlayerStore()
 const lt = useListenTogetherStore()
 const toast = useToastStore()
 const {
-  darkMode, themeColor: selectedColor, coverStyle,
+  darkMode, themeColor: selectedColor, coverStyle, appFontFamily, lyricFontFamily,
   defaultScreen, closeToTray, showMenuBarLyrics, showCoverBadge, showNowPlayingTitle, showToolbarDock,
   showQualitySwitch, lyricFontScale,
   normalizeVolume, multichannelDrc, volumeBalance, audioOutputDevice,
@@ -1631,6 +1632,28 @@ useEscapeClose(
           </button>
         </div>
       </div>
+    </div>
+
+    <div class="setting-card font-setting-card">
+      <div class="font-setting-heading">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">font_download</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.app_font') }}</div>
+          <div class="setting-desc">{{ t('settings.app_font_desc') }}</div>
+        </div>
+      </div>
+      <FontFamilyControl v-model="appFontFamily" :label="t('settings.app_font')" :preview-text="t('settings.font_preview')" />
+    </div>
+
+    <div class="setting-card font-setting-card">
+      <div class="font-setting-heading">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">lyrics</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.lyric_font') }}</div>
+          <div class="setting-desc">{{ t('settings.lyric_font_desc') }}</div>
+        </div>
+      </div>
+      <FontFamilyControl v-model="lyricFontFamily" :label="t('settings.lyric_font')" :preview-text="t('settings.font_preview')" :preview-weight="850" />
     </div>
 
     <!-- 取色方式 -->
@@ -4032,6 +4055,16 @@ useEscapeClose(
 }
 
 .setting-info { flex: 1; min-width: 0; }
+.font-setting-card {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 14px;
+}
+.font-setting-heading {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
 .setting-title { font-size: 14px; font-weight: 500; }
 .setting-desc { font-size: 12px; color: var(--md-on-surface-variant); margin-top: 2px; }
 

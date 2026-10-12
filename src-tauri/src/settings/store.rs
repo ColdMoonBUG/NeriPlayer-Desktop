@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 
@@ -15,6 +16,7 @@ pub const MAX_MEDIA_CACHE_SIZE_MB: i32 = 512 * 1024;
 
 const SETTINGS_STORE_KEY: &str = "appSettings";
 const EQUALIZER_BAND_COUNT: usize = 5;
+const MAX_FONT_FAMILY_CHARS: usize = 64;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,6 +31,8 @@ pub struct AppSettings {
     pub format_version: u32,
     pub dark_mode: String,
     pub theme_color: String,
+    pub app_font_family: String,
+    pub lyric_font_family: String,
     pub locale: String,
     pub default_screen: String,
     /// 关闭主窗口时收进托盘继续播放；关掉后关闭即退出
@@ -198,6 +202,8 @@ impl Default for AppSettings {
             format_version: SETTINGS_FORMAT_VERSION,
             dark_mode: "dark".into(),
             theme_color: "purple".into(),
+            app_font_family: String::new(),
+            lyric_font_family: String::new(),
             locale: "zh-CN".into(),
             default_screen: "home".into(),
             close_to_tray: true,
@@ -306,6 +312,8 @@ impl AppSettings {
             "dark",
         );
         self.theme_color = normalize_theme_color(&self.theme_color);
+        self.app_font_family = normalize_font_family(&self.app_font_family);
+        self.lyric_font_family = normalize_font_family(&self.lyric_font_family);
         self.locale = normalize_choice(
             &self.locale,
             &["zh-CN", "zh-TW", "en", "ja"],
@@ -589,6 +597,21 @@ fn clamp_f32(value: f32, min: f32, max: f32, fallback: f32) -> f32 {
     }
 }
 
+fn normalize_font_family(value: &str) -> String {
+    static INVALID_CHARACTERS: OnceLock<regex::Regex> = OnceLock::new();
+    let invalid = INVALID_CHARACTERS.get_or_init(|| {
+        regex::Regex::new(r"[^\p{L}\p{N} ._-]").expect("valid font family character pattern")
+    });
+    invalid
+        .replace_all(value, "")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(MAX_FONT_FAMILY_CHARS)
+        .collect()
+}
+
 fn normalize_choice(value: &str, allowed: &[&str], fallback: &str) -> String {
     let normalized = value.trim();
     if allowed.contains(&normalized) {
@@ -812,6 +835,60 @@ mod tests {
     }
 
     use super::{AppSettings, MAX_MEDIA_CACHE_SIZE_MB, MIN_MEDIA_CACHE_SIZE_MB};
+
+    #[test]
+    fn font_settings_default_for_old_snapshots() {
+        let old: AppSettings = serde_json::from_str("{}").expect("old settings");
+        let settings = serde_json::to_value(old.normalized()).expect("default settings");
+        assert_eq!(settings["appFontFamily"], "");
+        assert_eq!(settings["lyricFontFamily"], "");
+    }
+
+    #[test]
+    fn font_settings_sanitize_css_and_limit_unicode_characters() {
+        for (value, expected) in [
+            ("  Noto  Sans SC  ".to_string(), "Noto Sans SC".to_string()),
+            ("思源黑体.1-_ Regular".to_string(), "思源黑体.1-_ Regular".to_string()),
+            ("A\"; color:red/*x*/".to_string(), "A colorredx".to_string()),
+            ("Noto\tSans\nSC".to_string(), "NotoSansSC".to_string()),
+            ("x".repeat(80), "x".repeat(64)),
+            ("𠮷".repeat(80), "𠮷".repeat(64)),
+        ] {
+            let settings: AppSettings = serde_json::from_value(serde_json::json!({
+                "appFontFamily": value,
+                "lyricFontFamily": value,
+            })).expect("font settings");
+            let saved = serde_json::to_value(settings.normalized()).expect("saved font settings");
+            assert_eq!(saved["appFontFamily"], expected);
+            assert_eq!(saved["lyricFontFamily"], expected);
+            let restored: AppSettings = serde_json::from_value(saved).expect("restored font settings");
+            let restored = serde_json::to_value(restored.normalized()).expect("restored font JSON");
+            assert_eq!(restored["appFontFamily"], expected);
+            assert_eq!(restored["lyricFontFamily"], expected);
+        }
+    }
+
+    #[test]
+    fn font_settings_survive_config_import_and_export() {
+        #[derive(serde::Deserialize, serde::Serialize)]
+        struct Config {
+            #[serde(deserialize_with = "super::deserialize_app_settings")]
+            settings: AppSettings,
+        }
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "settings": {
+                "appFontFamily": "思源黑体",
+                "lyricFontFamily": "Noto Serif SC",
+                "lyricFontScale": 1.25,
+            }
+        })).expect("font config");
+        let exported = serde_json::to_value(config).expect("exported config");
+        assert_eq!(exported["settings"]["appFontFamily"], "思源黑体");
+        assert_eq!(exported["settings"]["lyricFontFamily"], "Noto Serif SC");
+        assert_eq!(exported["settings"]["lyricFontScale"], 1.25);
+        let imported: Config = serde_json::from_value(exported.clone()).expect("imported config");
+        assert_eq!(serde_json::to_value(imported).expect("imported JSON"), exported);
+    }
 
     #[test]
     fn lyric_emphasis_threshold_defaults_and_normalizes_for_config_round_trip() {
