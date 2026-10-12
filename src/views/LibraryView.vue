@@ -829,6 +829,15 @@ onUnmounted(() => {
         >
           <span class="material-symbols-rounded">bar_chart</span>
         </button>
+        <button
+          v-if="!isMultiSelectMode"
+          class="header-action"
+          :title="t('home.recent_play')"
+          :aria-label="t('home.recent_play')"
+          @click="router.push({ name: 'recent' })"
+        >
+          <span class="material-symbols-rounded">history</span>
+        </button>
         <button v-if="activeTab === 0 && localCategory === 'playlists' && !isMultiSelectMode" class="header-action" @click="enterMultiSelect()" :title="t('common.multi_select')">
           <span class="material-symbols-rounded">checklist</span>
         </button>
@@ -1462,23 +1471,30 @@ onUnmounted(() => {
     </div>
     <div v-else-if="activeTab === 6" key="tab-qq" class="playlist-list">
       <template v-if="qqPlaylists.length > 0 && cloudSignedIn('qq')">
-        <div class="platform-summary">
-          <span class="platform-icon-mask" style="mask-image: url('/icons/ic_qq_music.svg')"></span>
-          <div><div class="platform-title">{{ t('player.source_qq') }}</div><div class="platform-desc">{{ t('library.playlist_count', { count: qqPlaylists.length }) }}</div></div>
-          <button class="m3-chip sm" :disabled="cloudPlaylistStatus('qq')?.loading" @click="recommend.fetchUserPlaylists('qq')"><span class="material-symbols-rounded">refresh</span>{{ t('common.refresh') }}</button>
-          <CloudListState variant="banner" :status="cloudPlaylistStatus('qq')" @retry="recommend.fetchUserPlaylists('qq')" />
+        <div class="local-category-bar">
+          <button class="local-category-chip active"><span class="material-symbols-rounded" style="font-size: 17px">queue_music</span>{{ t('library.tab_netease_playlists_short') }}</button>
+          <button class="local-category-chip" :disabled="cloudPlaylistStatus('qq')?.loading" @click="recommend.fetchUserPlaylists('qq')"><span class="material-symbols-rounded" style="font-size: 17px">refresh</span>{{ t('common.refresh') }}</button>
+          <CloudListState class="platform-sync" variant="banner" :status="cloudPlaylistStatus('qq')" @retry="recommend.fetchUserPlaylists('qq')" />
         </div>
-        <div v-for="pl in filteredQqPlaylists" :key="'qq-' + pl.id" class="playlist-item" @click="router.push({ name: 'qq-playlist', params: { id: pl.id } })">
-          <div class="pl-icon"><img v-if="pl.coverUrl" :src="pl.coverUrl" class="pl-cover-img" referrerpolicy="no-referrer" loading="lazy" /><span v-else class="material-symbols-rounded">queue_music</span></div>
+        <TransitionGroup tag="div" name="lib-list" class="lib-list">
+        <div v-for="pl in filteredQqPlaylists" :key="'qq-' + pl.id" class="playlist-item" @click="router.push({ name: 'qq-playlist', params: { id: pl.id } })" @contextmenu="collectionMenuRef?.open($event, { route: { name: 'qq-playlist', params: { id: pl.id } }, webUrl: collectionWebUrl('qq', 'playlist', pl.id) })">
+          <div class="pl-icon" :class="{ 'has-cover': pl.coverUrl && !isLibraryCoverFailed('qq-playlist', pl.id, pl.coverUrl) }"><img v-if="pl.coverUrl && !isLibraryCoverFailed('qq-playlist', pl.id, pl.coverUrl)" :src="toDisplayableLibraryCoverUrl(pl.coverUrl)" class="pl-cover-img" referrerpolicy="no-referrer" loading="lazy" @error="markLibraryCoverFailed('qq-playlist', pl.id, pl.coverUrl)" /><span v-else class="material-symbols-rounded filled" style="font-size: 22px">library_music</span></div>
           <div class="pl-info"><div class="pl-name">{{ pl.name }}</div><div class="pl-count">{{ t('library.track_count', { count: pl.trackCount }) }}</div></div>
-          <span class="material-symbols-rounded">chevron_right</span>
+          <span class="material-symbols-rounded" style="font-size: 18px; opacity: 0.3">chevron_right</span>
         </div>
+        </TransitionGroup>
         <p v-if="!filteredQqPlaylists.length" class="empty-tab">{{ t('player.no_results') }}</p>
       </template>
       <CloudListState v-else-if="cloudSignedIn('qq')" variant="placeholder" :status="cloudPlaylistStatus('qq')" @retry="recommend.fetchUserPlaylists('qq')">
-        <p class="empty-title">{{ t('explore.no_playlists') }}</p>
+        <template #icon><div class="empty-circle platform-empty qq"><span class="platform-icon-mask" style="mask-image: url('/icons/ic_qq_music.svg')"></span></div></template>
+        <p class="empty-title">{{ t('player.source_qq') }}</p>
+        <p class="empty-desc">{{ t('explore.no_playlists') }}</p>
       </CloudListState>
-      <div v-else class="empty-tab"><p>{{ t('explore.login_for_playlists') }}</p></div>
+      <div v-else class="empty-tab">
+        <div class="empty-circle platform-empty qq"><span class="platform-icon-mask" style="mask-image: url('/icons/ic_qq_music.svg')"></span></div>
+        <p class="empty-title">{{ t('player.source_qq') }}</p>
+        <p class="empty-desc">{{ t('explore.login_for_playlists') }}</p>
+      </div>
     </div>
     </Transition>
 

@@ -393,5 +393,160 @@ await databaseRegression('sync results carry the merged resume position', async 
   assert.equal(args.history.entries[0].resumePositionMs, 1_234)
 })
 
+await databaseRegression('sync snapshots exclude local entries and tombstones but keep downloaded online tracks', async store => {
+  const downloaded = { ...track('netease:downloaded'), audioUrl: 'E:/Music/downloaded.flac' }
+  store.record(downloaded)
+  store.record(track('local:file', 'local'))
+  const legacyLocal = { ...track('legacy-file'), source: undefined }
+  store.record(legacyLocal)
+  now = 2_000
+  store.remove(legacyLocal.id)
+  store.record(track('local:deleted', 'local'))
+  store.remove('local:deleted')
+  store.record(track('netease:deleted'))
+  store.remove('netease:deleted')
+  const snapshot = store.getSyncSnapshot()
+  assert.deepEqual(snapshot.entries.map(entry => entry.track.id), ['netease:downloaded', 'netease:stored'])
+  assert.deepEqual(snapshot.deletions.map(entry => entry.track.id), ['netease:deleted'])
+  assert.ok(store.entries.some(entry => entry.track.id === 'local:file'), 'filtering a snapshot keeps local history')
+  assert.equal(store.deletions.length, 3, 'local tombstones remain in the local database')
+})
+
+await databaseRegression('sync restore preserves local positions and tombstones and ignores incoming local files', async store => {
+  const local = track('local:episode', 'local')
+  now = 2_000
+  store.updateResumePosition(local, 42_000)
+  now = 3_000
+  store.record(track('local:removed', 'local'))
+  store.remove('local:removed')
+  persisted.length = 0
+  assert.equal(await store.applySyncPayload({
+    entries: [
+      { track: track('netease:remote-new'), playedAt: 4_000 },
+      { track: track('netease:remote-old'), playedAt: 1_000 },
+      { track: { ...local, audioUrl: 'E:/OtherDevice/episode.flac' }, playedAt: 9_000, resumePositionMs: 1 },
+      { track: track('local:removed', 'local'), playedAt: 8_000 },
+      { track: { ...track('foreign-file'), source: undefined }, playedAt: 7_000 },
+    ],
+    deletions: [],
+  }), 'applied')
+  assert.deepEqual(store.entries.map(entry => [entry.track.id, entry.playedAt]), [
+    ['netease:remote-new', 4_000], ['local:episode', 2_000], ['netease:remote-old', 1_000],
+  ])
+  assert.equal(store.rememberedPosition(local), 42_000)
+  assert.deepEqual(store.deletions.map(entry => [entry.track.id, entry.deletedAt]), [['local:removed', 3_000]])
+  assert.equal(persisted.length, 1)
+  assert.equal(persisted[0][0], 'replace_play_history')
+  assert.deepEqual(persisted[0][1].history.entries.map(entry => entry.track.id), store.entries.map(entry => entry.track.id))
+  assert.deepEqual(persisted[0][1].history.deletions.map(entry => entry.track.id), ['local:removed'])
+  assert.equal(store.getSyncSnapshot().entries.length, 2)
+  assert.deepEqual(store.getSyncSnapshot().deletions, [])
+})
+
+await databaseRegression('remote tombstones cannot match a local file with the same numeric identity', async store => {
+  const local = { ...track('local:7', 'local'), album: 'shared album' }
+  const online = { ...track('netease:7'), album: 'shared album' }
+  now = 2_000
+  store.record(local)
+  await store.applySyncPayload({
+    entries: [{ track: online, playedAt: 1_500 }],
+    deletions: [{ songId: '7', album: 'shared album', deletedAt: 3_000 }],
+  })
+  assert.deepEqual(store.entries.map(entry => entry.track.id), ['local:7'])
+  assert.deepEqual(store.deletions.map(entry => entry.track.id), ['netease:7'])
+})
+
+await databaseRegression('clear keeps local tombstones without uploading or resurrecting local history', async store => {
+  const local = track('local:cleared', 'local')
+  now = 2_000
+  store.record(local)
+  now = 3_000
+  store.clear()
+  const snapshotEpoch = store.syncSnapshotEpoch()
+  const snapshot = store.getSyncSnapshot()
+  assert.deepEqual(snapshot.entries, [])
+  assert.deepEqual(snapshot.deletions.map(entry => entry.track.id), ['netease:stored'])
+  await store.applySyncPayload({
+    entries: [
+      { track: local, playedAt: 9_000 },
+      { track: track('netease:stored'), playedAt: 500 },
+    ],
+    deletions: [{ songId: 'stored', album: 'netease', deletedAt: 3_000 }],
+  }, () => true, snapshotEpoch)
+  assert.deepEqual(store.entries, [])
+  assert.deepEqual(store.deletions.map(entry => entry.track.id), ['netease:stored', 'local:cleared'])
+  const saved = persisted.at(-1)[1].history
+  assert.deepEqual(saved.entries, [])
+  assert.deepEqual(saved.deletions.map(entry => entry.track.id), ['netease:stored', 'local:cleared'])
+  now = 4_000
+  store.record(local)
+  await store.applySyncPayload({ entries: [], deletions: [] })
+  assert.deepEqual(store.entries.map(entry => entry.track.id), ['local:cleared'])
+  assert.deepEqual(store.deletions, [], 'a local replay removes its older tombstone')
+})
+
+await databaseRegression('sync merge sorts and deduplicates preserved local records and reconciles tombstone times', async store => {
+  const newer = track('local:newer', 'local')
+  const removed = track('local:removed', 'local')
+  store.entries = [
+    { track: newer, playedAt: 1_000, resumePositionMs: 1 },
+    { track: removed, playedAt: 2_000 },
+    { track: newer, playedAt: 4_000, resumePositionMs: 42 },
+  ]
+  store.deletions = [
+    { track: removed, deletedAt: 1_000 },
+    { track: newer, deletedAt: 3_000 },
+    { track: removed, deletedAt: 2_000 },
+  ]
+  await store.applySyncPayload({ entries: [{ track: track('netease:cloud'), playedAt: 3_500 }], deletions: [] })
+  assert.deepEqual(store.entries.map(entry => [entry.track.id, entry.playedAt]), [
+    ['local:newer', 4_000], ['netease:cloud', 3_500],
+  ])
+  assert.equal(store.rememberedPosition(newer), 42)
+  assert.deepEqual(store.deletions.map(entry => [entry.track.id, entry.deletedAt]), [['local:removed', 2_000]])
+})
+
+await databaseRegression('a newer remote replay removes an older tombstone and equal timestamps favor deletion', async store => {
+  now = 2_000
+  store.remove('netease:stored')
+  const deleted = { songId: 'stored', album: 'netease', deletedAt: 2_000 }
+  await store.applySyncPayload({
+    entries: [{ track: track('netease:stored'), playedAt: 3_000, resumePositionMs: 42 }],
+    deletions: [deleted],
+  })
+  assert.deepEqual(store.entries.map(entry => entry.track.id), ['netease:stored'])
+  assert.deepEqual(store.deletions, [])
+  assert.equal(store.rememberedPosition(track('netease:stored')), 42)
+  await store.applySyncPayload({
+    entries: [{ track: track('netease:stored'), playedAt: 2_000 }],
+    deletions: [deleted],
+  })
+  assert.deepEqual(store.entries, [])
+  assert.deepEqual(store.deletions.map(entry => entry.track.id), ['netease:stored'])
+})
+
+for (const mutation of ['record', 'remove', 'clear']) {
+  await regression(`local-file ${mutation} during sync matching defers the payload and preserves the edit`, async store => {
+    const local = track('local:pending', 'local')
+    now = 2_000
+    store.updateResumePosition(local, 42_000)
+    const waiting = delayDigest()
+    const pending = store.applySyncPayload(payload())
+    await new Promise(resolve => setImmediate(resolve))
+    assert.ok(waiting.used)
+    now = 3_000
+    if (mutation === 'record') store.record(track('local:new', 'local'))
+    else if (mutation === 'remove') store.remove(local.id)
+    else store.clear()
+    const entryIds = store.entries.map(entry => entry.track.id)
+    const deletionIds = store.deletions.map(entry => entry.track.id)
+    const savedWrites = writes
+    const savedEvents = [...events]
+    waiting.release()
+    assert.equal(await pending, 'deferred')
+    assertPreserved(store, entryIds, deletionIds, savedWrites, savedEvents)
+  })
+}
+
 console.log(`History sync regressions: ${cases - failures.length}/${cases} passed`)
 assert.equal(failures.length, 0, failures.join(', '))

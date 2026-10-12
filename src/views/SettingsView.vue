@@ -37,10 +37,14 @@ import {
   COVER_BLUR_PX_PER_UNIT,
   LYRIC_DEFAULT_OFFSET_RANGE_MS,
   LYRIC_DEFAULT_OFFSET_STEP_MS,
+  LYRIC_EMPHASIS_THRESHOLD_MAX_MS,
+  LYRIC_EMPHASIS_THRESHOLD_MIN_MS,
+  LYRIC_EMPHASIS_THRESHOLD_STEP_MS,
   LYRIC_FONT_SCALE_MAX,
   LYRIC_FONT_SCALE_MIN,
   LYRIC_FONT_SCALE_STEP,
   normalizeLyricDefaultOffset,
+  normalizeLyricEmphasisThresholdMs,
   MAX_COVER_BLUR_AMOUNT,
   MAX_MEDIA_CACHE_SIZE_MB,
   MIN_MEDIA_CACHE_SIZE_MB,
@@ -77,6 +81,7 @@ import { applyTheme, switchThemeWithRipple, type ThemeMode } from '@/utils/theme
 import { THEME_COLORS, getSwatchColor, applyThemeColor, getSavedThemeColor, switchThemeColorWithRipple } from '@/utils/themeColor'
 import ShortcutSettings from '@/components/settings/ShortcutSettings.vue'
 import { SETTINGS_SEARCH_INDEX } from '@/modules/settings/searchIndex'
+import { isMacPlatform } from '@/modules/shortcuts/platform'
 import { filterAndRank, searchValue } from '@/modules/search/textMatcher'
 import { useEscapeClose } from '@/composables/useEscapeClose'
 import { createLogger } from '@/utils/logger'
@@ -94,13 +99,13 @@ const lt = useListenTogetherStore()
 const toast = useToastStore()
 const {
   darkMode, themeColor: selectedColor, coverStyle,
-  defaultScreen, closeToTray, showCoverBadge, showNowPlayingTitle, showToolbarDock,
+  defaultScreen, closeToTray, showMenuBarLyrics, showCoverBadge, showNowPlayingTitle, showToolbarDock,
   showQualitySwitch, lyricFontScale,
   normalizeVolume, multichannelDrc, volumeBalance, audioOutputDevice,
   fadeIn, fadeInDuration, fadeOutDuration,
   crossfadeNext, crossfadeInDuration, crossfadeOutDuration,
   keepProgress, rememberLongFormProgress, keepPlaybackMode,
-  showTranslation, showRomanization, lyricBlur, lyricBlurAmount,
+  showTranslation, showRomanization, lyricBlur, lyricBlurAmount, lyricEmphasisThresholdMs,
   advancedLyrics, preferWordTimedLyrics, defaultLyricSource, dynamicBackground, colorMode, audioReactive,
   coverBlurBg, coverBlurAmount, coverBlurDarken,
   neteaseQuality, qqMusicQuality, youtubeQuality, biliQuality,
@@ -296,7 +301,7 @@ const settingsSearchResults = computed<SettingsSearchResult[]>(() => {
       key: `section:${item.id}`, section: item.id, title: item.label, desc: item.description, keywords: [], isSection: true,
     })),
     ...SETTINGS_SEARCH_INDEX
-      .filter(entry => SETTINGS_SECTION_IDS.includes(entry.section as SettingsSectionId))
+      .filter(entry => SETTINGS_SECTION_IDS.includes(entry.section as SettingsSectionId) && (isMacPlatform || !entry.macOnly))
       .map(entry => ({
         key: `${entry.section}:${entry.title}`,
         section: entry.section as SettingsSectionId,
@@ -2329,6 +2334,29 @@ useEscapeClose(
     </div>
 
     <div class="setting-card">
+      <div class="setting-icon-wrap"><span class="material-symbols-rounded">graphic_eq</span></div>
+      <div class="setting-info">
+        <div class="setting-title">{{ t('settings.lyric_emphasis_threshold') }}</div>
+        <div class="setting-desc">{{ t('settings.lyric_emphasis_threshold_desc') }}</div>
+        <EditableRangeValue
+          :model-value="lyricEmphasisThresholdMs"
+          class="setting-desc"
+          :min="LYRIC_EMPHASIS_THRESHOLD_MIN_MS"
+          :max="LYRIC_EMPHASIS_THRESHOLD_MAX_MS"
+          :step="LYRIC_EMPHASIS_THRESHOLD_STEP_MS"
+          :display-value="`${lyricEmphasisThresholdMs}ms`"
+          input-suffix="ms"
+          :aria-label="t('settings.lyric_emphasis_threshold')"
+          @update:model-value="lyricEmphasisThresholdMs = normalizeLyricEmphasisThresholdMs($event)"
+        />
+      </div>
+      <input type="range" class="m3-slider" :value="lyricEmphasisThresholdMs"
+        :min="LYRIC_EMPHASIS_THRESHOLD_MIN_MS" :max="LYRIC_EMPHASIS_THRESHOLD_MAX_MS" :step="LYRIC_EMPHASIS_THRESHOLD_STEP_MS"
+        :aria-label="t('settings.lyric_emphasis_threshold')"
+        @input="lyricEmphasisThresholdMs = normalizeLyricEmphasisThresholdMs(Number(($event.target as HTMLInputElement).value))" />
+    </div>
+
+    <div class="setting-card">
       <div class="setting-icon-wrap"><span class="material-symbols-rounded">blur_on</span></div>
       <div class="setting-info">
         <div class="setting-title">{{ t('settings.lyric_blur') }}</div>
@@ -2419,6 +2447,15 @@ useEscapeClose(
         {{ t(desktopLyricsStyle.locked ? 'desktop_lyrics.unlock' : 'desktop_lyrics.lock') }}
       </button>
       <label class="m3-switch"><input type="checkbox" :checked="desktopLyricsOpen" :disabled="desktopLyricsBusy" @change="toggleDesktopLyrics(($event.target as HTMLInputElement).checked)" /><span class="track"><span class="thumb"><span v-if="desktopLyricsOpen" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
+    </div>
+
+    <div v-if="isMacPlatform" class="setting-card">
+      <div class="setting-icon-wrap"><span class="material-symbols-rounded">lyrics</span></div>
+      <div class="setting-info">
+        <div class="setting-title">{{ t('desktop_lyrics.menu_bar') }}</div>
+        <div class="setting-desc">{{ t('desktop_lyrics.menu_bar_desc') }}</div>
+      </div>
+      <label class="m3-switch"><input type="checkbox" v-model="showMenuBarLyrics" :aria-label="t('desktop_lyrics.menu_bar')" /><span class="track"><span class="thumb"><span v-if="showMenuBarLyrics" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
     </div>
 
     <Transition @enter="onExpandEnter" @after-enter="onExpandAfterEnter" @leave="onExpandLeave" @after-leave="onExpandAfterLeave"><div v-if="isExpanded('desktop_lyrics')">

@@ -162,6 +162,19 @@ pub async fn explore_search(
     let page = page.unwrap_or(1).max(1);
     match platform.as_str() {
         "qq" => {
+            if kind == "playlists" {
+                let result = state.qq().api()?.search.search_songlists(&query, NETEASE_PAGE_SIZE.into(), page.into()).await
+                    .map_err(|error| crate::api::qq::client::qq_api_error("playlist search", &error))?;
+                let has_more = u64::from(page) * u64::from(NETEASE_PAGE_SIZE) < result.total.max(0) as u64;
+                let items = result.items.into_iter().filter(|item| item.id.parse::<u64>().is_ok_and(|id| id > 0))
+                    .map(|item| ExploreItem::Playlist {
+                        platform: "qq".into(), id: item.id,
+                        name: strip_bili_highlight(&item.title),
+                        cover_url: https(&item.artwork_url),
+                        track_count: item.track_count.into(), subtitle: strip_bili_highlight(&item.creator),
+                    }).collect();
+                return Ok(ExplorePage { items, has_more });
+            }
             if kind != "songs" {
                 return Err(AppError::Api("Unsupported QQ Music search kind".into()));
             }

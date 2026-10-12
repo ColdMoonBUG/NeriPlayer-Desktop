@@ -1,660 +1,347 @@
-[English](./README_EN.md) | [中文](./README.md)
+[English](./README_EN.md) | [简体中文](./README.md)
 
 <h1 align="center">NeriPlayer Desktop</h1>
 
 <div align="center">
 
-<h3>✨ 把多源在线播放、本地管理、歌词体验和自建同步带到 Windows / macOS / Linux 🎵</h3>
+<h3>🎵 多源在线播放、本地音乐管理、逐字歌词与自有云同步</h3>
 
 <p>
-  <a href="https://github.com/cwuom/NeriPlayer-Desktop/releases">
-    <img alt="Downloads" src="https://img.shields.io/github/downloads/cwuom/NeriPlayer-Desktop/total?style=social" />
-  </a>
-  <a href="https://github.com/cwuom/NeriPlayer-Desktop/releases">
-    <img alt="Release" src="https://img.shields.io/github/v/release/cwuom/NeriPlayer-Desktop?include_prereleases&label=Release" />
-  </a>
+  <a href="https://github.com/cwuom/NeriPlayer-Desktop/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/cwuom/NeriPlayer-Desktop/total?style=social" /></a>
+  <a href="https://github.com/cwuom/NeriPlayer-Desktop/releases"><img alt="Preview release" src="https://img.shields.io/github/v/release/cwuom/NeriPlayer-Desktop?include_prereleases&label=Preview" /></a>
+  <img alt="Status: Preview" src="https://img.shields.io/badge/status-preview-orange" />
   <img alt="Platforms" src="https://img.shields.io/badge/Windows%20%7C%20macOS%20%7C%20Linux-desktop-4C8BF5" />
-  <a href="https://github.com/cwuom/NeriPlayer-Desktop/actions/workflows/build.yml">
-    <img alt="CI" src="https://github.com/cwuom/NeriPlayer-Desktop/actions/workflows/build.yml/badge.svg" />
-  </a>
-  <a href="./LICENSE">
-    <img alt="License" src="https://img.shields.io/badge/License-GPL--3.0-blue" />
-  </a>
-  <a href="https://t.me/ouom_pub">
-    <img alt="Telegram" src="https://img.shields.io/badge/Telegram-@ouom__pub-blue" />
-  </a>
+  <a href="https://github.com/cwuom/NeriPlayer-Desktop/actions/workflows/build.yml"><img alt="CI" src="https://github.com/cwuom/NeriPlayer-Desktop/actions/workflows/build.yml/badge.svg" /></a>
+  <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/License-GPL--3.0-blue" /></a>
+  <a href="https://t.me/ouom_pub"><img alt="Telegram" src="https://img.shields.io/badge/Telegram-@ouom__pub-blue" /></a>
 </p>
 
-<p>
-  <img src="app-icon.png" width="200" alt="NeriPlayer Desktop logo" />
-</p>
+<p><img src="app-icon.png" width="200" alt="NeriPlayer Desktop logo" /></p>
 
-<p>
-本项目的名称及图标灵感来源于《星空鉄道とシロの旅》中的角色「风又音理」。
-</p>
+<p><a href="https://github.com/cwuom/NeriPlayer">NeriPlayer (Android)</a> 的桌面移植，基于 <strong>Tauri 2 + Vue 3 + Rust</strong>，面向 Windows、macOS 和 Linux。</p>
 
-<p>
-NeriPlayer Desktop 是
-<a href="https://github.com/cwuom/NeriPlayer">NeriPlayer (Android)</a>
-的桌面移植，基于 <strong>Tauri 2 + Vue 3 + Rust</strong> 构建，
-与 Android 端共享同一套云同步协议与一起听协议，
-围绕「多源探索、在线播放、本地可控、数据自持」持续打磨。
-</p>
+<p>🚧 <strong>当前为预览版（Preview）</strong></p>
 
-🚧 <strong>开发中 / Work in progress</strong>
+<p>名称及图标灵感来源于《星空鉄道とシロの旅》中的角色「风又音理」。</p>
 
 </div>
 
-> [!CAUTION]
-> **项目与文档状态声明（请先阅读）**
->
-> - 桌面端仍处于早期开发阶段，本文档中的相当一部分内容目前**仅为占位描述**：
->   对应功能可能尚未实现、仅部分实现，或与描述存在偏差。
-> - 部分实现尚不完善，极端情况下**可能导致数据损坏或丢失**。
->   请勿把本应用当作唯一数据副本，重要歌单与配置请先导出备份。
-> - 维护者精力有限，本仓库未来**可能进入无人维护状态**。
->   桌面端的理想是依靠社区共同推进——欢迎认领 Issue、提交 PR，
->   或在维护停滞时进行 fork 延续。
-> - 文档与实际行为不一致时，请以源码为准，并欢迎顺手修正文档。
-
----
+> [!IMPORTANT]
+> 当前版本可供体验和反馈，尚未进入稳定版阶段。本文按当前仓库实现整理；第三方平台接口、系统集成和跨设备兼容性仍可能变化。
+> 更新或迁移前，请导出重要歌单与配置并保留备份；不同构建的具体变化以发布说明为准。
 
 > [!WARNING]
-> 本项目仅供学习与研究使用，请勿将其用于任何非法用途。
->
-> 本项目及维护者不接受任何形式的赞助、捐赠或商业资助。
+> 本项目仅供学习与研究使用，请勿用于任何非法用途。本项目及维护者不接受任何形式的赞助、捐赠或商业资助。
 
----
+NeriPlayer Desktop 不提供公共云端曲库或媒体分发服务。在线能力取决于第三方平台的可用接口、账号、地区与内容权限；会员或受限内容仍遵循原平台规则。
 
-> [!NOTE]
-> NeriPlayer Desktop 不提供公共云端曲库或媒体分发服务。
-> 在线音频能力依赖用户在第三方平台上的账号授权，
-> 会员或受限内容仍需遵循原平台规则。
+## 🧭 文档导航
 
----
+- [下载安装与首次使用](#installation)
+- [功能与平台能力](#features)
+- [本地音乐与下载](#library-downloads)
+- [歌词与桌面集成](#lyrics-desktop)
+- [快捷键](#shortcuts)
+- [备份、同步与 Android 兼容](#sync)
+- [一起听](#listen-together)
+- [数据与隐私](#data-privacy)
+- [已知限制与排查](#limitations)
+- [本地构建](#development)
+- [贡献指南](./CONTRIBUTING.md) / [English contribution guide](./CONTRIBUTING_EN.md)
 
-## 快速定位 / Start here
+<a id="installation"></a>
+## 📦 下载安装与首次使用
 
-如果你只是想体验应用，请看 [快速体验](#快速体验--getting-started)。
-如果你想了解项目能力，请看 [项目亮点](#项目亮点--why-it-stands-out)
-和 [核心特性](#核心特性--key-features)。
-如果你准备贡献代码，请直接阅读 [CONTRIBUTING.md](./CONTRIBUTING.md)。
-如果你关心桌面端和 Android 端的关系，请看
-[与 Android 端的关系](#与-android-端的关系--relationship-with-the-android-app)。
+### 下载预览版
 
-```text
-NeriPlayer Desktop
-├── 多源在线播放：网易云 / QQ 音乐 / Bilibili / YouTube Music + 本地文件
-├── 本地优先数据：歌单、收藏、最近播放、播放统计、下载、设置
-├── 可选自有同步：GitHub / WebDAV 元数据同步（与 Android 端互通）
-├── 丰富播放体验：Rust 音频引擎、AMLL 逐字歌词、流体着色器背景、系统媒体键
-└── 一起听：与 Android 端同协议的实时同步房间
-```
+前往 [GitHub Releases](https://github.com/cwuom/NeriPlayer-Desktop/releases)，阅读对应发布说明并选择适合平台和架构的安装包。发布工作流的分发目标如下：
 
----
+| 平台 | 架构 | 安装包 | 环境要求 |
+| --- | --- | --- | --- |
+| Windows | x64 | `.msi` / `.exe`（NSIS） | WebView2 运行时 |
+| macOS | Apple Silicon / arm64 | `*-adhoc.dmg` | 构建目标为 macOS 11.0+ |
+| macOS | Intel / x64 | `*-adhoc.dmg` | 构建目标为 macOS 10.15+ |
+| Linux | x64 | `.deb` / `.rpm` / `.AppImage.tar.gz` | WebKitGTK 4.1、GTK 3、ALSA 等运行依赖 |
 
-## 项目简介 / About
+这些最低版本来自打包配置，不代表每个系统版本都已完成运行验收。Release 还提供 `SHA256SUMS.txt`、macOS 安装说明以及随包 FFmpeg 的源码与构建脚本。
 
-NeriPlayer Desktop 是一个 **Tauri 2** 桌面应用：**Vue 3** 前端与 **Rust**
-后端两个进程通过 IPC 桥通信。Rust 侧独占音频播放、全部平台网络请求、
-请求签名/加密、文件系统与云同步；前端从不直接访问音乐平台。
+- **Windows**：当前安装包未做代码签名，可能出现 SmartScreen 提示。缺少 WebView2 时先安装运行时。
+- **macOS**：安装包采用 ad-hoc 签名，未经 Apple 公证。将应用拖入「应用程序」后尝试打开；如被拦截，可按 [Apple 官方说明](https://support.apple.com/en-us/102445)在「系统设置 → 隐私与安全性」中选择「仍要打开」。对应发布附带的 `macOS-install.txt` 提供该构建的具体处理步骤。
+- **Linux**：AppImage 需先解压并赋予执行权限；deb/rpm 使用发行版包管理器安装。AppImage 仍依赖宿主系统的图形与运行环境。
 
-当前定位：
+### CI 构建
 
-- **账号即能力**：通过第三方平台授权启用搜索、播放、歌单和收藏夹访问。
-  登录使用内置 WebView 窗口自动捕获 Cookie（含 HttpOnly），也支持手动导入。
-- **本地优先**：歌单、收藏、最近播放、播放统计、下载文件、设置与授权信息
-  默认保存在本机。
-- **可选同步**：可将歌单、收藏、最近播放和播放统计同步到用户自己的
-  GitHub 仓库或 WebDAV 远端文件，数据格式与 Android 端完全互通。
-- **尊重隐私与账号安全**：同步策略刻意保持去中心化，数据写入用户自己
-  控制的远端；不向第三方音乐平台回传本地播放历史与统计，
-  避免触发平台风控。
-- **对齐 Android 端**：功能集、交互习惯、同步数据模型、一起听协议
-  与版本号格式都以 Android 端为基准持续对齐。
+需要体验尚未发布的改动时，可前往 [Artifacts 工作流](https://github.com/cwuom/NeriPlayer-Desktop/actions/workflows/artifacts.yml)，选择成功构建并下载对应平台的 artifact。下载 Actions artifact 通常需要登录 GitHub；先解压外层 artifact，再使用其中的安装包。
 
----
+CI 构建和 Release 可能对应不同提交。反馈问题时请附上「设置 → 关于」中可复制的构建版本，而不是只写安装包名称或 `1.0.0`。
 
-## 项目亮点 / Why it stands out
+### 首次使用
 
-- **Rust 自研播放引擎，不是包一层系统播放器**：
-  `PlayerEngine` 基于 **cpal** 输出 + **symphonia** 解码
-  （MP3 / AAC / FLAC / OGG Vorbis / WAV / PCM / ADPCM / MP4 容器），
-  支持本地文件、内存字节与网络流三种播放路径；网络流使用渐进式缓冲
-  （growing buffer）与自适应 Range 拉流，弱网下仍可持续播放，
-  分片音频支持快速 seek 与暂停时静默拖动。
-- **听感可细调**：暂停/恢复淡入淡出、切歌交叉淡入淡出（时长可调）、
-  倍速、响度增益、按歌曲实时响度均衡，以及 5 频段均衡器
-  （60 / 230 / 910 / 3600 / 14000 Hz，预设 + 手动，±15 dB）。
-- **仿 Apple Music 的歌词体验**：
-  歌词渲染基于 [applemusic-like-lyrics](https://github.com/amll-dev/applemusic-like-lyrics)
-  （以子模块内嵌），支持逐字/逐词高亮、翻译歌词、歌词模糊、字号调节、
-  全局逐源偏移与单曲偏移；网易云 YRC 逐字歌词端到端接入。
-- **歌词补全不是单一来源**：
-  按 QQ 音乐 → 网易云 → LRCLIB 逐级匹配，优先使用平台曲目 ID，
-  无 ID 时按曲名、歌手和时长搜索匹配，时长误差参与打分。
-- **GLSL 流体动态背景**：
-  播放页由 WebGL `HyperBackground` 着色器逐帧渲染流体背景，
-  基于封面取色并接入实时音频电平做音频响应；
-  也支持封面模糊背景与自定义背景图（模糊度/透明度可调）。
-- **跨端同步是字段级互通，不是"都能连 WebDAV"**：
-  Rust 侧的 ProtoBuf 模型字段号与 Android 端 `SyncDataModels.kt` 的
-  `@ProtoNumber` 逐一对齐，三路合并对照基准快照裁决冲突，
-  当前写入 Android V4 的 ProtoBuf 清单和 Zstd 分块归档，兼容读取旧 JSON、GZIP 和 V3 归档。
-- **一起听与 Android 端同协议**：
-  桌面客户端连接同一套 Cloudflare Workers 服务端，
-  支持房间、角色权限、队列同步、循环/随机模式同步、
-  成员控制请求与直链共享开关。
-- **桌面化不是"网页装壳"**：
-  无边框自绘标题栏（macOS 使用原生 unified toolbar 居中红绿灯）、
-  全键盘快捷键、指针拖拽排序、多选工具栏、右键上下文菜单、
-  系统媒体键与 SMTC / MPRIS 媒体会话集成、单实例保护。
-- **凭据安全按桌面威胁模型设计**：
-  Release 构建使用应用侧加密文件存储平台 Cookie、GitHub Token 与
-  WebDAV 密码（对标 Android 的 EncryptedSharedPreferences），
-  避免未签名应用反复触发系统钥匙串弹窗；日志经过脱敏处理。
-- **诊断闭环**：
-  Debug 页内置平台连通性探针、实时日志查看器（可暂停）、
-  崩溃报告管理与调试报告导出；文件日志与日志级别可在设置中开启。
+1. 在「设置」中登录所需平台：网易云音乐、Bilibili、YouTube。可使用内置登录窗口，也支持手动导入 Cookie。
+2. 在「探索」中搜索或浏览内容，在「音乐库」中打开平台歌单、收藏夹或导入本地文件。
+3. 按需要设置播放音质、音频输出设备、下载目录、歌词和快捷键。
+4. 需要跨设备元数据时再配置「设置 → 备份与同步」；本地播放不要求开启云同步。
 
----
+<a id="features"></a>
+## 🎧 功能与平台能力
 
-## 快速体验 / Getting Started
+### 功能概览
 
-### a. 下载 Release 版本（推荐）
+| 模块 | 当前实现 |
+| --- | --- |
+| 首页 | 顶部「继续播放」展示最近打开的歌单，按打开时间与次数排序；最近播放歌曲、分区推荐，国际化模式且已登录 YouTube 时展示 YouTube Music 首页货架 |
+| 探索 | 网易云、Bilibili、YouTube Music 分平台搜索和发现；搜索历史可关闭，搜索结果可选择对应版本播放 |
+| 音乐库 | 本地歌单、收藏歌单与艺术家、下载、网易云歌单/专辑、Bilibili 收藏夹、YouTube Music 歌单；分类内搜索、分页、多选、拖拽和右键菜单 |
+| 艺术家 | 网易云、Bilibili、YouTube 详情与关注；本地艺术家聚合、详情搜索与筛选播放 |
+| 播放 | 队列、随机/循环、进度与模式记忆、长音频续播、渐进缓冲、Range 拉流与分片音频定位 |
+| 音效 | 输出设备、声道平衡、倍速、响度增益与均衡、暂停/恢复淡入淡出、切歌交叉淡入淡出、5 频段 EQ、多声道动态范围压缩选项 |
+| 歌词 | AMLL 逐字渲染、翻译/罗马字、多源自动获取与手动匹配、编辑、本地歌词、逐源与单曲偏移、独立桌面歌词 |
+| 桌面 | 系统托盘、关闭到托盘、可配置全局快捷键、系统媒体会话、单实例、macOS 菜单栏歌词 |
+| 数据 | SQLite 本地持久化、歌单和完整配置导入/导出、GitHub / WebDAV 元数据同步、播放统计、最近播放管理 |
+| 界面 | 简体中文、繁体中文、English、日本語；浅色/深色、封面取色、自定义背景、流体动态背景与音频响应、设置搜索 |
+| 诊断 | 连通性探针、实时日志、文件日志、崩溃报告与调试报告导出 |
 
-1. 前往 [GitHub Releases](https://github.com/cwuom/NeriPlayer-Desktop/releases)
-2. 如何选择安装包？
+### 平台能力
 
-| 平台 | 产物 | 说明 |
-| --- | --- | --- |
-| Windows | `.msi` / `.exe` (NSIS) | x64，需要 WebView2 运行时（Win10/11 通常已内置） |
-| macOS (Apple Silicon) | `*-adhoc.dmg` (arm64) | macOS 11.0+ |
-| macOS (Intel) | `*-adhoc.dmg` (x64) | macOS 10.15+ |
-| Linux | `.deb` / `.rpm` / `.AppImage.tar.gz` | x64，依赖 WebKitGTK 4.1 |
+| 来源 | 账号与浏览 | 播放、下载与歌词 | 当前边界 |
+| --- | --- | --- | --- |
+| 网易云音乐 | 登录、搜索、每日推荐、歌单/专辑、艺术家、喜欢/取消喜欢 | 多音质、YRC 逐字/翻译/罗马字歌词、下载 | 账号权限、会员与地区限制仍生效 |
+| QQ 音乐 | QQ／微信登录、歌曲与歌单搜索、账号歌单音乐库 | 按账号权益取流、歌词与下载，支持自建与收藏歌单 | 不绕过会员权限；详见 [QQ 接入说明](./QQ_MUSIC_INTEGRATION.md) |
+| Bilibili | 登录、视频搜索、发现、创建/订阅收藏夹、UP 主详情 | DASH 音频、HTML5 MP4 回退、分 P、下载、跳过区间 | 视频下架、账号与音轨权限可能影响取流；歌词通过外部来源匹配 |
+| YouTube Music | 登录、首页、搜索、歌单、艺术家 | 多客户端取流、下载、原生或外部匹配歌词 | 网络、地区、平台校验与客户端可用性可能变化 |
+| 本地音频 | 多文件夹曲库、增量扫描、直接播放、歌单与艺术家管理 | 本地解码、标签读写、嵌入/sidecar 歌词 | 文件路径需在当前设备有效；扩展编码取决于解码组件 |
+| 外部歌词 | QQ 音乐、网易云、酷狗、LRCLIB、AMLL TTML | 自动获取、逐字补全及手动匹配 | 匹配准确度和逐字时间轴取决于来源 |
 
-> [!IMPORTANT]
-> macOS 安装包为 ad-hoc 签名（未经公证）。首次打开如被 Gatekeeper 拦截，
-> 请在访达中右键 → 打开，或执行
-> `xattr -cr /Applications/NeriPlayer.app` 后再启动。
-> Windows 安装包未做代码签名，SmartScreen 提示属预期现象。
+### 播放源与音频信息
 
-### b. 下载 CI 版本
+- 「设置 → 播放源」可指定 YouTube 首选客户端：自动、visionOS、Android VR、Web Remix、TV HTML5、Web Creator；失败时继续尝试其它可用客户端。
+- 网易云无完整播放权限或仅有试听时，可分别开启本地音频匹配和 Bilibili 替代音源。本地匹配优先；原曲的队列与同步身份保留，下载仍使用原平台音源。
+- 新默认显示实际码率和格式；声道、采样率、位深可在个性化设置中独立开启。无法确认的参数省略，已有显示偏好保留。
+- Rust 的 `cpal` 负责输出，内置 Symphonia 解码常见格式；随包 FFmpeg 扩展 Opus、AC-3/E-AC-3、ALAC、APE、WavPack、DSD 等解码能力。实际支持项以加载到的解码器为准，缺少 FFmpeg 时回退到内置解码器；多声道解码与下混不等于空间音频/Atmos 输出。
 
-前往 [GitHub Actions](https://github.com/cwuom/NeriPlayer-Desktop/actions)
-的 `Artifacts` 工作流，下载最近一次成功构建的四平台产物
-（`NeriPlayer-Windows-x64 / macOS-arm64 / macOS-x64 / Linux-x64`）。
+<a id="library-downloads"></a>
+## 🗂️ 本地音乐与下载
 
-### c. 本地构建
+### 本地音乐
 
-前置要求：**Node.js 20+**、**pnpm 9.15.9**（`corepack enable` 即可）、
-**Rust 1.95.0**（`rust-toolchain.toml` 会自动固定），以及平台依赖：
+「音乐库 → 本地文件」可添加多个音乐文件夹，建立持久曲库，通过原生文件监视和增量扫描更新。支持扫描进度、取消、重新扫描、搜索和多选，可隐藏已在歌单中的文件与重复元数据；可直接播放当前列表，也可加入现有或新建歌单。移除曲库文件夹不会删除磁盘文件，扫描不会自动生成默认歌单。
 
-- **Windows**：Visual Studio C++ Build Tools、WebView2 运行时
-- **macOS**：Xcode Command Line Tools
-- **Linux**（Debian/Ubuntu 示例）：
-  ```bash
-  sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
-    librsvg2-dev patchelf libasound2-dev
-  ```
+本地歌单支持创建、重命名、删除、排序、拖拽和批量操作。本地艺术家详情支持搜索，筛选后播放使用当前筛选列表。标题、歌手和专辑可写回音频文件，写入过程检查原有歌词、封面及其它标签。
 
-构建步骤：
+音乐库标题栏提供播放统计和最近播放入口，首页「最近播放」也可进入历史页面；支持浏览与删除记录，删除标记参与云同步。
+
+### 下载
+
+歌曲右键菜单和批量选择提供下载入口。「下载」页显示队列、音源解析、传输、元数据处理、完成或失败状态，支持取消、重试、删除、重新下载和在文件管理器中显示。
+
+- 并发数可设为 **1–8**，默认 **6**；下载音质默认跟随播放，也可按平台单独设置。
+- 自定义目录和文件名模板，下载后检查可解码内容、时长及可用的长度/校验信息，包含分片音频检查。
+- 元数据补齐默认开启，标准化歌词嵌入默认关闭；开启后仍保留原始歌词。歌词与封面在支持的格式中尝试嵌入并读回校验，失败时保留 NP 元数据和 sidecar 文件。
+- 重启时恢复未完成队列，重新解析地址并下载；**不支持按字节断点续传**。
+- 操作正在播放的下载文件时，先释放本地解码器占用，再根据最新播放意图恢复；删除后可切回在线播放。
+
+| 内容 | 保存位置 |
+| --- | --- |
+| 音频 | 选定下载目录 |
+| 歌词、翻译和罗马字 | `Lyrics/` |
+| 封面 | `Covers/` |
+| NP 来源与元数据引用 | 音频旁的 `<音频文件名>.npmeta.json` |
+| 下载临时文件 | `.tmp/` |
+
+清理应用缓存不会删除主动下载的音频。云同步不传输下载文件，换设备后需重新下载或自行复制。
+
+<a id="lyrics-desktop"></a>
+## ✨ 歌词与桌面集成
+
+### 播放页歌词
+
+播放页使用 [applemusic-like-lyrics](https://github.com/amll-dev/applemusic-like-lyrics)，支持逐字/逐词高亮、翻译、罗马字、模糊与字号调整，搭配封面取色的 WebGL 流体背景、音频响应或封面模糊背景。
+
+鼠标悬停在歌词区域时，左下方按歌词内容显示翻译和音译快捷开关，没有对应内容时隐藏该按钮；音译包含行级罗马字和逐字音译。两者可独立开启或同时显示，并与「设置 → 歌词」共用显示偏好。键盘聚焦时也会显示开关，触摸设备上保持可见。
+
+「设置 → 歌词 → 长音动画触发时长」可在 300–2000ms 间调整，默认 700ms。数值越小越容易触发，仅在逐字高级动画开启时生效。
+
+自动获取综合本地歌词、平台曲目 ID、缓存与多源匹配。「设置 → 歌词」可选择默认歌词源并控制逐字优先；没有合适结果时回退自动。Bilibili 开启逐字优先时先尝试逐字来源。手动匹配支持网易云、QQ 音乐、酷狗、LRCLIB 和 AMLL TTML，可改关键词、勾选来源、预览确认，候选陆续展示。
+
+歌词显示会过滤明确的中英文制作、乐器、发行和宣传署名，包括 MIDI 程序、和声及带空格的英文角色。含糊的短标签和普通歌词句子保留，正文逐字时间轴、翻译和音译不变；本地文件与已有存储内容不会因显示过滤而改写。
+
+酷狗歌词缺少翻译或罗马字时，后台优先从网易云补全；翻译仍缺失时再尝试 QQ 音乐。补全只采用歌名、歌手和时长匹配的高置信度结果，保留酷狗原文、逐字时间轴和偏移，并写回缓存；已确认编辑或清空的副轨不会自动覆盖。
+
+歌词偏移可按来源设置，也可单独调整曲目。手动匹配、编辑或导入时请核对曲目版本与时长；现场、翻唱和剪辑版可能需要重新匹配。
+
+### 桌面歌词、托盘与媒体键
+
+- 独立桌面歌词可通过设置、托盘或快捷键切换，支持单/双/三行、逐字/整行显示、翻译/罗马字、字体、渐变颜色、描边、阴影、透明度与背景；保留窗口位置和尺寸。
+- 桌面歌词可锁定并点击穿透，悬停时保留解锁入口。
+- 「关闭到托盘」开启后，关闭主窗口保留后台播放；托盘提供窗口、播放、歌词和退出操作。
+- macOS 菜单栏歌词可独立开启，无歌词时显示歌名，过长内容截断。
+- 系统媒体键与媒体会话经 `souvlaki` 接入 Windows SMTC、Linux MPRIS、macOS Now Playing；具体呈现受系统和桌面环境影响。
+
+<a id="shortcuts"></a>
+## ⌨️ 快捷键
+
+「设置 → 快捷键」分别配置应用内和系统全局绑定，支持录制、清空、恢复默认和冲突提示。`Mod` 表示 Windows/Linux 的 `Ctrl`，macOS 的 `Cmd`。
+
+### 应用内默认快捷键
+
+| 快捷键 | 动作 |
+| --- | --- |
+| `Space` | 播放/暂停 |
+| `Mod + →` / `Mod + ←` | 下一首/上一首 |
+| `→` / `←` | 快进/快退 |
+| `Shift + →` / `Shift + ←` | 较大步长快进/快退 |
+| `↑` / `↓` | 音量加/减 |
+| `M` / `S` / `R` | 静音/随机/循环模式 |
+| `L` | 喜欢/取消喜欢（支持的曲目） |
+| `D` | 切换桌面歌词 |
+| `Mod + P` | 展开/收起正在播放 |
+| `Mod + F` | 搜索 |
+| `Esc` | 按层级关闭弹窗、面板或播放页 |
+
+输入框和正在操作的控件会接管相应按键。`Esc` 和 `Tab` 保留给关闭与焦点导航，不能改绑。
+
+### 系统全局默认快捷键
+
+全局快捷键**默认关闭**，开启后可在窗口失去焦点或收进托盘时使用。
+
+| 快捷键 | 动作 |
+| --- | --- |
+| `Mod + Alt + P` | 播放/暂停 |
+| `Mod + Alt + ←` / `Mod + Alt + →` | 上一首/下一首 |
+| `Mod + Alt + ↑` / `Mod + Alt + ↓` | 音量加/减 |
+| `Mod + Alt + L` | 喜欢/取消喜欢 |
+| `Mod + Alt + D` | 切换桌面歌词 |
+| `Mod + Alt + N` | 显示主窗口 |
+
+如组合被系统或其它应用占用，设置页提示注册失败，可改用其它组合。输入法或桌面环境也可能影响实际触发。
+
+<a id="sync"></a>
+## ☁️ 备份、同步与 Android 兼容
+
+### 同步范围
+
+「设置 → 备份与同步」连接自己的 GitHub 仓库或 WebDAV 目标，采用与 Android 对齐的数据模型与合并规则。
+
+| 数据 | 云同步行为 |
+| --- | --- |
+| 本地歌单 | 曲目元数据、自定义标题/歌手/封面、匹配歌词、单曲歌词偏移及成员删除记录 |
+| 收藏 | 收藏歌单与以收藏记录保存的艺术家 |
+| 歌单使用记录 | 最近打开时间、次数与删除记录，用于首页「继续播放」 |
+| 最近播放 | 记录与删除标记 |
+| 播放统计 | 次数、收听时长、每日统计桶与清空标记 |
+| Bilibili 跳过区间 | 按 `bvid + cid` 同步各分 P 的多段区间及清空标记；编辑草稿仅在本机 |
+| 音频与设备配置 | 不上传音频、下载文件、平台 Cookie 或播放 Token；设备设置与路径需另行配置 |
+
+同步本地曲目元数据不会让另一设备获得文件。下载目录、输出设备和本地路径也不能直接迁移为可用环境。
+
+### 配置与格式升级
+
+1. **GitHub**：按界面说明配置 Personal Access Token 并校验，创建默认私有仓库或选择已有仓库。当前界面的 classic Token 流程使用 `repo` 权限；种类和权限说明见 [GitHub 官方文档](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)。
+2. **WebDAV**：填写服务地址、账号和密码，确认远端目标可读写。
+3. 配置完成后手动同步，本地变更也可触发自动同步；跨设备使用需连接相同目标。
+4. 发现旧格式时按提示确认升级，先更新其它设备客户端并保留远端备份。
+
+当前写入 **V4 ProtoBuf 清单 + Zstd 分块归档**，兼容读取旧 JSON、GZIP 和 V3。清单仍使用 `neriplayer-sync-v3.manifest` 文件名，文件名不表示内容仍为 V3。合并保留删除/清空标记，避免旧设备恢复已删除内容。
+
+跨端使用依赖双方支持当前协议。仓库包含冻结的 Android 测试向量和 [Kotlin 互操作验证脚本](./scripts/test-sync-android-interop.ps1)；编解码检查不能代替真实账号、同一远端与多设备交替同步验证。
+
+### 手动备份
+
+- **歌单 JSON 导入/导出**：适合歌单备份与迁移。
+- **完整配置导入/导出**：迁移设置、授权与同步配置等；是可能包含 Cookie、Token、密码的**明文 JSON**，不是音频文件或数据库的完整备份。
+- **GitHub / WebDAV**：持续同步上述元数据，远端归档不做端到端加密。
+
+### Bilibili 跳过区间
+
+播放页更多菜单和 Bilibili 曲目右键菜单提供区间编辑，可按分 P 管理多段区间、用当前进度设置起止时间、预览与清空。保存后自动跳过，清空也参与同步。**一起听房间内暂停自动跳过**，避免单端跳转影响房间进度。
+
+Android 的 USB 独占播放、SAF、悬浮/状态栏歌词等移动平台能力不属于桌面端范围；桌面端提供自己的托盘、桌面歌词、媒体会话与快捷键。
+
+<a id="listen-together"></a>
+## 🎧 一起听
+
+支持创建/加入房间，通过 WebSocket 同步播放、暂停、位置、队列、切歌和循环/随机模式。可设置成员控制、成员变化自动暂停、音频直链共享与自定义服务端。
+
+桌面与 Android 使用同一套一起听协议，需要可用且兼容的服务端以及各自可播放的内容。房间共享不替代平台账号权限；开启直链共享前，请确认接受向成员提供临时音频地址。
+
+创建房间前需要先播放可共享的在线曲目；当前一起听队列不共享本地文件和 QQ 音乐曲目。
+
+服务端基于 Cloudflare Workers + Durable Objects，参考 [NeriPlayer-LTW](https://github.com/TheSmallHanCat/NeriPlayer-LTW)。
+
+<a id="data-privacy"></a>
+## 🔒 数据与隐私
+
+- 歌单、收藏、最近播放、队列、播放统计、下载目录记录、同步元数据与详情/歌词缓存由本地 SQLite 数据库 `neri_user_data.db` 管理。下载音频仍在选定目录。
+- 旧 JSON 和 WebView localStorage 按数据域迁移，旧 JSON 备份在用户数据目录的 `legacy-json-backup/`。本地曲库文件夹与文件索引另存为 `local-library.json`，设置、登录态和同步配置使用各自存储。
+- **Release 构建**使用应用侧加密存储平台 Cookie、GitHub Token 和 WebDAV 密码；**Debug 构建**使用随机路径的明文凭据文件。加密不承诺抵御同机同用户进程；日志会脱敏，分享前仍应检查内容。
+- 默认数据保存在本机；启用同步后写入指定的 GitHub/WebDAV 远端；一起听与配置的服务端和成员交换会话数据。
+- 不接入广告 SDK、第三方统计或崩溃分析 SDK，不将本地播放历史和统计回写音乐平台。登录、搜索、播放与歌词请求仍受相应平台隐私政策和访问日志规则约束。
+
+<a id="limitations"></a>
+## ⚠️ 已知限制与排查
+
+| 场景 | 说明与处理 |
+| --- | --- |
+| 搜索、登录或取流失败 | 接口、网络、地区或账号权限可能变化；确认登录态和原平台内容可用，再检查代理 |
+| QQ 音乐部分歌曲不可播放 | 取流受账号权益、地区和上游接口限制，不绕过会员权限 |
+| 托盘、桌面歌词或媒体键差异 | 受系统与桌面环境影响；源码支持不等于所有环境已验收 |
+| 全局快捷键不响应 | 开启全局开关，查看注册失败提示并检查系统/其它程序占用 |
+| 旧客户端同步失败 | 更新全部客户端，升级远端前备份并阅读确认提示 |
+| 应用升级 | 当前不提供应用内自动更新，下载对应预览版手动安装 |
+
+代理设置提供「绕过系统代理」开关，可按实际网络切换并测试。Debug 连通性探针只判断传输层是否收到响应，不证明登录有效、内容可播放或业务接口成功。
+
+### 问题反馈
+
+1. 在「设置 → 关于」复制构建版本，记录操作系统、架构与复现步骤。
+2. 连续点击版本号 **7 次**开启开发者模式，进入 `Debug` 查看实时日志、崩溃报告或导出调试报告。
+3. 需要持久日志时在设置中开启文件日志并选择级别。
+4. 前往 [Issues](https://github.com/cwuom/NeriPlayer-Desktop/issues) 模板反馈；跨端问题提供桌面和 Android 版本，分享前移除个人信息与凭据。
+
+<a id="development"></a>
+## 🛠️ 本地构建
+
+仓库固定 **pnpm 9.15.9** 与 **Rust 1.95.0**，CI 使用 **Node.js 20**。准备 Git、Node.js、pnpm、rustup 和 [Tauri 平台依赖](https://v2.tauri.app/start/prerequisites/)；本项目还需编译 FFmpeg C++ 垫片的工具链。
 
 ```bash
 git clone --recursive https://github.com/cwuom/NeriPlayer-Desktop.git
 cd NeriPlayer-Desktop
-pnpm install
-pnpm tauri dev      # 开发运行（Vite :1420，被占用时自动换用下一个空闲端口 + Rust shell）
-pnpm tauri build    # 生产打包，产物在 src-tauri/target/release/bundle/
+pnpm install --frozen-lockfile
+pnpm tauri dev
 ```
 
-仓库依赖 Git 子模块（`vendor/applemusic-like-lyrics`），
-克隆时请务必带 `--recursive`，或补执行
-`git submodule update --init --recursive`。
+已有克隆缺少歌词子模块时执行 `git submodule update --init --recursive`。`pnpm tauri dev` 启动 Vite 与 Tauri，默认端口 `1420`，占用时自动选择其它空闲端口。
 
-首次启动后，在「设置」中登录所需平台账号即可解锁在线能力；
-连续点击版本号 **7 次** 可解锁开发者模式，侧栏会出现 `Debug` 页。
-
----
-
-## 核心特性 / Key Features
-
-- 🎧 **多源探索与播放**：
-  支持网易云音乐、QQ 音乐、Bilibili、YouTube Music 与本地音频播放。
-- 🏠 **首页推荐与继续播放**：
-  最近播放、网易云每日推荐歌单/歌曲、热门与私人雷达歌曲栏目、
-  跨平台歌单入口；国际化模式下且已登录 YouTube 时，
-  优先展示 YouTube Music 首页货架。
-- 🔍 **分层搜索能力**：
-  `探索` 页按平台独立搜索（网易云 / Bilibili / YouTube Music），
-  并提供 Bilibili 与 YouTube 发现货架；
-  播放页元数据与歌词补全使用网易云 + QQ 音乐，并接入 LRCLIB。
-  点击或右键播放搜索歌曲时，播放队列替换为选中的单曲版本。
-- 🗂️ **媒体库分类浏览**：
-  本地 / 收藏（歌单 + 已关注艺术家）/ 下载 / 网易云（歌单 + 专辑）/
-  Bilibili 收藏夹 / YouTube Music 歌单，每个分类独立搜索，
-  关键词切换分类后仍保留。
-  收藏歌手按网易云 / B站 / YouTube 分平台展示，同步完成后自动刷新；
-  支持站内歌手详情、作品分页与关注，网易云和 YouTube 可拉取远端关注。
-- 🧠 **播放核心**：
-  队列管理、随机/循环模式、播放请求代际防串扰、失败恢复、
-  进度与播放模式记忆（可关）。
-  `设置 → 播放源` 可选择 YouTube 首选客户端，失败时继续尝试其它来源；
-  网易云仅有试听或无播放权限时，可独立开启匹配本地音频或 B站兜底，
-  本地匹配优先，原歌曲的队列与同步身份保留，下载不使用替代音源。
-- ⏭️ **B站跳过区间**：
-  在正在播放的更多菜单或曲目右键菜单中管理分 P 的多段跳过区间，
-  支持用当前进度设置起止时间；保存后自动跳过，一起听会话中暂停自动跳过。
-  已保存规则及清空记录参与 GitHub / WebDAV 同步，与 Android 使用相同规则。
-- 🌊 **流式播放**：
-  渐进式缓冲、自适应 Range 拉流、分片音频快速 seek、
-  暂停时静默拖动、在途请求去重与预取。
-- 🎚️ **播放音效**：
-  倍速、响度增益、按歌曲实时响度均衡、5 频段均衡器（预设 + 手动）。
-- ⬇️ **应用内下载**：
-  音乐库「下载」Tab 展示排队、音源解析、传输和元数据处理状态，
-  实时更新已下载字节与可用的百分比，支持单项/批量取消和失败重试。
-  并发数量可在下载页或设置中调整为 1-8，默认 6；
-  下载音质默认跟随播放，也可按平台独立设置。
-  音频保存在选定下载目录，歌词与翻译/罗马字放入 `Lyrics/`，
-  封面放入 `Covers/`，临时文件放入 `.tmp/`；
-  音频旁的 `<音频文件名>.npmeta.json` 保存 NP 元数据、来源与 sidecar 引用。
-  设置中的元数据补齐默认开启，标准化歌词嵌入默认关闭；
-  开启标准化后，原始歌词仍保留在 sidecar 与 NP 元数据中。
-  另支持文件名模板、自定义目录、损坏校验与在文件管理器中显示。
-  歌曲右键支持下载，多选下载后退出选择；播放中的下载文件也可删除或重新下载，
-  操作前等待本地解码器释放文件，完成后按最新播放意图恢复，删除后可转为在线播放。
-- ℹ️ **播放音频信息**：
-  下载播放显示无框对勾，新默认展示实际码率和格式；声道、采样率和位深
-  可在「设置 → 个性化」独立开启，码率和格式也可单独关闭，同一组开关也适用于流媒体，未知参数省略。
-  流媒体和缓存播放会补齐原生解码器读出的声道、采样率、位深与编码；
-  缺少码率时可由完整编码文件长度和真实音频时长补充平均码率，已有平台或文件码率优先保留。
-  已有音频信息展示偏好会保留，在线音质仍可从播放页更多菜单切换。
-- 🩷 **本地歌单与收藏**：
-  创建/重命名/删除/排序歌单、多选批量操作、指针拖拽排序、
-  网易云歌曲喜欢/取消喜欢，收藏歌单按来源平台跳转详情。
-  本地「本地文件」分类提供目录扫描预览、扫描进度与取消、搜索和多选，
-  可隐藏已在歌单中的文件及重复元数据；选中后手动导入现有或新歌单，
-  扫描不会自动创建默认本地文件歌单。支持编辑标题、歌手、专辑并保存到音频文件，
-  写入前验证原有歌词、封面和其他标签仍可读回。
-- 🧑‍🎤 **网易云艺术家**：
-  艺术家详情、热门歌曲与专辑分页浏览，收藏页提供艺术家分类入口。
-- 📊 **播放统计**：
-  按歌曲稳定身份记录播放次数、收听时长与每日统计桶，
-  提供概览视图，并参与 GitHub / WebDAV 同步。
-- 🕘 **最近播放**：
-  独立页面浏览与管理，删除记录参与云同步（跨端删除不复活）。
-- ☁️ **GitHub / WebDAV 同步**：
-  同步本地歌单、收藏、最近播放与播放统计，三路合并，
-  使用与 Android 对齐的 V4 分块归档；另有歌单 JSON 与完整配置的导入/导出。
-- 🎧 **一起听**：
-  创建/加入房间，WebSocket 实时同步播放状态与队列，
-  支持成员控制开关、成员进出自动暂停、循环/随机模式同步、
-  直链共享开关与自定义服务端地址。
-- 🌈 **个性化与主题**：
-  主题色与动态取色、浅色/深色、主题色平滑过渡、自定义背景图
-  （模糊/透明度可调）、界面显示项开关（封面角标、工具栏、
-  音质切换、音频规格等）、默认启动页；
-  界面语言支持简体中文、繁體中文、English、日本語。
-- ✨ **播放页动效与歌词**：
-  WebGL 流体动态背景（音频响应）、封面模糊背景、AMLL 逐字歌词、
-  翻译歌词、歌词模糊与字号、逐源歌词偏移 + 单曲歌词偏移。
-- 🪟 **桌面系统集成**：
-  系统媒体键与 SMTC / MPRIS 媒体会话、单实例保护、
-  无边框自绘标题栏（macOS 原生红绿灯布局）。
-- ⌨️ **全键盘快捷键**：
-  见 [键盘快捷键](#键盘快捷键--keyboard-shortcuts)。
-- 🧾 **登录友好**：
-  内置 WebView 登录窗口自动捕获 Cookie（含 HttpOnly），
-  支持手动 Cookie 导入与登录态校验。
-- 🧯 **存储管理**：
-  存储占用分组统计与缓存清理，不影响用户主动下载的内容。
-- 🛠️ **开发者模式与调试**：
-  平台连通性探针、实时日志、崩溃报告查看/清理、调试报告导出。
-
----
-
-## 平台现状 / Platform Status
-
-- **网易云音乐**：
-  WebView 登录、搜索、每日推荐/精选/高质量歌单、用户歌单与订阅专辑、
-  歌单/专辑详情、艺术家详情（热门歌曲/专辑分页）、喜欢/取消喜欢、
-  多音质取流、歌词（含 YRC 逐字与翻译）、下载。
-- **QQ 音乐**：
-  QQ／微信授权登录、歌曲搜索、多音质取流、歌词与播放页元数据补全、下载；
-  音源按账号权益获取，接入说明与验收步骤见 [QQ 音乐接入](QQ_MUSIC_INTEGRATION.md)。
-- **Bilibili**：
-  WebView 登录、视频搜索、创建/订阅收藏夹浏览、DASH 音频取流、
-  封面代理加载（Referer 处理）、下载、发现货架。
-- **YouTube Music**：
-  WebView 登录、首页 Feed、歌单浏览与详情、搜索、取流、下载、
-  账号资料刷新。
-  取流仅处理音频签名，网页令牌短等待后尝试其它客户端，快速切歌会取消旧解析。
-- **本地音频**：
-  目录扫描导入、本地歌单管理、本地艺术家聚合与详情页。
-- **LRCLIB**：
-  外部歌词来源，带时长精确匹配。
-
----
-
-## 与 Android 端的关系 / Relationship with the Android app
-
-桌面端刻意保持与 [NeriPlayer (Android)](https://github.com/cwuom/NeriPlayer)
-的行为一致：
-
-- **同步协议互通**：ProtoBuf 字段号与 Android `SyncDataModels.kt` 的
-  `@ProtoNumber` 逐一对齐，同一个 GitHub 仓库 / WebDAV 远端可被
-  两端交替读写，三路合并语义一致（含删除记录与成员 token）。
-- **一起听互通**：桌面客户端与 Android 客户端连接同一套
-  Cloudflare Workers 服务端，可同处一个房间。
-- **交互对齐**：媒体库分类、设置项、调试页、歌词行为等
-  以 Android 端为基准移植。
-- **版本号格式一致**：`<git短哈希>.<MMddHHmm>`。
-
-Android 端独有的移动平台能力（USB 独占播放、悬浮/状态栏歌词、
-SAF 目录、安全模式等）不在桌面端范围内；桌面端仍在持续补齐
-其余能力，遇到两端行为不一致的场景欢迎提 Issue。
-
----
-
-## 实现概览 / Implementation Notes
-
-### 构建与版本
-
-- 前端：Vue 3.5 + Pinia + Vue Router + vue-i18n + Vite 6 + TypeScript 5.8
-- 后端：Rust 2021（工具链固定 `1.95.0`）+ Tauri 2
-- 包管理：pnpm `9.15.9`（pinned），CI 使用 Node 20
-- 版本名格式：`<git短哈希>.<MMddHHmm>`（Asia/Taipei 时区），
-  由 `src-tauri/build.rs` 注入 `BUILD_UUID / BUILD_TIMESTAMP / BUILD_VERSION`，
-  应用内通过 `get_build_info` 命令展示
-- CI（GitHub Actions）：
-  - `CI`：前端 `vue-tsc + vite build`；后端 `cargo check --locked`
-    覆盖 Windows / macOS(arm64+x64) / Linux 四个 target
-  - `Artifacts`：main 分支推送即构建四平台产物
-  - `Release`：推送 `v*` 标签后构建并发布 GitHub Release
-- 打包目标：Windows MSI + NSIS；macOS DMG（Intel 10.15+ / arm64 11.0+，
-  ad-hoc 签名）；Linux deb + rpm + AppImage
-
-### 进程与 IPC
-
-- 前端从不直接访问音乐平台；每个平台请求都经由 Rust
-  `#[tauri::command]`，命令统一注册在 `src-tauri/src/main.rs` 的
-  `generate_handler![...]` 中（约 140 个命令，按
-  player / library / search / lyrics / settings / auth / recommend /
-  sync / download / listen_together / stats / storage / debug 分域）。
-- 后端通过事件向前端推送状态：`player:position`、`player:audio-level`、
-  `player:track-ended`、`download-progress`、`playlists-changed`、
-  `playback-stats-changed`、`lt:*`、`media:*` 等；
-  后台 ticker 线程轮询播放器并发出进度与结束事件。
-- `AppState` 是唯一被 `.manage()` 的共享状态：播放引擎、播放队列、
-  可重建的 `reqwest` 客户端（用于切换代理直连）、共享 Cookie jar、
-  各平台登录态、一起听会话与下载任务注册表。
-
-### 音频引擎
-
-- `cpal` 输出 + `symphonia` 解码，`lofty` 读取音频标签；
-  播放路径覆盖本地文件、内存字节与网络流（渐进缓冲 + 自适应 Range）。
-- 淡入淡出与交叉淡入淡出在引擎层实现；EQ、响度均衡、响度增益、
-  倍速在解码管线上生效。
-- 播放请求带代际（generation）防止旧请求覆盖新请求；
-  seek 结果按代际采纳，避免拖动竞态。
-- 系统媒体会话经 `souvlaki` 接入 SMTC（Windows）/ MPRIS（Linux）/
-  macOS Now Playing，媒体键动作通过通道回传前端。
-
-### 平台 API 与请求签名
-
-- 每个平台一个模块（`api/netease`、`api/qq`、`api/bilibili`、
-  `api/youtube`）加 `api/lrclib`；签名/加密逻辑隔离存放：
-  - `netease/crypto.rs` — WEAPI / EAPI / linuxapi 的 AES + RSA 加密
-  - `bilibili/wbi.rs` — WBI mixin-key 参数签名
-  - `auth/youtube_hash.rs` — SAPISIDHASH 授权头生成
-- 登录通过内置 WebView 窗口加载平台登录页，轮询捕获 Cookie
-  （含 HttpOnly），检测到会话 Cookie 后自动关窗保存。
-
-### 云同步
-
-- 同步对象：本地歌单、收藏歌单、最近播放（含删除记录）、
-  播放统计（含每日桶与清空标记）、B站跳过区间（含清空记录）、歌单歌曲删除记录与同步日志。
-- `merge.rs` 对照基准快照做三路合并（不是 last-write-wins）；
-  歌曲成员携带因果 token，跨端删除/恢复不会互相覆盖。
-- 当前云端写入 V4 清单和 Zstd 分块归档，兼容读取旧 JSON、GZIP 和 V3；
-  迁移已有旧归档前需要在设置页确认升级，并先更新其它设备的客户端。
-- GitHub Token 与 WebDAV 密码保存在应用侧加密存储中
-  （见下节），不落明文配置。
-
-### 凭据与本地数据
-
-- Release 构建使用应用侧加密文件存储凭据（Cookie、GitHub Token、
-  WebDAV 密码），与 Android 端 EncryptedSharedPreferences 的
-  威胁模型一致：防「文件被拷走后可读」；
-  旧版系统钥匙串中的凭据会在首次读取时自动迁移。
-- 歌单、收藏、播放历史、播放队列、播放统计、下载目录、同步元数据以及
-  详情/歌词缓存存放在 SQLite 用户数据库 `neri_user_data.db`（表结构对齐
-  Android `NeriUserDataDatabase`，WAL 且每次提交 fsync）；旧版 JSON 文件与
-  WebView localStorage 数据在首次启动时按数据域导入一次，原文件移入
-  `legacy-json-backup/`。设置、登录态与同步配置仍为键值存储。
-- 日志经脱敏处理后写入文件（可配置级别与开关），
-  崩溃报告独立落盘。
-
----
-
-## 键盘快捷键 / Keyboard Shortcuts
-
-| 快捷键 | 动作 |
+| 命令 | 用途 |
 | --- | --- |
-| `Space` | 播放 / 暂停 |
-| `Ctrl/Cmd + →` / `Ctrl/Cmd + ←` | 下一首 / 上一首 |
-| `→` / `←` | 快进 / 快退（`Shift` 加大步长） |
-| `↑` / `↓` | 音量加 / 减 |
-| `M` | 静音 |
-| `S` | 随机播放 |
-| `R` | 循环模式 |
-| `Ctrl/Cmd + P` | 打开 / 收起正在播放 |
-| `Ctrl/Cmd + F` | 搜索 |
-| `Esc` | 分层关闭浮层（歌词 → 播放页 → 面板） |
+| `pnpm dev` | 仅启动 Vite，不提供 Rust IPC/原生播放 |
+| `pnpm build` | Vue/TypeScript 检查并生成前端 `dist/` |
+| `pnpm test` | 聚合前端回归脚本 |
+| `cargo check --manifest-path src-tauri/Cargo.toml --locked` | Rust 静态编译检查 |
+| `cargo test --manifest-path src-tauri/Cargo.toml --locked` | Rust 测试，FFmpeg 检查需可用运行库 |
+| `pnpm tauri build` | 原生编译打包，默认不会自动加入 FFmpeg 动态库 |
 
----
+完整解码能力的安装包还需准备匹配目标的 FFmpeg 动态库，运行 `scripts/ffmpeg/bundle-config.mjs` 并将生成配置传给 `tauri build --config`。完整平台安装、命令、产物路径与 CI/Release 流程见 [贡献指南](./CONTRIBUTING.md)和 [FFmpeg 构建说明](./src-tauri/native/ffmpeg/README.md)。
 
-## GitHub / WebDAV 同步 / Cloud Sync
+应用内构建版本为 `<git短哈希>.<MMddHHmm>`，另提供构建时间和 UUID；打包元数据中的 `1.0.0` 不表示已经是稳定版。发布频率随功能与维护情况调整，变化见 Release 与提交记录。
 
-NeriPlayer Desktop 支持将本地元数据同步到 **用户自己的 GitHub 仓库**
-或 WebDAV 远端文件，配置入口在「设置 → 备份与同步」。
+## 🤝 贡献与后续方向
 
-当前同步对象：
+欢迎提交可复现的 Issue、改进文档、参与预览版验证或贡献代码。贡献前请阅读 [CONTRIBUTING.md](./CONTRIBUTING.md)和 [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)。
 
-- 本地歌单（含歌曲自定义名称/歌手/封面、匹配歌词与单曲歌词偏移）
-- 收藏歌单
-- 最近播放记录及其删除记录
-- 播放统计（含每日统计桶）
-- B站按视频和分 P 保存的跳过区间及清空记录（输入草稿仅留在本机）
+继续关注播放稳定性、歌词匹配、跨端数据兼容、下载恢复与跨平台体验。应用内自动更新和按字节断点续传仍是后续方向，不承诺完成时间；QQ／微信登录、托盘、全局快捷键和桌面歌词已提供。
 
-技术细节：
+## 🙏 鸣谢
 
-- 🔒 **本地安全存储**：GitHub Token 与 WebDAV 密码保存在
-  应用侧加密存储中。
-- 🧩 **冲突处理**：三路合并对照基准快照裁决歌单、收藏、历史、
-  删除记录与播放统计；歌曲成员携带因果 token，
-  从备份恢复的内容不会被旧删除记录再次删掉。
-- 🪶 **分块归档**：使用 Android V4 的 `neriplayer-sync-v3.manifest` 清单和 Zstd 对象；
-  旧格式可读取，升级确认分别绑定 GitHub 或 WebDAV 的当前目标与内容。
-- 🔄 **跨端互通**：与 Android 端共用同一数据模型，
-  同一远端可被两端交替读写。
-- 🚫 **同步边界**：不会上传音频文件、下载内容、Cookie 或播放 Token。
-- 🧪 **对齐验证**：Kotlin 反向解码脚本为 `scripts/test-sync-android-interop.ps1`；
-  自动编解码测试不代替真实账号、provider 与跨设备交替同步验收。
-- 📦 **远端格式**：GitHub 仓库 / WebDAV 文件不是端到端加密备份，
-  远端文件由用户自行保管。
+- [NeriPlayer (Android)](https://github.com/cwuom/NeriPlayer)：功能、协议与交互参考
+- [applemusic-like-lyrics](https://github.com/amll-dev/applemusic-like-lyrics)：逐字歌词组件
+- [netease-cloud-music](https://github.com/chaunsin/netease-cloud-music)：网易云接口实现参考
+- [bilibili-API-collect](https://github.com/SocialSisterYi/bilibili-API-collect)：Bilibili 接口资料
+- [LRCLIB](https://lrclib.net)：开放歌词服务
+- [FFmpeg](https://ffmpeg.org/)：扩展解码与解封装
 
-使用方法（GitHub 为例）：
+## 📄 许可证
 
-1. 创建 GitHub Personal Access Token（需要 `repo` 权限）。
-2. 在应用内完成 Token 校验，选择创建默认私有仓库或接入已有仓库。
-3. 手动点击立即同步，或让本地变更触发同步。
+本项目以 **GPL-3.0-or-later** 发布，详见 [LICENSE](./LICENSE)。2026-10-07 之前以 MIT 发布的代码保留原许可声明，见 [LICENSES/MIT.txt](./LICENSES/MIT.txt)。
 
-另有 **歌单 JSON 导入/导出** 与 **完整配置导入/导出**
-（含设置、授权与同步配置，适合自用迁移，不应公开分享）。
-
----
-
-## 一起听 / Listen Together
-
-- 支持创建房间或加入他人房间，通过 WebSocket 实时同步播放、暂停、
-  进度、切歌与循环/随机模式；支持成员控制开关、成员进出自动暂停、
-  直链共享开关与自定义服务端地址。
-- 服务端与 Android 端共用，基于 **Cloudflare Workers + Durable Objects**：
-  - 仓库内源码：Android 仓库的
-    [np-submodule/NeriPlayer-LTW](https://github.com/cwuom/NeriPlayer/tree/master/np-submodule/NeriPlayer-LTW)
-  - 公开部署模板：
-    [TheSmallHanCat/NeriPlayer-LTW](https://github.com/TheSmallHanCat/NeriPlayer-LTW)
-- 房间号固定为 6 位可读字符；昵称长度 1-24，
-  允许中文、英文字母和数字（与服务端约束一致）。
-
----
-
-## 发展规划 / Roadmap
-
-### 方向探索
-
-这些方向会根据维护精力、平台可用性和社区反馈调整，不承诺固定周期。
-
-- [x] QQ 音乐 QQ／微信授权登录、歌曲搜索与账号音源
-- [ ] QQ 音乐账号库页能力
-- [ ] 系统托盘与系统级全局快捷键
-- [ ] 应用内自动更新通道
-- [ ] 下载断点续传与队列恢复
-- [ ] 持续对齐 Android 端新能力
-
-### 近期已落地
-
-- [x] 用户数据迁移到 SQLite 数据库（对齐 Android Room），旧数据自动导入
-- [x] 网易云艺术家详情页与收藏页艺术家分类
-- [x] 国际化模式下 YouTube Music 首页货架优先
-- [x] 分层 ESC 关闭、光标锚定菜单与菜单细节打磨
-- [x] 指针拖拽排序、多选工具栏与稳定拖放指示器
-- [x] 自适应 Range 流式拉流、分片快速 seek 与静默拖动
-- [x] 主题色平滑过渡与设置页动效
-- [x] macOS 原生 unified toolbar 居中红绿灯标题栏
-- [x] 三路合并语义与 Android 对齐，修复数据丢失路径
-- [x] 原子文件写入与存储损坏防护
-- [x] 凭据加密存储与日志脱敏
-- [x] 调试台对齐 Android（探针 / 日志 / 崩溃报告）
-- [x] 单实例保护与 Linux 依赖修复
-- [x] AMLL 逐字歌词、YRC 接入与歌词右键菜单
-- [x] 一起听循环/随机模式同步与会话防护
-
----
-
-## 问题反馈 / Bug Report
-
-- 反馈前建议先开启开发者模式（设置页连续点击 **版本号** 7 次），
-  侧栏会出现 `Debug` 页。
-- Debug 页可查看实时日志、崩溃报告，并一键导出调试报告；
-  「设置 → 日志」可开启持久文件日志并调整级别。
-- 前往 [Issues](https://github.com/cwuom/NeriPlayer-Desktop/issues)
-  按模板提供：操作系统与版本、应用版本（设置页可复制构建信息）、
-  复现步骤与关键日志。
-
----
-
-## 已知问题 / Known Issues
-
-### 安装与签名
-
-- macOS 安装包为 ad-hoc 签名，首次启动可能被 Gatekeeper 拦截，
-  处理方式见 [快速体验](#快速体验--getting-started)。
-- Windows 安装包未做代码签名，SmartScreen 提示属预期现象。
-- Linux 需要 WebKitGTK 4.1 运行时；deb 依赖已在包内声明。
-
-### 网络
-
-- 请合理配置代理规则；全局代理可能导致部分第三方接口返回异常数据。
-  设置中提供「绕过系统代理」直连开关。
-
-### 能力边界
-
-- QQ 音乐支持 QQ／微信授权登录；可用音质和曲目由账号权益及平台返回的音源决定。
-- 下载暂不支持断点续传；取消即清理。
-- Android 端独有的移动能力（USB 独占、悬浮/状态栏歌词、SAF、
-  安全模式等）不在桌面端范围。
-- GitHub / WebDAV 同步不是端到端加密；完整配置导出文件包含授权信息，
-  请自行妥善保管。
-
----
-
-## 隐私与数据 / Privacy
-
-- NeriPlayer Desktop 不提供公共云端媒体分发服务，也不接入广告 SDK、
-  第三方统计或崩溃分析 SDK。
-- 歌单、收藏、最近播放、播放统计、下载文件、设置与授权信息
-  默认保存在本机。
-- 如用户主动开启 GitHub / WebDAV 同步，仅同步歌单、收藏、
-  历史和播放统计等元数据，远端由用户自行选择和保管。
-- 不会将音频文件、下载内容、Cookie 或播放 Token 上传给开发者。
-- 出于账号安全考虑，应用不会把本地播放历史或播放统计
-  回写到第三方音乐平台。
-- 完整配置导出文件包含设置、授权信息和同步配置，适合自用迁移，
-  不应公开分享。
-- 第三方平台侧的访问日志与风控策略，由对应平台按照其自身
-  隐私政策处理。
-
----
-
-## 鸣谢 / Reference
-
-<table>
-<tr>
-  <td><a href="https://github.com/cwuom/NeriPlayer">NeriPlayer (Android)</a></td>
-  <td>✨ 一个把多源在线播放、本地管理、歌词体验和自建同步做进原生 Android 的音频播放器 🎵</td>
-</tr>
-<tr>
-  <td><a href="https://github.com/amll-dev/applemusic-like-lyrics">applemusic-like-lyrics</a></td>
-  <td>An Apple Music style lyric player component, with React &amp; Vue support. 一个类 Apple Music 歌词显示组件</td>
-</tr>
-<tr>
-  <td><a href="https://github.com/chaunsin/netease-cloud-music">netease-cloud-music</a></td>
-  <td>✨ 网易云音乐 Golang 实现 🎵</td>
-</tr>
-<tr>
-  <td><a href="https://github.com/SocialSisterYi/bilibili-API-collect">bilibili-API-collect</a></td>
-  <td>哔哩哔哩 API 收集整理</td>
-</tr>
-<tr>
-  <td><a href="https://lrclib.net">LRCLIB</a></td>
-  <td>开放的歌词数据库服务</td>
-</tr>
-</table>
-
----
-
-## 更新周期 / Update Cycle
-
-- 项目处于开发中，Release 通常按功能批次手动发布。
-- 播放、本地数据与同步链路会优先维护。
-- 第三方平台能力可能受平台策略影响，欢迎提交 Issue、PR 或复现日志。
-
----
-
-## 支持方式 / Support
-
-- 由于项目特殊性，暂不接受任何形式的捐赠。
-- 欢迎通过提交 Issue、PR 或分享使用体验来支持项目发展。
-
----
-
-## 许可证 / License
-
-NeriPlayer Desktop 使用 **GPL-3.0** 开源许可证（GPL-3.0-or-later）发布，与 Android 端一致，
-详细条款请参阅 [LICENSE](./LICENSE)。
-
-> 2026-10-07 之前的代码以 MIT 许可发布，原许可声明保留在 [LICENSES/MIT.txt](./LICENSES/MIT.txt)；
-> 子模块 `vendor/applemusic-like-lyrics` 使用 AGPL-3.0，随应用分发的部分遵循其自身许可证。
-
----
-
-# Contributing to NeriPlayer Desktop / 贡献指南
-
-贡献前请先阅读完整的 [CONTRIBUTING.md](./CONTRIBUTING.md)
-与 [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)。
-
-
-
+`vendor/applemusic-like-lyrics` 使用 AGPL-3.0，按其许可证分发。随包精简 FFmpeg 未启用 GPL 组件，以 LGPL-2.1-or-later 分发；许可证、构建信息和源码获取方式见 [FFmpeg 说明](./src-tauri/native/ffmpeg/README.md)及 Release 附件。

@@ -105,6 +105,10 @@ function inferSource(track: TrackInfo): string {
   return 'local'
 }
 
+function isLocalTrack(track: TrackInfo): boolean {
+  return track.id.startsWith('local:') || inferSource(track) === 'local'
+}
+
 async function stableSyncId(value: string): Promise<string> {
   if (!globalThis.crypto?.subtle) return value
   const digest = await globalThis.crypto.subtle.digest(
@@ -309,12 +313,12 @@ export const useHistoryStore = defineStore('history', () => {
 
   function getSyncSnapshot() {
     return {
-      entries: entries.value.map(entry => ({
+      entries: entries.value.filter(entry => !isLocalTrack(entry.track)).map(entry => ({
         track: toBackendTrack(entry.track),
         playedAt: entry.playedAt,
         resumePositionMs: entry.resumePositionMs ?? null,
       })),
-      deletions: deletions.value.map(deletion => ({
+      deletions: deletions.value.filter(deletion => !isLocalTrack(deletion.track)).map(deletion => ({
         track: toBackendTrack(deletion.track),
         deletedAt: deletion.deletedAt,
       })),
@@ -345,9 +349,20 @@ export const useHistoryStore = defineStore('history', () => {
       isCurrent() && localMutationEpoch !== startedLocalEpoch ? 'deferred' : 'skipped'
     const previousEntries = entries.value.map(entry => entry.track)
     const previousDeletions = deletions.value.map(deletion => deletion.track)
+    // 本地文件的路径只属于本机，远端结果不能替换本机的记录或删除标记
+    const localEntries = entries.value.filter(entry => isLocalTrack(entry.track))
+    const localDeletions = deletions.value.filter(deletion => isLocalTrack(deletion.track))
     const rawEntries: BackendHistoryEntry[] = Array.isArray(payload.entries) ? payload.entries : []
     const rawDeletions: BackendHistoryDeletion[] = Array.isArray(payload.deletions) ? payload.deletions : []
-    const candidates = [...previousEntries, ...previousDeletions]
+    const nextEntries: PlayedEntry[] = rawEntries
+      .map(entry => ({
+        track: normalizeTrack(entry.track),
+        playedAt: Number(entry.playedAt ?? entry.played_at ?? 0),
+        resumePositionMs: resumePosition(entry),
+      }))
+      .filter(entry => entry.track.id && entry.playedAt > 0 && !isLocalTrack(entry.track))
+    const candidates = [...previousEntries, ...previousDeletions, ...nextEntries.map(entry => entry.track)]
+      .filter(track => !isLocalTrack(track))
     const resolvedDeletions: HistoryDeletion[] = []
 
     for (const rawDeletion of rawDeletions) {
@@ -361,23 +376,21 @@ export const useHistoryStore = defineStore('history', () => {
       }
     }
 
-    const nextEntries: PlayedEntry[] = rawEntries
-      .map(entry => ({
-        track: normalizeTrack(entry.track),
-        playedAt: Number(entry.playedAt ?? entry.played_at ?? 0),
-        resumePositionMs: resumePosition(entry),
-      }))
-      .filter(entry => entry.track.id && entry.playedAt > 0)
-      .sort((left, right) => right.playedAt - left.playedAt)
+    // 同一曲目只留最新状态，删除和播放同一时刻时以删除为准
+    const mergedEntries = uniqueByIdentity([...nextEntries, ...localEntries]
+      .sort((left, right) => right.playedAt - left.playedAt))
+    const mergedDeletions = uniqueByIdentity([...resolvedDeletions, ...localDeletions]
+      .filter(deletion => deletion.track.id && deletion.deletedAt > 0)
+      .sort((left, right) => right.deletedAt - left.deletedAt))
+    const playedTimes = new Map(mergedEntries.map(entry => [historyEntryKey(entry.track), entry.playedAt]))
+    const deletedTimes = new Map(mergedDeletions.map(deletion => [historyEntryKey(deletion.track), deletion.deletedAt]))
 
     // 提交阶段没有异步等待，先复核账号意图和本地修改再一起保存
     if (!canApply()) return interrupted()
     mutationEpoch++
     // 合并结果按同步身份区分，同一曲目可能因专辑名不同出现多条，本地只留最新的一条
-    entries.value = uniqueByIdentity(nextEntries)
-    deletions.value = uniqueByIdentity(resolvedDeletions
-      .filter(deletion => deletion.track.id && deletion.deletedAt > 0)
-      .sort((left, right) => right.deletedAt - left.deletedAt))
+    entries.value = mergedEntries.filter(entry => (deletedTimes.get(historyEntryKey(entry.track)) ?? 0) < entry.playedAt)
+    deletions.value = mergedDeletions.filter(deletion => (playedTimes.get(historyEntryKey(deletion.track)) ?? 0) <= deletion.deletedAt)
     persist('replace_play_history', {
       history: {
         entries: entries.value.map(entry => ({

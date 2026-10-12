@@ -99,10 +99,16 @@ pub async fn get_qq_playlist(id: String, state: State<'_, AppState>) -> AppResul
     if id.parse::<u64>().ok().filter(|id| *id > 0).is_none() {
         return Err(AppError::Api("Invalid QQ Music playlist ID".into()));
     }
-    let credential = credential(&state)?;
+    let credential = match credential(&state) {
+        Ok(credential) => credential,
+        Err(_) => return public_playlist(&state.qq().api()?, &id).await,
+    };
     let api = state.qq().with_credential(Some(credential.clone())).api()?;
     // Directory IDs are trusted only when obtained from this account's listing.
-    let (owned, _) = rows(&api, &credential, AccountRead::OwnedPlaylists).await?;
+    let (owned, _) = match rows(&api, &credential, AccountRead::OwnedPlaylists).await {
+        Ok(result) => result,
+        Err(_) => return public_playlist(&api, &id).await,
+    };
     let binding = owned.iter().filter_map(|row| playlist(row, true)).find(|row| row["id"] == id);
     let operation = match binding.as_ref().and_then(|row| row["dirId"].as_u64()).filter(|dir| *dir > 0) {
         Some(dir_id) => AccountRead::OwnedPlaylistTracks { tid: id.clone(), dir_id },
@@ -114,6 +120,41 @@ pub async fn get_qq_playlist(id: String, state: State<'_, AppState>) -> AppResul
     let mut seen = HashSet::new();
     let tracks: Vec<_> = songs.iter().filter_map(track).filter(|track| seen.insert(track["id"].as_str().unwrap_or_default().to_owned())).collect();
     Ok(json!({"name":summary["name"], "coverUrl":summary["coverUrl"], "tracks":tracks}))
+}
+
+// Public search results do not require an account. Never guess an owned directory ID.
+async fn public_playlist(api: &qqmusic_api::Client, id: &str) -> AppResult<Value> {
+    let id = id.parse::<i64>().ok().filter(|id| *id > 0)
+        .ok_or_else(|| AppError::Api("Invalid QQ Music playlist ID".into()))?;
+    let mut tracks = Vec::new();
+    let mut seen = HashSet::new();
+    let mut summary = json!({});
+    for page in 1..=100 {
+        let detail = api.songlist.get_detail(id, 0, 100, page, false, true, true).await
+            .map_err(|error| qq_api_error("playlist detail", &error))?;
+        if page == 1 {
+            summary = json!({"name":detail.info.base.title,
+                "coverUrl":https(detail.info.base.picurl), "description":detail.info.base.desc,
+                "creator":detail.info.creator.nick, "playCount":detail.info.base.listennum});
+        }
+        let before = tracks.len();
+        for song in detail.songs {
+            let mapped = track(&json!({"mid":song.mid, "title":if song.title.is_empty() { song.name } else { song.title },
+                "singer":song.singer.iter().map(|singer| json!({"name":singer.name})).collect::<Vec<_>>(),
+                "album":{"mid":song.album.mid,"name":song.album.name}, "interval":song.interval.max(0)}));
+            if let Some(song) = mapped {
+                if seen.insert(song["id"].as_str().unwrap_or_default().to_owned()) { tracks.push(song); }
+            }
+        }
+        if detail.hasmore == 0 {
+            summary["tracks"] = json!(tracks);
+            return Ok(summary);
+        }
+        if tracks.len() == before {
+            return Err(AppError::Api("QQ Music playlist pagination stalled".into()));
+        }
+    }
+    Err(AppError::Api("QQ Music playlist exceeds page limit".into()))
 }
 
 #[cfg(test)]

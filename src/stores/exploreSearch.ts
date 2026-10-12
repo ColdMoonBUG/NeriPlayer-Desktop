@@ -10,7 +10,7 @@ export type ExploreKind = 'songs' | 'playlists' | 'artists' | 'videos' | 'creato
 
 /// 对齐 Android：网易云可搜歌曲/歌单/歌手，YouTube Music 可搜歌曲/视频/创作者，B 站只有视频
 export const EXPLORE_KINDS: Record<Exclude<ExplorePlatform, 'link'>, ExploreKind[]> = {
-  qq: ['songs'],
+  qq: ['songs', 'playlists'],
   netease: ['songs', 'playlists', 'artists'],
   youtube: ['songs', 'videos', 'creators'],
   bilibili: ['videos'],
@@ -29,7 +29,7 @@ export interface ExploreSong {
 
 export interface ExploreCollection {
   kind: 'playlist' | 'artist'
-  platform: 'netease' | 'bilibili' | 'youtube'
+  platform: 'netease' | 'qq' | 'bilibili' | 'youtube'
   id: string
   name: string
   cover_url: string | null

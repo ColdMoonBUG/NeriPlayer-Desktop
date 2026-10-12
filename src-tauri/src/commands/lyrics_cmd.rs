@@ -6,6 +6,7 @@ use crate::lyrics::sanitize;
 use crate::lyrics::{FetchedLyrics, LyricSource};
 use crate::state::AppState;
 use std::time::Instant;
+use tauri::ipc::Channel;
 use tauri::State;
 
 /// 自动识别 LRC / YRC(逐字), 支持逐字歌词编辑往返
@@ -59,11 +60,11 @@ pub async fn fetch_netease_romanized_lyric(song_id: u64, state: State<'_, AppSta
 
 /// 歌词编辑器「匹配」：按所选平台搜索并排序候选，每个候选带完整歌词行
 #[tauri::command]
-pub async fn match_lyrics(request: MatchRequest, state: State<'_, AppState>) -> AppResult<Vec<RankedMatch>> {
+pub async fn match_lyrics(request: MatchRequest, on_results: Channel<Vec<RankedMatch>>, state: State<'_, AppState>) -> AppResult<Vec<RankedMatch>> {
     let started = Instant::now();
     let sources = request.sources.clone();
     let matcher = LyricMatcher::new(state.transport("lyrics"), state.netease());
-    let results = matcher.find(request).await;
+    let results = matcher.find(request, |results| { let _ = on_results.send(results.to_vec()); }).await;
     log::info!(
         target: "lyrics-command",
         "match sources={sources:?} results={} top={:?} elapsed_ms={}",

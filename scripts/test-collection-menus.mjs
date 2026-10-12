@@ -24,6 +24,7 @@ async function functions(file, names, context) {
 }
 
 const { collectionWebUrl } = await plainModule('utils/collectionLinks.ts')
+assert.equal(collectionWebUrl('qq', 'playlist', '123456789012345678'), 'https://y.qq.com/n/ryqq/playlist/123456789012345678')
 assert.equal(collectionWebUrl('youtube', 'album', 'MPREb_demo'), '', 'an album browseId is not a web playlistId')
 const bili = await plainModule('modules/library/biliPlaylistReference.ts')
 const routed = [], menus = [], played = []
@@ -92,4 +93,34 @@ shelf.openYoutubeShelfMenu(event, shelfArtist)
 assert.equal(routed.at(-1).name, 'youtube-artist', 'artist shelf cards open the artist page')
 assert.deepEqual(menus.at(-1).route, routed.at(-1), 'artist shelf clicks and menus share their destination')
 assert.equal(menus.at(-1).webUrl, 'https://music.youtube.com/channel/UCdemo')
+const explore = await functions('views/ExploreView.vue', ['collectionRoute', 'openCollection'], { router })
+explore.openCollection({ kind: 'playlist', platform: 'qq', id: '123456789012345678' })
+assert.deepEqual(routed.at(-1), { name: 'qq-playlist', params: { id: '123456789012345678' } })
+
+const detailFields = Object.fromEntries(['isLoading', 'error', 'playlistName', 'coverUrl', 'tracks', 'trackCount', 'playCount', 'description', 'creator'].map(key => [key, { value: null }]))
+const detailRequests = []
+const detail = await functions('views/NeteasePlaylistView.vue', ['loadDetail'], {
+  ...detailFields, props: { isQq: true }, qqDetailRequest: 0,
+  route: { params: { id: '123456789012345678' } }, t: key => key,
+  invoke: (command, args) => new Promise((resolve, reject) => detailRequests.push({ command, args, resolve, reject })),
+})
+const previousDetail = detail.loadDetail()
+const currentDetail = detail.loadDetail()
+assert.equal(detailRequests[1].command, 'get_qq_playlist')
+assert.deepEqual(detailRequests[1].args, { id: '123456789012345678' }, 'shared detail UI preserves QQ string IDs and API')
+const qqTrack = { id: 'qq:mid', title: '歌曲', source: 'qq' }
+detailRequests[1].resolve({ name: '当前账号', tracks: [qqTrack] })
+await currentDetail
+detailRequests[0].resolve({ name: '旧账号', tracks: [] })
+await previousDetail
+assert.equal(detailFields.playlistName.value, '当前账号', 'old account response cannot overwrite the new request')
+assert.deepEqual(detailFields.tracks.value, [qqTrack])
+assert.equal(detailFields.trackCount.value, 1)
+assert.equal(detailFields.isLoading.value, false)
+const brokenDetail = detail.loadDetail()
+detailRequests.at(-1).reject(new Error('playlist unavailable'))
+await brokenDetail
+assert.match(detailFields.error.value, /playlist unavailable/)
+assert.equal(detailFields.isLoading.value, false)
+
 console.log('favorite, creator and discovery collection menu routing tests passed')

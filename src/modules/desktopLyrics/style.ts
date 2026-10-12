@@ -256,8 +256,16 @@ function alpha(hex: string, opacity: number): string {
 export function desktopLyricsCssVars(style: DesktopLyricsStyle, accent: string | null): Record<string, string> {
   const colors = resolveDesktopLyricsColors(style, accent)
   const family = style.fontFamily ? `"${style.fontFamily}", ` : ''
+  const shadowOffset = Math.max(1, Math.round(style.shadowBlur / 4))
+  const glowBlur = Math.round(style.fontSize / 4)
+  const strokeWidth = style.strokeEnabled ? style.strokeWidth : 0
+  // 滤镜在字形外继续绘制，按三倍模糊半径预留可见范围
+  const effectInset = Math.ceil(Math.max(
+    strokeWidth + (style.shadowEnabled ? style.shadowBlur * 3 + shadowOffset : 0),
+    style.glowEnabled ? glowBlur * 3 : 0,
+  ))
   const shadow = style.shadowEnabled
-    ? `drop-shadow(0 ${Math.max(1, Math.round(style.shadowBlur / 4))}px ${style.shadowBlur}px ${alpha(style.shadowColor, 0.85)})`
+    ? `drop-shadow(0 ${shadowOffset}px ${style.shadowBlur}px ${alpha(style.shadowColor, 0.85)})`
     : 'none'
   return {
     '--dl-font-family': `${family}var(--font-family, "MiSans", system-ui, sans-serif)`,
@@ -271,7 +279,8 @@ export function desktopLyricsCssVars(style: DesktopLyricsStyle, accent: string |
     '--dl-secondary-size': `${Math.round(style.fontSize * style.secondaryScale)}px`,
     '--dl-stroke': style.strokeEnabled ? `${style.strokeWidth * 2}px ${style.strokeColor}` : '0 transparent',
     '--dl-shadow': shadow,
-    '--dl-glow': style.glowEnabled ? `drop-shadow(0 0 ${Math.round(style.fontSize / 4)}px ${alpha(colors.played[1], 0.75)})` : 'none',
+    '--dl-glow': style.glowEnabled ? `drop-shadow(0 0 ${glowBlur}px ${alpha(colors.played[1], 0.75)})` : 'none',
+    '--dl-effect-inset': `${effectInset}px`,
     '--dl-opacity': String(style.opacity),
     '--dl-background': `rgba(16, 15, 24, ${style.backgroundOpacity})`,
   }

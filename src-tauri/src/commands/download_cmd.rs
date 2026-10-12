@@ -695,6 +695,55 @@ fn has_download_size_mismatch(expected: u64, actual: u64) -> bool {
     expected > 0 && expected != actual
 }
 
+fn scan_download_duration(path: &std::path::Path, cancelled: &AtomicBool) -> AppResult<u64> {
+    use symphonia::core::errors::Error;
+    use symphonia::core::io::{MediaSourceStream, MediaSourceStreamOptions};
+    use symphonia::core::probe::Hint;
+
+    let source = MediaSourceStream::new(
+        Box::new(std::fs::File::open(path)?),
+        MediaSourceStreamOptions::default(),
+    );
+    let mut format = symphonia::default::get_probe()
+        .format(&Hint::new(), source, &Default::default(), &Default::default())
+        .map_err(|error| AppError::Audio(format!("Cannot inspect downloaded audio: {error}")))?
+        .format;
+    let track = format
+        .default_track()
+        .ok_or_else(|| AppError::Audio("Downloaded file contains no audio track".into()))?;
+    let track_id = track.id;
+    let time_base = track
+        .codec_params
+        .time_base
+        .ok_or_else(|| AppError::Audio("Downloaded audio has no time base".into()))?;
+    let mut first_timestamp = None;
+    let mut end_timestamp = 0;
+    loop {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err(AppError::Other("Download cancelled".into()));
+        }
+        match format.next_packet() {
+            Ok(packet) if packet.track_id() == track_id => {
+                first_timestamp =
+                    Some(first_timestamp.map_or(packet.ts(), |first: u64| first.min(packet.ts())));
+                end_timestamp = end_timestamp.max(packet.ts().saturating_add(packet.dur()));
+            }
+            Ok(_) => {}
+            Err(Error::IoError(error)) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(error) => {
+                return Err(AppError::Audio(format!(
+                    "Cannot inspect downloaded audio packets: {error}"
+                )));
+            }
+        }
+    }
+    let time = time_base.calc_time(end_timestamp.saturating_sub(first_timestamp.unwrap_or(0)));
+    Ok(time
+        .seconds
+        .saturating_mul(1000)
+        .saturating_add((time.frac * 1000.0).round() as u64))
+}
+
 fn validate_download_audio(
     path: &std::path::Path,
     expected_length: Option<u64>,
@@ -702,6 +751,7 @@ fn validate_download_audio(
     expected_duration_ms: u64,
     cancelled: &AtomicBool,
 ) -> AppResult<u64> {
+    use crate::audio::pcm::PcmSource;
     use lofty::file::AudioFile;
     use md5::{Digest, Md5};
     use std::io::Read;
@@ -745,7 +795,22 @@ fn validate_download_audio(
         .guess_file_type()?
         .read()
         .map_err(|error| AppError::Audio(format!("Downloaded audio is unreadable: {error}")))?;
-    let actual_duration_ms = tagged.properties().duration().as_millis() as u64;
+    let mut decoder =
+        crate::audio::remote::SymphoniaAudioDecoder::new_file(path).map_err(AppError::Audio)?;
+    if decoder.next().is_none() {
+        return Err(AppError::Audio(
+            "Downloaded file contains no decodable audio".into(),
+        ));
+    }
+    let header_duration_ms = tagged.properties().duration().as_millis() as u64;
+    // 分片 MP4 的头部时长可能为零，先用播放解码器信息，再按实际音频包时间轴确认
+    let actual_duration_ms = if header_duration_ms > 0 {
+        header_duration_ms
+    } else if let Some(duration) = decoder.total_duration().filter(|duration| !duration.is_zero()) {
+        duration.as_millis() as u64
+    } else {
+        scan_download_duration(path, cancelled)?
+    };
     if actual_duration_ms == 0 && (expected_duration_ms > 0 || expected_md5.is_some()) {
         return Err(AppError::Audio(
             "Cannot verify downloaded audio duration".into(),
@@ -759,13 +824,6 @@ fn validate_download_audio(
     {
         return Err(AppError::Audio(
             "Downloaded audio duration does not match the resolved source".into(),
-        ));
-    }
-    let mut decoder =
-        crate::audio::remote::SymphoniaAudioDecoder::new_file(path).map_err(AppError::Audio)?;
-    if decoder.next().is_none() {
-        return Err(AppError::Audio(
-            "Downloaded file contains no decodable audio".into(),
         ));
     }
     if std::fs::metadata(path)?.len() != before {
@@ -2225,6 +2283,38 @@ mod tests {
         let bytes = include_bytes!("../audio/fixtures/hls-silence.aac");
         std::fs::write(&path, bytes).unwrap();
         assert!(validate_download_audio(&path, None, None, 0, &AtomicBool::new(true)).is_err());
+    }
+
+    #[test]
+    fn downloads_verify_fragmented_mp4_without_header_duration() {
+        use lofty::file::AudioFile;
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("audio.part");
+        let mut bytes = include_bytes!("../audio/fixtures/hls-init.mp4").to_vec();
+        bytes.extend_from_slice(include_bytes!("../audio/fixtures/hls-segment.m4s"));
+        std::fs::write(&path, &bytes).unwrap();
+        let tagged = lofty::probe::Probe::open(&path)
+            .unwrap()
+            .guess_file_type()
+            .unwrap()
+            .read()
+            .unwrap();
+        assert!(
+            tagged.properties().duration().is_zero(),
+            "分片 MP4 的头部没有最终时长"
+        );
+        let cancelled = AtomicBool::new(false);
+        assert_eq!(
+            validate_download_audio(&path, Some(bytes.len() as u64), None, 192, &cancelled).unwrap(),
+            192
+        );
+        assert!(
+            validate_download_audio(&path, None, None, 20_000, &cancelled).is_err(),
+            "可解码不代表时长匹配"
+        );
+        assert!(
+            validate_download_audio(&path, None, None, 192, &AtomicBool::new(true)).is_err()
+        );
     }
 
     /// 回归：网易云把 FLAC 标成 audio/mpeg，按 Content-Type 命名会把 FLAC 存成 .mp3

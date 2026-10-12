@@ -1,464 +1,217 @@
 [English](./CONTRIBUTING_EN.md) | [中文](./CONTRIBUTING.md)
 
-## Contributing to NeriPlayer Desktop
+# 🛠️ Contributing to NeriPlayer Desktop
 
-Thanks for contributing to NeriPlayer Desktop. This document describes
-**the actual current implementation of the desktop client** — keep it in
-sync with the source code and runtime behavior.
+NeriPlayer Desktop is currently a **preview release**. Multi-source playback, local music management, downloads, lyrics, cloud sync, and Listen Together are implemented, with platform and scenario validation still needed. This guide describes current development entry points and engineering boundaries. See [README_EN.md](./README_EN.md) for features, installation, and data safety.
 
-> [!CAUTION]
-> The desktop port is at an early stage: parts of this document and the
-> README are placeholder text, implementations may be missing or
-> unpolished, and in the worst case data may be corrupted. The
-> repository may become unmaintained in the future — it is meant to be
-> community-driven. When docs and code disagree, trust the code and fix
-> the docs along the way.
+Use recoverable copies of your data during development. Third-party APIs can change; passing unit tests does not establish online service, native window, or cross-device correctness.
 
----
+## 📚 Documentation and sources of truth
 
-### Scope
+| Topic | Source |
+| --- | --- |
+| Frontend dependencies, tools, and test commands | [package.json](./package.json), [pnpm-lock.yaml](./pnpm-lock.yaml) |
+| Rust toolchain and dependencies | [rust-toolchain.toml](./rust-toolchain.toml), [Cargo.toml](./src-tauri/Cargo.toml), [Cargo.lock](./src-tauri/Cargo.lock) |
+| Window, security, resource, and packaging configuration | [tauri.conf.json](./src-tauri/tauri.conf.json), [capabilities](./src-tauri/capabilities/) |
+| Development startup and build metadata | [run-tauri.mjs](./scripts/run-tauri.mjs), [build.rs](./src-tauri/build.rs) |
+| Checks, test packages, and releases | [.github/workflows](./.github/workflows/) |
+| FFmpeg builds, distribution, and decoder validation | [FFmpeg README](./src-tauri/native/ffmpeg/README.md) |
+| Contribution and community standards | [PR template](./.github/PULL_REQUEST_TEMPLATE.md), [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md) |
 
-- NeriPlayer Desktop is the **Tauri 2 desktop port** of NeriPlayer
-  (Android), not a public cloud music service.
-- Online content comes from **NetEase Cloud Music**, **QQ Music**,
-  **Bilibili**, and **YouTube Music**; lyric completion also uses
-  **LRCLIB**.
-- Data stays local by default; GitHub / WebDAV sync is **optional** and
-  covers metadata (playlists, favorites, recent plays, stats), not media
-  files.
-- The cloud-sync data model and the Listen Together protocol **must stay
-  compatible with the Android app** — this is the most important external
-  constraint of this repository.
-- The Listen Together server lives in the Android repo's
-  `np-submodule/NeriPlayer-LTW` (Cloudflare Workers + Durable Objects);
-  this repo only implements the client.
+Update both READMEs for user-facing changes and both CONTRIBUTING files for development, protocol, test, or release changes. Do not describe unimplemented plans as available functionality.
 
----
+## 🔧 Development environment
 
-### Documentation Map
+- **Git**: clone, initialize the submodule, and supply revision metadata.
+- **Node.js**: CI currently uses 20; the repository declares no `engines`. Use the same major version to reproduce CI, and record your environment when validating another version.
+- **pnpm 9.15.9**: pinned by `packageManager`; preserve the lockfile. Run `corepack enable` if Corepack is available, otherwise install that pnpm version following its official instructions.
+- **Rust 1.95.0**: install through rustup. `rust-toolchain.toml` selects the `minimal` profile; install optional components with `rustup component add clippy rustfmt` when needed.
+- **Tauri 2 / Vue 3 / Vite 6 / TypeScript 5**: installed as project dependencies; no global Tauri CLI is needed.
 
-- `README.md` / `README_EN.md` — for users and new contributors:
-  positioning, capability boundaries, install/build, sync, privacy.
-- `CONTRIBUTING.md` / `CONTRIBUTING_EN.md` — for developers: real module
-  boundaries, extension paths, testing, and PR requirements.
-- `scripts/test-sync-android-interop.ps1` — Kotlin reverse decoding with
-  read-only Android sources and existing Gradle caches.
-- `CODE_OF_CONDUCT.md` — community standards.
-- `CLAUDE.md` / `AGENTS.md` — repo guides for AI coding agents; human
-  contributors can use them as an architecture primer.
-- `.github/ISSUE_TEMPLATE/`, `.github/PULL_REQUEST_TEMPLATE.md` —
-  issue and PR templates.
+Follow the [official Tauri prerequisites](https://v2.tauri.app/start/prerequisites/). Windows needs Microsoft C++ Build Tools with desktop C++ development, WebView2, and an MSVC Rust toolchain; macOS desktop development can use Xcode Command Line Tools.
 
-If a behavior change affects user understanding, update the README; if it
-affects extension paths, testing, or module boundaries, update
-CONTRIBUTING.
+Linux needs WebKitGTK 4.1, GTK, OpenSSL, tray, and ALSA development libraries. This example follows the repository's Ubuntu 22.04 CI environment and adds local compiler tools; map package names using the official guide for other distributions:
 
----
+```bash
+sudo apt-get update
+sudo apt-get install -y build-essential pkg-config curl wget file libssl-dev \
+  libxdo-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
+  patchelf libasound2-dev
+```
 
-### Development Environment
+Install `rpm` additionally for Linux RPM packages. FFmpeg's extra tools are described separately. Windows MSI packaging may need the VBScript optional feature; see Tauri's prerequisites for troubleshooting.
 
-- **Node.js**: 20+ (CI uses 20)
-- **pnpm**: `9.15.9` (pinned; `corepack enable`)
-- **Rust**: `1.95.0` (pinned by `rust-toolchain.toml`)
-- **Tauri**: 2.x; **Vue**: 3.5; **Vite**: 6; **TypeScript**: 5.8
-- **Version name format**: `<git-short-hash>.<MMddHHmm>` (Asia/Taipei)
+## ▶️ Clone and develop
 
-Platform dependencies:
-
-- **Windows**: Visual Studio C++ Build Tools, WebView2 runtime
-- **macOS**: Xcode Command Line Tools
-- **Linux** (Debian/Ubuntu):
-  ```bash
-  sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
-    librsvg2-dev patchelf libasound2-dev
-  ```
-
-Notes:
-
-- The repo depends on the `vendor/applemusic-like-lyrics` submodule
-  (AMLL lyric components). Clone with `--recursive` or run
-  `git submodule update --init --recursive`.
-- The build reads the Git short commit for the version name — make sure
-  Git is installed.
-- `pnpm tauri` is forwarded through `scripts/run-tauri.mjs`, which
-  injects `NERI_BUILD_EPOCH` so `src-tauri/build.rs` can generate a
-  reproducible build timestamp.
-
----
-
-### Quick Start
+Run from the repository root:
 
 ```bash
 git clone --recursive https://github.com/cwuom/NeriPlayer-Desktop.git
 cd NeriPlayer-Desktop
-pnpm install
-
-pnpm tauri dev      # full app (Vite :1420, or the next free port if it is taken + Rust shell)
-pnpm dev            # frontend only (no Tauri backend; IPC calls fail)
-pnpm build          # vue-tsc type check + vite build -> dist/
-pnpm tauri build    # production bundle -> src-tauri/target/release/bundle/
+pnpm install --frozen-lockfile
+pnpm tauri dev
 ```
 
-Rust backend (from `src-tauri/`):
+For an existing clone without its submodule, run `git submodule update --init --recursive` first. Vite references the core sources of `vendor/applemusic-like-lyrics` directly, so missing files break frontend builds.
+
+| Command | Purpose and limits |
+| --- | --- |
+| `pnpm tauri dev` | Start Vite and the native Rust app for desktop flow validation |
+| `pnpm dev` | Frontend only; browser sessions have no native IPC for playback, login, files, or system integration |
+| `pnpm build` | Run `vue-tsc --build` and Vite, producing `dist/` |
+| `pnpm preview` | Preview the built frontend without a native backend |
+| `pnpm tauri build -- --locked` | Build the native app and installers; configure FFmpeg separately |
+| `cargo check --manifest-path src-tauri/Cargo.toml --locked` | Check Rust; platform libraries and a C++ compiler are still required |
+
+`pnpm tauri` forwards through `scripts/run-tauri.mjs`. Development starts at port 1420, searches the next 49 ports if needed, and sets matching Vite and Tauri addresses. `NERI_DEV_PORT` selects an explicit port, which must be available. Direct `pnpm dev` uses strict port configuration without automatic fallback.
+
+Tap the Settings version label seven times to enable developer mode and access Debug for platform probes, logs, crash reports, and build metadata. Review redaction before sharing logs.
+
+## 🧩 Architecture and module boundaries
+
+The frontend WebView handles Vue rendering and state orchestration. Rust handles platform requests, audio output, credentials, files, and sync. Tauri commands and events connect them.
+
+| Path or entry point | Current responsibility |
+| --- | --- |
+| `src/main.ts`, `src/views/` | Startup, routing, and pages |
+| `src/stores/` | Player, settings, accounts, library, downloads, history, stats, home, lyrics, and sync state |
+| `src/modules/` | Playback policies, lyrics, downloads, shortcuts, library, YouTube, tray, and persistence |
+| `src/modules/persistence/userData.ts` | Startup snapshots, legacy localStorage migration, and serialized persistence writes |
+| `src/stores/listenTogether/` | Protocol mapping, queue, playback sync, reconnection, and watchdog |
+| `src/components/`, `src/composables/` | Player, AMLL/desktop lyrics, tray popup, menus, and shared interactions |
+| `src/i18n/`, `src/shaders/` | Simplified/traditional Chinese, English, Japanese, and background shaders |
+| `src-tauri/src/main.rs`, `state.rs` | Native app, command registration, events, windows, and shared runtime state |
+| `src-tauri/src/commands/` | Domain IPC, including local files, desktop lyrics, user data, and tray |
+| `src-tauri/src/audio/` | CPAL, Symphonia / FFmpeg, buffering, Range / HLS, queues, effects, speed, and media sessions |
+| `src-tauri/src/api/`, `auth/` | NetEase, QQ, Bilibili, YouTube, LRCLIB requests and authorization |
+| `src-tauri/src/db/` | `neri_user_data.db`, schema, transactions, legacy migration, and cache |
+| `src-tauri/src/library/`, `lyrics/`, `stats/` | Local scanning/tags, playlists, lyrics, and playback stats |
+| `src-tauri/src/library/local_index.rs` | Persistent multi-folder index, native notify events, and incremental updates in `local-library.json` |
+| `src-tauri/src/sync/` | Android-compatible models, three-way merge, V4 archives, GitHub / WebDAV, migration, and GC |
+| `src-tauri/src/listen_together/` | Realtime sessions, WebSocket, and protocol models |
+| `src-tauri/src/security.rs`, `logging/`, `fsutil.rs` | Credentials, logging, and atomic file writes |
+| `src-tauri/native/ffmpeg/` | C++17 runtime-loading shim and pinned public headers |
+
+User data moved from scattered JSON / localStorage into SQLite, including playlists, favorites, history, queue, stats, download catalog, and sync metadata. Reuse existing database and domain transactions instead of creating independent JSON copies. Settings, credentials, caches, media, and exports retain their own storage paths; use `fsutil.rs` and existing atomic procedures for remaining file writes.
+
+Local music folders and track indexes live separately in `local-library.json`, outside SQLite. `local_index.rs` reuses unchanged tracks by file size/modification time, coalesces native notify events into incremental scans, and updates indexes at startup. `LocalFilesView.vue` plays filtered or selected tracks directly and lets users choose to import them into playlists.
+
+Adding a command requires an implementation in `commands/`, registration through `generate_handler!` in `main.rs`, and aligned frontend arguments/return types. Follow camelCase JavaScript conventions and matching Rust/serde field naming. Keep shared state and persistence in existing stores/modules; reuse backend events and dispose listeners with their component or scope.
+
+### Flows to protect
+
+- **Playback and cancellation**: dispatch expensive engine-locking operations through existing blocking workers. Preserve generation checks for requests, seek, prefetch, and audio metadata. Stream cache keys include relevant client choice and track identity.
+- **Downloads and local files**: preserve cancellation, retry, sidecars, final file size, and catalog consistency. Adding/removing folders, incremental indexing, and direct playback must not implicitly change playlists; removing a folder does not delete source files. Reuse copy/write/read-back/replace procedures for tags, retaining lyrics, artwork, and NP metadata. See `download_cmd.rs`, `download_metadata.rs`, `download_catalog.rs`, `local_files_cmd.rs`, `library/local_index.rs`, and `library/local_file_tags.rs`.
+- **Platform APIs**: verify WEAPI / EAPI, WBI, SAPISIDHASH, and YouTube challenge changes against existing request/signature implementations. UI mocks cannot establish actual stream resolution.
+- **UI and system integration**: reuse menu routing, keyboard, animations, cover caching, and window state. IME shortcuts, tray, desktop lyrics, media keys, and multiple windows need native validation.
+- **Credentials and logs**: use `security.rs`. Release uses application-encrypted files; Debug uses plaintext files at randomized paths. This does not promise protection from malicious processes running as the same user. Never log cookies, tokens, sync passwords, or signed URLs.
+
+### Common extension entry points
+
+- **Settings**: register `AppSettings` fields/defaults in `stores/settings.ts`; update `SettingsView.vue`, translations, search, and migration. Reuse commands and `settings/` persistence for backend behavior and preserve `formatVersion` compatibility.
+- **Platforms**: start with `api/`, `auth/`, `search_cmd.rs`, and stream commands in `settings_cmd.rs`, then align frontend source mapping, routes, downloads, lyrics, covers, and statistics identity.
+- **Lyrics**: inspect Rust `lyrics/manager.rs`, frontend `modules/lyrics/`, and `stores/currentLyrics.ts`. Preserve matched lyrics, translation/romanization, offsets, and AMLL word timing; sources do not all share one format.
+
+## 🔄 Android protocols and sync
+
+Cloud sync and Listen Together are external compatibility boundaries. Read corresponding Android models/policies and Worker implementation before changes, and record reference commits. The desktop repository contains no Listen Together server; it lives in `np-submodule/NeriPlayer-LTW` in the Android repository.
+
+Start sync changes with `sync/models.rs`, `proto_models.rs`, `archive/`, `merge.rs`, and `manager.rs`:
+
+- Preserve ProtoBuf field numbers and V4 record kinds. New fields need defaults; never reassign old numbers.
+- Preserve three-way merge, causal tokens, and deletion records instead of simple last-write-wins. Resume positions, favorite artists, lyric offsets, and Bilibili per-part rules require local and remote semantics checks.
+- Bilibili intervals bind to `bvid + cid`, using `biliVideoSkipRules` and V4 kind 14. Clearing retains a tombstone so old clients cannot restore the rule.
+- Bind V4 migration approval to destination, backend, credential fingerprint, and remote contents. GitHub uses conditional HEAD updates; WebDAV uses strong ETags or verified finite exclusive collection leases. Legacy single-file migration requires a finite collection lease. Preserve remote object closure validation instead of unconditional overwrites.
+- Interoperability acceptance requires Desktop write → Android read → Android write → Desktop read, including edits, deletion, restoration, and conflicts. Local codec tests prove only their covered fixtures.
+
+Check Rust `listen_together/` and frontend `stores/listenTogether/` together, preserving fields, room versions, and compatibility fallback. Incremental queues use `baseRoomVersion`; repeated tracks use `stableKey + occurrence`. Link sharing respects settings and platform filtering. Beyond automated tests, verify Desktop/Android rooms, join/leave, reconnect, track changes, seek, and queue conflicts.
+
+## 🧪 Verification entry points
+
+Run targeted checks first, expanding according to impact, and record commands actually run and their results in the PR. Common entry points:
 
 ```bash
-cargo check          # fast type check
-cargo build          # debug build
-cargo clippy         # lint (zero warnings expected for delivery)
+pnpm test
+pnpm build
+cargo check --manifest-path src-tauri/Cargo.toml --locked
+cargo test --manifest-path src-tauri/Cargo.toml --locked --lib
+cargo clippy --manifest-path src-tauri/Cargo.toml --locked
 ```
 
-Sign in to platforms in Settings after the first launch. Tap the version
-number **7 times** to unlock developer mode and the `Debug` page
-(platform probes / live logs / crash reports / build info).
+`pnpm test` uses `scripts/test-frontend.mjs` to enumerate all `test:*` commands and run them sequentially. Coverage includes pure logic, stores, component mocks, and source constraints, rather than browser end-to-end testing. Register new regressions in `package.json` and maintain component/IPC mocks using existing patterns.
 
----
+| Area | Example targeted entry points |
+| --- | --- |
+| Playback, resume, metadata | `test:playback-request`, `test:playback-queue`, `test:playback-audio-info`, `test:long-form-progress` |
+| Home, library, search | `test:home-continue`, `test:home-feed`, `test:local-artists`, `test:search-store` |
+| Downloads, scanning, persistence | `test:download-store`, `test:download-cancellation`, `test:local-scan-preview`, `test:local-scan-store`, `test:user-data-persistence` |
+| Lyrics and desktop lyrics | `test:lyrics-format`, `test:lyrics-request`, `test:lyric-offset-store`, `test:desktop-lyrics`, `test:desktop-lyrics-style` |
+| Menus, windows, shortcuts | `test:collection-menus`, `test:context-menu-utils`, `test:tray-popup`, `test:title-bar-window-state`, `test:shortcut-settings` |
+| Sync and Bilibili parts | `test:sync-protocol-upgrade`, `test:history-sync`, `test:bili-video-skip`, `test:bili-video-skip-store`, `test:bili-video-skip-runtime`, `test:bili-video-skip-dialog` |
+| Listen Together | `test:listen-together-protocol`, `test:listen-together-queue`, `test:listen-together-sync`, `test:listen-together-reconnect`, `test:listen-together-store` |
+| FFmpeg configuration | `test:ffmpeg-bundle` |
 
-### Release Build
+Run each with `pnpm <entry-point>`; `package.json` contains the full list. Rust supports filters:
 
-- Local: `pnpm tauri build`; bundles land in
-  `src-tauri/target/release/bundle/` (Windows: `msi/` + `nsis/`;
-  macOS: `dmg/`; Linux: `deb/` + `rpm/` + `appimage/`).
-- Bundles ship a minimal FFmpeg (it decodes Opus, E-AC-3 and similar
-  formats): run `bash scripts/ffmpeg/build-ffmpeg.sh <target>` (the
-  Windows build cross-compiles on Linux / WSL), then
-  `node scripts/ffmpeg/bundle-config.mjs <target>`, and pass
-  `--config .cache/ffmpeg-build/<target>/tauri.bundle.json` when
-  building. Without it the bundle has no FFmpeg and the frontend avoids
-  those formats. See `src-tauri/native/ffmpeg/README.md`.
-- CI: pushing a `v*` tag triggers `.github/workflows/release.yml`,
-  building on Windows x64 / macOS arm64 / macOS x64 / Linux x64 and
-  publishing a GitHub Release with the FFmpeg source attached; macOS
-  bundles are ad-hoc signed (file names carry an `-adhoc` suffix).
-- Pushes to main trigger the `Artifacts` workflow producing the same
-  matrix for testing.
+```bash
+cargo test --manifest-path src-tauri/Cargo.toml --locked --lib sync
+cargo test --manifest-path src-tauri/Cargo.toml --locked --lib listen_together
+cargo test --manifest-path src-tauri/Cargo.toml --locked --lib library::local_file_tags::tests
+```
 
-Security reminders:
+FFmpeg tests may skip when libraries are missing. Require actual decoding with `NERI_FFMPEG_DIR` and `NERI_REQUIRE_FFMPEG=1`; see [FFmpeg README](./src-tauri/native/ffmpeg/README.md).
 
-- Never commit cookies, tokens, passwords, or other secrets.
-- Never paste full authorization data into issues/PRs.
-- Full-config exports contain platform authorization and sync
-  credentials — they must not be attached publicly.
+The Android JVM reverse-decoding helper requires PowerShell 7, Node, Python, Java, Android sources, and existing Gradle caches for the script's Kotlin/kotlinx.serialization versions:
 
----
+```powershell
+./scripts/test-sync-android-interop.ps1 -AndroidRoot <AndroidRepositoryPath> -ExportFixtures
+```
 
-### Project Layout
+It reads Android sources/caches, retains audit output, installs no missing dependencies, and accesses no cloud provider. It does not replace a full Gradle build, provider tests, or device interoperability. Obtain authorization before operating real phones; prefer emulators.
 
-Two processes communicate over Tauri's IPC bridge; the frontend never
-talks to music platforms directly.
+## 📦 Packaging, CI, and releases
 
-#### Frontend (`src/`)
+Ordinary `pnpm tauri build` builds the app but does not automatically download or bundle FFmpeg. Prepare libraries following the [FFmpeg README](./src-tauri/native/ffmpeg/README.md), generate configuration, and merge it. For Windows x64:
 
-- `main.ts` — app entry and the route table (all pages lazy-loaded); the
-  main window starts hidden and is shown after Vue mounts to avoid a
-  white flash.
-- `stores/` — Pinia stores are the only place IPC lives. `player.ts` is
-  the playback hub (control, fade/crossfade orchestration, queue,
-  progress); `settings.ts` persists all settings;
-  `listenTogether/` mirrors the Rust protocol with protocol/mapper
-  submodules; other stores cover auth / library / likedSongs / history /
-  playbackStats / download / recommend / search / sync / toast /
-  lyricOffset.
-- `views/` — route-level pages: Home / Explore / Library / Settings /
-  Downloads / Recent / PlaybackStats / Debug, plus per-platform
-  playlist, album, and artist detail pages.
-- `components/` — `NowPlaying`, `LyricsView` (AMLL), `MiniPlayer`,
-  `QueuePanel`, `SideNav`, `TitleBar` (custom window controls),
-  `HyperBackground` (WebGL fluid background), `CoverBlurBackground`,
-  `ListenTogetherPanel`, `TrackSelectionToolbar`, `LocateTrackFab`,
-  `WaveformSlider`, `StorageManagementDialog`; `ui/` holds Material 3
-  primitives (M3Dialog / M3Input / ContextMenu / CustomSelect, etc.).
-- `modules/` — pure-logic modules by domain: `playback/` (queue,
-  requests, policy, prefetch, state, stats tracking), `lyrics/`
-  (format, cache, offsets, karaoke lines, sync payload), `library/`,
-  `shortcuts/` (global shortcuts), `youtube/`. Most have matching
-  `scripts/test-*.mjs` pure-logic tests.
-- `shaders/` — `hyperBackground.vert/.frag` imported as strings (see
-  `shaders.d.ts`).
-- `i18n/` — `zh-CN` (fallback) / `zh-TW` / `en` / `ja`.
-- `utils/`, `composables/` — cover caching, color extraction, logging
-  (with sanitizer), persistent cache, spring animation, multi-select /
-  pointer reorder / locate-current-track composables.
+```powershell
+node scripts/ffmpeg/bundle-config.mjs windows-x86_64
+pnpm tauri build --config .cache/ffmpeg-build/windows-x86_64/tauri.bundle.json -- --locked
+```
 
-#### Backend (`src-tauri/src/`)
+Without `--target`, bundles default to `src-tauri/target/release/bundle/`. Explicit targets use `src-tauri/target/<RustTarget>/release/bundle/`; `CARGO_TARGET_DIR` changes the root.
 
-- `main.rs` — the single `generate_handler![...]` registration point,
-  event ticker, media-key channel, single-instance plugin, and runtime
-  decoration removal (macOS keeps the native Overlay title bar).
-- `state.rs` — `AppState`: player engine, play queue, a rebuildable
-  shared `reqwest::Client` (proxy-bypass toggle), shared cookie jar,
-  per-platform auth, the Listen Together session, and the download-task
-  registry; `TrackInfo` / `TrackSource` are the canonical track types
-  across the IPC boundary.
-- `commands/*_cmd.rs` — command implementations grouped by domain:
-  player / library / search / lyrics / settings / auth / recommend /
-  sync / download / listen_together / stats / storage / image / debug.
-- `commands/download_cmd.rs`, `commands/download_metadata.rs` —
-  `stores/download.ts` and `modules/download/downloadQueue.ts` schedule tasks;
-  `DownloadsView.vue` exposes queued/resolving/transferring/metadata-processing
-  progress, cancellation and failed-task retries in the Downloads tab.
-  Concurrency is clamped to 1-8, default 6. Quality follows playback by default
-  or uses independent per-platform download settings. Audio stays in the chosen
-  root, `Lyrics/` holds lyrics/translations/romanization, `Covers/` holds covers,
-  and `.tmp/` holds temporary files. `<audio filename>.npmeta.json` stores NP
-  metadata and asset references. Metadata completion defaults on; standardized
-  lyric embedding defaults off and retains original text in sidecars/NP metadata.
-  The manifest records the final file size after tagging to avoid false corruption
-  reports caused by tag writes.
-- `commands/local_files_cmd.rs`, `library/local_file_tags.rs` —
-  `LocalFilesView.vue` and `stores/library.ts` provide cancellable scan previews,
-  search, multi-select and filters for existing playlist files/duplicate metadata.
-  Scanning does not write playlists; users manually import into existing or new
-  playlists. Title/artist/album edits are prepared on a copy, then atomically
-  replace the original after verifying that lyrics, pictures and other tags
-  survive. Unmodified NP sidecar fields are retained. Editing a downloaded file
-  also updates its manifest entry and emits `downloads-changed`; failed commits
-  roll back. Focused tests: `node scripts/test-local-scan-preview.mjs`,
-  `node scripts/test-local-scan-store.mjs`, and
-  `cargo test --manifest-path src-tauri/Cargo.toml --lib library::local_file_tags::tests`.
-- `audio/` — `player.rs` (`PlayerEngine`: play/seek/fades/crossfades),
-  `queue.rs` (shuffle/repeat), `effects.rs` (5-band EQ, loudness
-  normalization, loudness gain), `growing.rs` (progressive buffering),
-  `remote.rs` (Range streaming), `analyzer.rs` (audio level),
-  `media_session.rs` (SMTC/MPRIS).
-- `api/` — `netease/` (`crypto.rs`: WEAPI/EAPI/linuxapi), `qq/`,
-  `bilibili/` (`wbi.rs`: WBI signing), `youtube/`
-  (session/playback/refresh), `lrclib.rs`, `transport.rs`.
-- `auth/` — cookie storage, auth state models, `youtube_hash.rs`
-  (SAPISIDHASH).
-- `sync/` — `models.rs` (payloads), `proto_models.rs` (ProtoBuf models
-  tag-aligned with Android), `merge.rs` (three-way merge),
-  `serializer.rs` (legacy JSON / GZIP), `archive/` (V4 manifests and chunks),
-  `cloud.rs` (publication), `github_api.rs`, `webdav_archive.rs`,
-  `webdav_gc.rs`, and `manager.rs`.
-- `listen_together/` — `protocol.rs` (events and models), `session.rs`,
-  `ws_client.rs`.
-- `library/` (local scanning, playlist storage), `lyrics/` (multi-source
-  lyric manager and parser), `settings/`, `stats/`, `logging/`.
-- `security.rs` — credential storage: app-side encrypted files in
-  Release, plaintext files at random paths in Debug; legacy keychain
-  entries migrate on first read.
-- `fsutil.rs` — atomic-write helper (temp file + rename); all local data
-  persistence must go through it.
+| Platform | Rust target | FFmpeg target | Release assets |
+| --- | --- | --- | --- |
+| Windows x64 | `x86_64-pc-windows-msvc` | `windows-x86_64` | NSIS `.exe`, `.msi` |
+| macOS Apple Silicon | `aarch64-apple-darwin` | `macos-aarch64` | `.dmg`, release minimum system setting 11.0 |
+| macOS Intel | `x86_64-apple-darwin` | `macos-x86_64` | `.dmg`, release minimum system setting 10.15 |
+| Linux x64 | `x86_64-unknown-linux-gnu` | `linux-x86_64` | `.deb`, `.rpm`, `.AppImage.tar.gz` |
 
----
+macOS uses ad-hoc signing without Apple notarization. Release sets per-architecture minimum OS versions, checks signatures/library architectures, and adds `-adhoc` to DMGs. The base `tauri.conf.json` setting is 10.15; local arm64 release builds should mirror the workflow with `MACOSX_DEPLOYMENT_TARGET=11.0` and a `bundle.macOS.minimumSystemVersion` override. The base value is not an arm64 support promise. Linux produces `.AppImage` locally; workflows upload it compressed as `.tar.gz`.
 
-### IPC Contract
+- **`build.yml` / CI**: main/master pushes and PRs or manual dispatch; runs `pnpm test`, `pnpm build`, and locked Rust checks for four targets. Bundled decoder tests cover Windows x64, macOS arm64, and Linux x64. It does not run the full Rust unit suite or Clippy.
+- **`artifacts.yml` / Artifacts**: main/master pushes or manual dispatch; four platform test packages with shared metadata. Packages are retained for 3 days and build metadata for 14 days. No GitHub Release publication.
+- **`ffmpeg.yml` / FFmpeg**: reusable or manual workflow building four library sets as `ffmpeg-<FFmpegTarget>`.
+- **`release.yml` / Release**: `v*` tags or manual `target_ref`; the manual path generates a build version tag. Tag-triggered releases with hyphenated tags are marked prerelease. **Project preview status and GitHub's prerelease flag are separate concepts.**
 
-- Adding a command touches three places: the implementation in
-  `commands/*_cmd.rs`, registration in `main.rs`
-  `generate_handler![...]`, and the frontend caller. The registration
-  list is the single source of truth for the IPC surface.
-- Frontend calls `invoke('command_name', { camelCaseArgs })`; Tauri maps
-  camelCase JS args to snake_case Rust params. Keep payload field naming
-  consistent with existing conventions (structs mostly use
-  `#[serde(rename_all = "camelCase")]`) — mismatches drop fields
-  silently, which has bitten playback-stats payloads before.
-- Backend-to-frontend communication is events only (`app.emit(...)`);
-  never make the frontend poll. See README "Processes and IPC" for the
-  current event list.
+CI and Artifacts ignore documentation-only, Markdown, license, and template changes; missing runs do not mean checks passed. Release builds and inspects packages, attaching FFmpeg source/build script, macOS installation notes, and `SHA256SUMS.txt`. Package inspection does not replace native testing after installation.
 
----
+Settings displays `<7-characterGitHash>.<MMddHHmm>` (UTC+8; CI uses Asia/Taipei), plus UUID and timestamp. `1.0.0` in package/Cargo metadata does not establish a stable 1.0 release. `run-tauri.mjs` supplies `NERI_BUILD_EPOCH`; CI shares `NERI_BUILD_GIT_SHA` and `NERI_BUILD_UUID` across packages. Fixed metadata does not establish byte-for-byte reproducible binaries.
 
-### Quality Guardrails
+## 🤝 Pull requests and safety
 
-Protect these paths before submitting:
+Read source/docs and inspect `git status` before editing; preserve existing uncommitted work. Keep changes focused and add regressions that reproduce bugs. Do not delete valid tests, suppress new warnings, or upgrade unrelated dependencies.
 
-- **Player commands must not block the IPC thread**: every operation in
-  `player_cmd.rs` that touches the `PlayerEngine` lock must go through
-  `run_player_blocking`. Taking the lock directly inside an async
-  command has caused 30-second UI freezes.
-- **Playback generations and seek adoption**: playback requests and seek
-  results carry a generation; changes to the playback path must never
-  let a stale request overwrite a newer one.
-- **Signing/crypto must match exactly**: WEAPI / EAPI / linuxapi, WBI,
-  and SAPISIDHASH are the fragile parts of platform requests — match
-  the existing scheme precisely.
-- **Sync compatibility is a hard constraint**: `proto_models.rs` tags
-  align one-to-one with Android `SyncDataModels.kt` `@ProtoNumber`s —
-  **changing a tag breaks cross-device sync**; `merge.rs` is a
-  three-way merge and must not degrade to last-write-wins; remote
-  snapshots must tolerate missing fields from older versions.
-- **Listen Together protocol compatibility**: protocol changes must stay
-  compatible with both the Android client and the Worker server;
-  nicknames allow Chinese characters, letters, and digits
-  (**no hyphens** — the server sanitizes them); never expose stream
-  URLs when `shareAudioLinks=false`.
-- **Atomic writes for local data**: all JSON persistence goes through
-  `fsutil.rs`; never `fs::write` over user data directly.
-- **UI state changes must animate**: a hard UX requirement of this
-  project — any visible state switch (pages, panels, covers, theme
-  colors) needs a transition, no hard cuts; cover loading uses a
-  peek-first pattern (probe the cache before rendering) to avoid
-  placeholder flashes.
-- **Credentials and logs**: credentials only go through `security.rs`;
-  log output passes the sanitizer — never log cookies, tokens, or
-  signed URL parameters.
+Use the [PR template](./.github/PULL_REQUEST_TEMPLATE.md) strictly. Describe motivation, scope, compatibility, commands actually run/results, and unverified checks with reasons. Include screenshots/recordings for UI changes. Use English Conventional Commits for commit messages and PR titles, such as `fix(player): preserve track identity during fallback`, and keep documentation bilingual.
 
----
+Never commit or publish cookies, tokens, passwords, private libraries, full configuration exports, databases, or sensitive logs. Full exports can include authorization and sync credentials. Exclude `dist/`, `src-tauri/target/`, `.cache/`, `.report/`, `docs-private/`, and local IDE configuration.
 
-### Extension Paths
+## ⚖️ License and communication
 
-#### 1. Adding an IPC command
+- The project is for learning and research; follow source platform rules and applicable laws. Maintainers accept no sponsorship, donations, or commercial funding.
+- Contributions use **GPL-3.0-or-later**. MIT contributions before 2026-10-07 retain the [original notice](./LICENSES/MIT.txt).
+- `vendor/applemusic-like-lyrics` follows its AGPL-3.0 license. Retain bundled FFmpeg's LGPL notice, source, and build script.
+- Retain Android copyright/license notices and identify sources/reference revisions when porting code.
 
-1. Implement `#[tauri::command]` in the matching
-   `src-tauri/src/commands/*_cmd.rs` (create the file and export it in
-   `commands/mod.rs` for a new domain).
-2. Register it in `main.rs` `generate_handler![...]`.
-3. Wrap the `invoke` call in the corresponding Pinia store — components
-   never call `invoke` directly.
-4. Align payload types on both sides (camelCase ↔ snake_case).
-
-#### 2. Adding a streaming/search platform
-
-1. Model on `api/bilibili/` or `api/youtube/`: create
-   `api/<platform>/client.rs` with signing/crypto isolated in its own
-   file.
-2. Extend auth state in `auth/state.rs`; reuse the WebView login flow in
-   `auth_cmd.rs` for cookie capture.
-3. Wire search into the platform dispatch in `search_cmd.rs`; wire
-   streaming into the `get_*_url` family in `settings_cmd.rs`.
-4. Add the platform tab and route pages in Explore / Library.
-5. Keep downloads, lyrics, covers, and stats mappings cleanly bounded.
-
-#### 3. Adding a setting
-
-1. Register the key, type, and default in `src/stores/settings.ts`.
-2. Put the UI in the matching section of `SettingsView.vue`.
-3. Settings that affect backend behavior go through existing commands
-   (like `set_bypass_proxy`) — don't invent a second persistence
-   channel.
-4. Mind the `formatVersion` migration logic; old configs must upgrade
-   losslessly.
-
-#### 4. Changing the lyrics pipeline
-
-1. Source priority lives in `src-tauri/src/lyrics/manager.rs`:
-   QQ (with song_mid) → NetEase (with id) → LRCLIB → title/artist/
-   duration search fallback; keep duration-error scoring intact.
-2. Frontend parsing and caching live in `src/modules/lyrics/`; matched
-   lyrics from the sync payload take priority over re-fetching.
-3. Keep YRC word-synced structures and translation lines compatible with
-   the AMLL rendering layer.
-4. Related tests: `pnpm test:lyrics-format`, `pnpm test:lyric-offset`,
-   `pnpm test:lyrics-request`.
-
-#### 5. Changing GitHub / WebDAV sync
-
-1. Understand `sync/models.rs` and `sync/proto_models.rs` first;
-   **ProtoBuf tags are append-only**, and new fields must tolerate
-   missing-field payloads from old JSON and ProtoBuf data.
-2. Merge logic is in `sync/merge.rs` (three-way + causal tokens). When
-   changing delete/restore semantics, self-test the alternating
-   scenario: desktop writes → Android reads → Android writes → desktop
-   reads.
-3. Credentials go through `security.rs`, never back into plaintext
-   config.
-4. V4 migration approval is bound to the backend, target, credential fingerprint,
-   and current remote content. GitHub uses conditional HEAD updates; WebDAV V4
-   manifests require strong ETags or verified finite exclusive collection leases.
-   Legacy single-file migration requires a finite collection lease. Redirects, unconditional writes,
-   and local object caches must not replace remote closure validation.
-5. Run `pnpm test:sync-protocol-upgrade` and Rust `sync` tests. Run the Kotlin
-   reverse decoder with `./scripts/test-sync-android-interop.ps1 -AndroidRoot <AndroidRepo> -ExportFixtures`.
-   This does not replace full Gradle, provider, or device tests.
-6. Bilibili skip intervals bind to `bvid + cid` and use the `biliVideoSkipRules` extension
-   and V4 record kind 14. Edits use the sync metadata transaction and change epoch;
-   clearing retains a tombstone so older devices cannot restore the rule.
-   Run `pnpm test:bili-video-skip`, `pnpm test:bili-video-skip-store`,
-   `pnpm test:bili-video-skip-runtime`, and `pnpm test:bili-video-skip-dialog`.
-
-#### 6. Changing Listen Together
-
-1. Client logic lives in `src-tauri/src/listen_together/` and
-   `src/stores/listenTogether/`; both protocol models must change
-   together.
-2. Server constraints (6-char room codes, 1-24-char hyphen-free
-   nicknames, event semantics) are defined by the Worker — don't fix
-   only the UI validation.
-3. Related tests: `pnpm test:listen-together-mapper` and
-   `node scripts/test-listen-together-protocol.mjs`.
-
----
-
-### Testing & PR
-
-Correctness gates for this repo:
-
-1. Frontend type check + build (required):
-   ```bash
-   pnpm build
-   ```
-2. Backend type check (required) and lint (recommended, zero warnings):
-   ```bash
-   cargo check --manifest-path src-tauri/Cargo.toml --locked
-   cargo clippy --manifest-path src-tauri/Cargo.toml
-   ```
-3. Pure-logic test scripts (Node, no build needed; run what you touched):
-   ```bash
-   pnpm test:player-state
-   pnpm test:playback-request
-   pnpm test:playback-source
-   pnpm test:track-cover
-   pnpm test:lyrics-format
-   pnpm test:lyric-offset
-   pnpm test:lyrics-request
-   pnpm test:listen-together-mapper
-   pnpm test:youtube-playlist-parse
-   pnpm test:bilibili-cover-cache
-   node scripts/playback-queue.test.mjs
-   node scripts/test-listen-together-protocol.mjs
-   node scripts/test-now-playing-background.mjs
-   ```
-4. For behavior changes in playback, login, downloads, or sync, verify
-   manually on at least one desktop platform and state the platform and
-   scenarios in the PR.
-5. When touching pure logic in `modules/`, add or update the matching
-   `scripts/test-*.mjs`; register new scripts as `test:*` entries in
-   `package.json`.
-
-A PR should include (template at `.github/PULL_REQUEST_TEMPLATE.md`):
-
-- Motivation and key implementation points
-- Risk and compatibility impact (especially cross-device sync / Listen
-  Together protocol)
-- Verification commands actually run, with results
-- Screenshots or recordings for UI changes
-
-Do not commit:
-
-- Build artifacts (`dist/`, `src-tauri/target/`), local IDE config
-- Authorization cookies, tokens, full-config backups, personal data
-- Anything under `.report/` or `docs-private/`
-
-Commit messages follow Conventional Commits, e.g.
-`feat(player): ...`, `fix(sync): ...`, `docs: ...`.
-
----
-
-### Legal & License
-
-- The project is for learning and research only; do not use it for
-  illegal purposes.
-- This project is licensed under **GPL-3.0** (GPL-3.0-or-later); by
-  contributing you agree to distribute your changes under
-  GPL-3.0-or-later. Code contributed under MIT before 2026-10-07 keeps its
-  original notice in `LICENSES/MIT.txt`.
-- The `vendor/applemusic-like-lyrics` submodule is AGPL-3.0 and follows its
-  own license.
-- The Android repository is GPL-3.0 as well. When porting an Android
-  implementation, keep its copyright notices and name the source in the
-  commit body.
-
----
-
-### Communication
-
-- [Issues](https://github.com/cwuom/NeriPlayer-Desktop/issues): bugs,
-  feature requests, discussion
-- [README_EN.md](./README_EN.md): features and usage
-- [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md): community standards
-
-For larger structural changes (especially anything touching the sync
-data model or the Listen Together protocol), open an issue first to
-align on direction.
+Use [Issues](https://github.com/cwuom/NeriPlayer-Desktop/issues) and follow [community standards](./CODE_OF_CONDUCT.md). Discuss major architecture, sync model, or Listen Together changes in an issue first.
 

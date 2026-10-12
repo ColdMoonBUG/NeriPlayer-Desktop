@@ -94,6 +94,57 @@ const RUST_INTEGER_KEYS = [...rustStruct.matchAll(/pub (\w+): (?:i32|u32),/g)]
   .map(match => camel(match[1]))
   .filter(key => key !== 'formatVersion')
 
+await regression('old settings receive the easier long-note threshold', store => {
+  store.applySnapshot({ showTranslation: false })
+  assert.equal(store.lyricEmphasisThresholdMs, 700)
+  assert.equal(store.snapshot().lyricEmphasisThresholdMs, 700)
+})
+
+await regression('long-note thresholds reject invalid values and align to the supported range', store => {
+  for (const [value, expected] of [
+    [-1, 300], [299, 300], [300, 300], [324.6, 350], [325, 350], [724.4, 700], [724.6, 750], [725, 750],
+    [2000, 2000], [2001, 2000], [NaN, 700], [Infinity, 700], ['1000', 700],
+  ]) {
+    store.applySnapshot({ lyricEmphasisThresholdMs: value })
+    assert.equal(store.lyricEmphasisThresholdMs, expected, String(value))
+    assert.equal(store.snapshot().lyricEmphasisThresholdMs, expected, String(value))
+  }
+})
+
+await regression('long-note preferences survive hydration, IPC persistence, and browser reload', async store => {
+  loadResult = { settings: { lyricEmphasisThresholdMs: 1050 }, persisted: true }
+  await store.hydrate()
+  assert.equal(store.lyricEmphasisThresholdMs, 1050)
+  store.lyricEmphasisThresholdMs = 1450
+  await flushPersist()
+  assert.equal(saved.at(-1).lyricEmphasisThresholdMs, 1450)
+  assert.equal(JSON.parse(storage.get('neri:lyric_emphasis_threshold_ms')), 1450)
+  store.applySnapshot(saved.at(-1))
+  assert.equal(store.lyricEmphasisThresholdMs, 1450)
+  loadResult = { settings: {}, persisted: false }
+  const reloadedInstance = pinia.createPinia()
+  pinia.setActivePinia(reloadedInstance)
+  try {
+    const reloaded = settingsModule.useSettingsStore()
+    await reloaded.hydrate()
+    assert.equal(reloaded.lyricEmphasisThresholdMs, 1450)
+  } finally {
+    pinia.disposePinia(reloadedInstance)
+  }
+})
+
+await regression('the menu bar lyric preference defaults off and survives persistence', async store => {
+  await store.hydrate()
+  assert.equal(store.showMenuBarLyrics, false)
+  store.showMenuBarLyrics = true
+  await flushPersist()
+  assert.equal(saved.at(-1).showMenuBarLyrics, true)
+  store.applySnapshot(saved.at(-1))
+  assert.equal(store.showMenuBarLyrics, true)
+  store.applySnapshot({ showMenuBarLyrics: 'true' })
+  assert.equal(store.showMenuBarLyrics, false)
+})
+
 await regression('integer-backed settings never reach save_settings as fractions', async store => {
   await store.hydrate()
   await flushPersist()

@@ -7,6 +7,7 @@ export interface SettingsSearchEntry {
   desc?: string
   /** 额外检索词（同义词、平台名），不显示 */
   keywords?: string[]
+  macOnly?: boolean
 }
 
 export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
@@ -65,9 +66,11 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
   { section: 'lyrics', title: 'settings.show_romanization', desc: 'settings.show_romanization_desc' },
   { section: 'lyrics', title: 'settings.prefer_word_timed_lyrics', desc: 'settings.prefer_word_timed_lyrics_desc' },
   { section: 'lyrics', title: 'settings.default_lyric_source', desc: 'settings.default_lyric_source_desc' },
+  { section: 'lyrics', title: 'settings.lyric_emphasis_threshold', desc: 'settings.lyric_emphasis_threshold_desc', keywords: ['长音', 'long note', 'emphasis', 'duration'] },
   { section: 'lyrics', title: 'settings.lyric_blur', desc: 'settings.lyric_blur_desc' },
   { section: 'lyrics', title: 'settings.blur_strength' },
   { section: 'desktop_lyrics', title: 'desktop_lyrics.open', desc: 'desktop_lyrics.open_desc' },
+  { section: 'desktop_lyrics', title: 'desktop_lyrics.menu_bar', desc: 'desktop_lyrics.menu_bar_desc', keywords: ['macOS', '状态栏', '菜单栏', 'menu bar'], macOnly: true },
   { section: 'desktop_lyrics', title: 'desktop_lyrics.theme' },
   { section: 'desktop_lyrics', title: 'desktop_lyrics.layout' },
   { section: 'desktop_lyrics', title: 'desktop_lyrics.align' },

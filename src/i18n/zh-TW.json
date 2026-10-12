@@ -790,6 +790,8 @@
     "lyric_blur": "歌詞模糊",
     "lyric_blur_desc": "非活躍歌詞行高斯模糊",
     "blur_strength": "模糊強度",
+    "lyric_emphasis_threshold": "長音動畫觸發時長",
+    "lyric_emphasis_threshold_desc": "字詞時長達到此值即可觸發長音動畫，數值越小越容易觸發，僅在逐字進階動畫開啟時生效",
     "netease_offset": "網易雲歌詞偏移",
     "qq_offset": "QQ 音樂歌詞偏移",
     "kugou_offset": "酷狗歌詞偏移",
@@ -1341,6 +1343,8 @@
     "seek_here": "跳到這一句"
   },
   "desktop_lyrics": {
+    "menu_bar": "在 macOS 選單列顯示歌詞",
+    "menu_bar_desc": "在狀態列圖示旁顯示目前歌詞，沒有歌詞時顯示歌名；可獨立於桌面歌詞開啟",
     "title": "桌面歌詞",
     "desc": "在桌面最上層顯示逐字歌詞，可拖曳、縮放、鎖定",
     "open": "顯示桌面歌詞",
@@ -1418,6 +1422,7 @@
   },
   "tray": {
     "menu_label": "系統匣選單",
+    "menu_bar_lyrics": "選單列歌詞",
     "previous": "上一首",
     "play": "播放",
     "pause": "暫停",

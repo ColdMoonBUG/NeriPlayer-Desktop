@@ -97,24 +97,96 @@ export function mapBackendLyrics(raw: any[]): LyricLine[] {
 const TRANSLATION_ALIGNMENT_TOLERANCE_MS = 450
 const TRANSLATION_CLOSEST_MATCH_TOLERANCE_MS = 2000
 
-const LYRIC_CREDIT_METADATA_RE = /^\s*([\p{L}·]{1,12})\s*[:：]\s*\S/u
+const LYRIC_CREDIT_METADATA_RE = /^\s*(.*?)\s*[:：]\s*(\S.*?)\s*$/u
 const LYRIC_CREDIT_METADATA_ROLES = new Set([
-  '作词', '作詞', '作曲', '编曲', '編曲', '制作人', '製作人', '制作', '製作',
-  '出品', '出品人', '联合出品', '聯合出品', '营销', '營銷', '策划', '策劃',
-  '企划', '企劃', '监制', '監製', '统筹', '統籌', '发行', '發行', '混音',
-  '母带', '母帶', '录音', '錄音', '和声', '和聲', '和音', '配唱', '演唱',
-  '原唱', '词', '詞', '曲', '吉他', '贝斯', '貝斯', '鼓', '键盘', '鍵盤',
-  '弦乐', '弦樂', '录音师', '錄音師', '混音师', '混音師', '母带工程师',
-  '制作公司', '版权', '版權', '鸣谢', '鳴謝', '特别鸣谢', '特別鳴謝',
-  'op', 'sp', 'lyricist', 'composer', 'arranger', 'producer', 'mixing',
-  'mastering', 'recording', 'vocal', 'guitar', 'bass', 'drums', 'keyboard',
-  'strings',
+  '作词', '作詞', '填词', '填詞', '作曲', '词曲', '詞曲', '编曲', '編曲', '制作人', '製作人', '制作', '製作',
+  '出品', '出品人', '联合出品', '聯合出品', '营销', '營銷', '策划', '策劃', '企划', '企劃', '监制', '監製',
+  '统筹', '統籌', '发行', '發行', '宣传', '宣傳', '推广', '推廣', '宣传推广', '宣傳推廣', '宣发', '宣發',
+  '混音', '母带', '母帶', '录音', '錄音', '和声', '和聲', '和音', '配唱', '演唱', '歌手', '原唱', '翻唱',
+  '词', '詞', '曲', '吉他', '电吉他', '電吉他', '木吉他', '贝斯', '貝斯', '鼓', '键盘', '鍵盤', '钢琴', '鋼琴',
+  '弦乐', '弦樂', '弦乐编写', '弦樂編寫', '弦乐编曲', '弦樂編曲', '和声编写', '和聲編寫', '和声编唱', '和聲編唱',
+  '和声演唱', '和聲演唱', '和声设计', '和聲設計', '和声编配', '和聲編配', '口哨', 'midi程序', 'midi编程', 'midi編程',
+  '录音师', '錄音師', '混音师', '混音師', '母带工程师', '母帶工程師', '录音室', '錄音室', '录音棚', '錄音棚',
+  '混音室', '母带后期', '母帶後期', '人声编辑', '人聲編輯', '音频编辑', '音頻編輯', '配唱制作人', '配唱製作人',
+  '音乐制作', '音樂製作', '音乐总监', '音樂總監', '制作公司', '製作公司', '版权', '版權', '版权所有', '版權所有',
+  '鸣谢', '鳴謝', '特别鸣谢', '特別鳴謝', '封面设计', '封面設計', '文案', 'op', 'sp',
+  'lyric', 'lyrics', 'word', 'words', 'music', 'lyricist', 'composer', 'arranger', 'producer', 'co-producer',
+  'mix', 'mixing', 'mixengineer', 'mixingengineer', 'mastering', 'masteringengineer', 'recording', 'recordingengineer',
+  'vocal', 'vocals', 'vocalist', 'vocalproduction', 'vocalproducer', 'vocalarrangement', 'vocalediting',
+  'backingvocals', 'backgroundvocals', 'harmony', 'harmonies', 'guitar', 'guitars', 'acousticguitar', 'electricguitar',
+  'bass', 'drum', 'drums', 'keyboard', 'keyboards', 'piano', 'strings', 'stringarrangement', 'midiprogramming', 'programming',
+  'artist', 'singer', 'title', 'album', 'copyright', 'publisher', 'label', 'distribution', 'promotion', 'credits',
+  'lyricby', 'lyricsby', 'wordby', 'wordsby', 'writtenby', 'composedby', 'arrangedby', 'producedby', 'performedby', 'sungby',
+  'musicby', 'mixedby', 'masteredby', 'recordedby', 'publishedby', 'distributedby',
 ])
+const AMBIGUOUS_CREDIT_ROLES = new Set([
+  '词', '詞', '曲', '鼓', '吉他', '贝斯', '貝斯', '键盘', '鍵盤', '弦乐', '弦樂', '和声', '和聲', '和音', '口哨',
+  'lyric', 'lyrics', 'word', 'words', 'music', 'vocal', 'vocals', 'guitar', 'guitars', 'bass', 'drum', 'drums',
+  'keyboard', 'keyboards', 'strings',
+])
+const CONTRIBUTOR_NAME_RE = /^(?:[\p{Script=Han}]{2,4}|@\S+|[\p{Lu}\p{N}][\p{L}\p{N}.'_-]*(?:\s+(?:[\p{Lu}\p{N}][\p{L}\p{N}.'_-]*|de|van|von|da|del)){0,5})$/u
+const SEPARATED_CREDIT_RE = /^\s*(作词|作詞|填词|填詞|作曲|编曲|編曲|制作人|製作人|producer|composer|arranger|lyricist)\s*[-/／]\s*(\S.*?)\s*$/iu
+const ATTRIBUTION_CREDIT_RE = /^\s*((?:lyrics?|words?|written|composed|arranged|produced|performed|sung|music|mixed|mastered|recorded|published|distributed)\s+by)\s+(\S.*?)\s*$/iu
+const CONTRIBUTOR_SENTENCE_PREFIX_RE = /^(?:i|you|he|she|it|we|they|me|us|my|your|his|her|its|our|their|a|an|the|this|that|these|those)\b|^(?:我|你|他|她|它|想|爱|愛|在|是|不|别|別|没|沒)/iu
 
-/** 制作信息行（「作词 : xxx」「OP: xxx」），对齐 Android isLyricCreditMetadataLine */
-export function isLyricCreditMetadataLine(text: string): boolean {
-  const role = LYRIC_CREDIT_METADATA_RE.exec(text)?.[1]?.trim().toLowerCase()
-  return !!role && LYRIC_CREDIT_METADATA_ROLES.has(role)
+function isContributorList(value: string): boolean {
+  return value.split(/\s+and\s+|[/／&、,，+;；]/iu).every(name => {
+    const plain = name.trim().split(/[（(]/u)[0].trim()
+    const nameOnly = plain.startsWith('@') ? plain : plain.split('@')[0].trim()
+    return !CONTRIBUTOR_SENTENCE_PREFIX_RE.test(nameOnly) && CONTRIBUTOR_NAME_RE.test(nameOnly)
+  })
+}
+
+/** 与后端正文过滤共用同等规则，短标签还需符合署名格式以免误伤歌词 */
+export function isLyricCreditMetadataLine(text: string, hasContext = false): boolean {
+  const labelled = LYRIC_CREDIT_METADATA_RE.exec(text)
+  if (labelled) {
+    return labelled[1].split(/[/／&、,，+]/u).every(role => {
+      const normalized = role.replace(/\s/g, '').toLowerCase()
+      return LYRIC_CREDIT_METADATA_ROLES.has(normalized)
+        && (hasContext || !['词', '詞', '曲'].includes(normalized))
+        && (!(AMBIGUOUS_CREDIT_ROLES.has(normalized) || normalized.endsWith('by')) || isContributorList(labelled[2]))
+    })
+  }
+  if (SEPARATED_CREDIT_RE.test(text)) return true
+  if (!hasContext) return false
+  const attribution = ATTRIBUTION_CREDIT_RE.exec(text)
+  if (!attribution) return false
+  const name = attribution[2].trim()
+  return isContributorList(name)
+}
+
+/** 含糊标签必须与明确的制作署名组成连续信息块 */
+function lyricCreditMetadataMask(texts: string[]): boolean[] {
+  const credits = texts.map(text => isLyricCreditMetadataLine(text))
+  const possible = texts.map((text, index) => credits[index] || isLyricCreditMetadataLine(text, true))
+  let start = 0
+  while (start < texts.length) {
+    if (!possible[start]) { start++; continue }
+    let end = start + 1
+    while (end < texts.length && possible[end]) end++
+    if (credits.slice(start, end).some(Boolean)) credits.fill(true, start, end)
+    start = end
+  }
+  return credits
+}
+
+/** 只生成显示结果，保留原始歌词及正文的逐字时间轴 */
+export function filterLyricCreditMetadataLines(lines: LyricLine[]): LyricLine[] {
+  const credits = lyricCreditMetadataMask(lines.map(line => line.text.trim() || line.words.map(word => word.text).join('')))
+  const translationCredits = lyricCreditMetadataMask(lines.map(line => line.translation || ''))
+  const romanCredits = lyricCreditMetadataMask(lines.map(line => line.roman || ''))
+  return lines.flatMap((line, index) => {
+    if (credits[index]) return []
+    const hasCreditTranslation = translationCredits[index]
+    const hasCreditRoman = romanCredits[index]
+    if (!hasCreditTranslation && !hasCreditRoman) return [line]
+    return [{
+      ...line,
+      translation: hasCreditTranslation ? undefined : line.translation,
+      roman: hasCreditRoman ? undefined : line.roman,
+    }]
+  })
 }
 
 /** 「//」之类的未翻译占位，占住这一行但不显示 */
@@ -174,12 +246,14 @@ export function matchTranslationsToLineIndices(
 ): Map<number, string> {
   const matches = new Map<number, string>()
   if (!lines.length || !translations.length) return matches
+  const translationCredits = lyricCreditMetadataMask(translations.map(line => line.text || ''))
   const effective = translations
-    .filter(tl => (tl.text || '').trim() && !isLyricCreditMetadataLine(tl.text || ''))
+    .filter((tl, index) => (tl.text || '').trim() && !translationCredits[index])
     .sort((a, b) => (Number(a.startMs) || 0) - (Number(b.startMs) || 0))
   if (!effective.length) return matches
   // 原文里的制作信息行不接收翻译：它常紧挨着第一句正文，会把第一句的翻译抢走
-  const bodyIndices = lines.map((_, index) => index).filter(index => !isLyricCreditMetadataLine(lines[index].text || ''))
+  const credits = lyricCreditMetadataMask(lines.map(line => line.text || ''))
+  const bodyIndices = lines.map((_, index) => index).filter(index => !credits[index])
   const candidates = bodyIndices.length ? bodyIndices : lines.map((_, index) => index)
   const spans = candidates.map(index => lineSpan(lines[index]))
   let translationIndex = 0

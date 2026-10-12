@@ -72,6 +72,8 @@ pub struct AppSettings {
     pub lyric_blur: bool,
     pub lyric_blur_amount: f32,
     #[serde(deserialize_with = "lenient_i32")]
+    pub lyric_emphasis_threshold_ms: i32,
+    #[serde(deserialize_with = "lenient_i32")]
     pub cloud_music_offset: i32,
     #[serde(deserialize_with = "lenient_i32")]
     pub qq_music_offset: i32,
@@ -151,6 +153,8 @@ pub struct AppSettings {
     /// 桌面歌词外观（字体、颜色、布局、锁定、窗口位置……），逐项规整在前端
     /// normalizeDesktopLyricsStyle；这里只保证是对象且不过大
     pub desktop_lyrics: serde_json::Value,
+    /// macOS 菜单栏歌词独立于桌面歌词窗口，默认关闭以免占用菜单栏空间
+    pub show_menu_bar_lyrics: bool,
     /// 快捷键改键：{ local: {动作: 组合键}, global: {...} }，只存与默认不同的项，
     /// 逐项规整在前端 normalizeShortcutBindings；这里只保证是对象且不过大
     pub shortcut_bindings: serde_json::Value,
@@ -226,6 +230,7 @@ impl Default for AppSettings {
             show_romanization: false,
             lyric_blur: true,
             lyric_blur_amount: 1.5,
+            lyric_emphasis_threshold_ms: 700,
             cloud_music_offset: 1000,
             qq_music_offset: 500,
             kugou_offset: 0,
@@ -285,6 +290,7 @@ impl Default for AppSettings {
             equalizer_preset_id: "flat".into(),
             equalizer_bands: vec![0; EQUALIZER_BAND_COUNT],
             desktop_lyrics: serde_json::Value::Object(serde_json::Map::new()),
+            show_menu_bar_lyrics: false,
             shortcut_bindings: serde_json::Value::Object(serde_json::Map::new()),
             global_shortcuts_enabled: false,
         }
@@ -332,6 +338,8 @@ impl AppSettings {
         self.crossfade_in_duration = self.crossfade_in_duration.clamp(0, 10_000);
         self.crossfade_out_duration = self.crossfade_out_duration.clamp(0, 10_000);
         self.lyric_blur_amount = clamp_f32(self.lyric_blur_amount, 0.0, 8.0, 1.5);
+        self.lyric_emphasis_threshold_ms =
+            ((self.lyric_emphasis_threshold_ms.clamp(300, 2000) + 25) / 50) * 50;
         for offset in [
             &mut self.cloud_music_offset,
             &mut self.qq_music_offset,
@@ -806,6 +814,35 @@ mod tests {
     use super::{AppSettings, MAX_MEDIA_CACHE_SIZE_MB, MIN_MEDIA_CACHE_SIZE_MB};
 
     #[test]
+    fn lyric_emphasis_threshold_defaults_and_normalizes_for_config_round_trip() {
+        let old: AppSettings = serde_json::from_str("{}").expect("old settings");
+        let defaults = serde_json::to_value(old.normalized()).expect("default settings");
+        assert_eq!(defaults["lyricEmphasisThresholdMs"], 700);
+        for (value, expected) in [
+            (-1.0, 300),
+            (299.0, 300),
+            (300.0, 300),
+            (324.6, 350),
+            (325.0, 350),
+            (724.4, 700),
+            (724.6, 750),
+            (725.0, 750),
+            (2000.0, 2000),
+            (2001.0, 2000),
+        ] {
+            let settings: AppSettings = serde_json::from_value(serde_json::json!({
+                "lyricEmphasisThresholdMs": value,
+            }))
+            .expect("long-note settings");
+            let saved = serde_json::to_value(settings.normalized()).expect("saved settings");
+            assert_eq!(saved["lyricEmphasisThresholdMs"], expected);
+            let restored: AppSettings = serde_json::from_value(saved).expect("restored settings");
+            let restored = serde_json::to_value(restored.normalized()).expect("restored settings");
+            assert_eq!(restored["lyricEmphasisThresholdMs"], expected);
+        }
+    }
+
+    #[test]
     fn playback_source_settings_are_backward_compatible() {
         let old: AppSettings = serde_json::from_str("{}").expect("old settings");
         assert_eq!(old.youtube_playback_source, "automatic");
@@ -922,6 +959,21 @@ mod tests {
             settings.normalize();
             assert_eq!(settings.desktop_lyrics, serde_json::json!({}));
         }
+    }
+
+    #[test]
+    fn menu_bar_lyrics_are_opt_in_and_survive_settings_round_trip() {
+        let missing: AppSettings = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(!missing.show_menu_bar_lyrics);
+        let mut enabled: AppSettings = serde_json::from_value(serde_json::json!({
+            "showMenuBarLyrics": true,
+        })).unwrap();
+        enabled.normalize();
+        assert!(enabled.show_menu_bar_lyrics);
+        let saved = serde_json::to_value(enabled).unwrap();
+        assert_eq!(saved["showMenuBarLyrics"], true);
+        let restored: AppSettings = serde_json::from_value(saved).unwrap();
+        assert!(restored.show_menu_bar_lyrics);
     }
 
     #[test]

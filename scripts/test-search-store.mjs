@@ -34,7 +34,7 @@ const page = (ids, hasMore = false) => ({ items: ids.map(song), has_more: hasMor
 
 // 分类与平台都随请求带上，对齐 Android 的类型参数
 assert.deepEqual(exports.EXPLORE_KINDS.netease, ['songs', 'playlists', 'artists'])
-assert.deepEqual(exports.EXPLORE_KINDS.qq, ['songs'])
+assert.deepEqual(exports.EXPLORE_KINDS.qq, ['songs', 'playlists'])
 assert.deepEqual(exports.EXPLORE_KINDS.youtube, ['songs', 'videos', 'creators'])
 
 // 慢的旧关键词晚于新关键词返回，不能覆盖新结果
@@ -94,6 +94,19 @@ assert.equal(pending.at(-1).args.page, 2)
 pending.at(-1).resolve({ items: [qqSong, { ...qqSong, id: 'qq:mid2' }], has_more: false })
 await qqMore
 assert.deepEqual(store.items.map(item => item.id), ['qq:mid1', 'qq:mid2'])
+assert.equal(store.hasMore, false)
+
+const qqPlaylists = store.search('qq', 'playlists', '推荐歌单')
+assert.deepEqual(pending.at(-1).args, { platform: 'qq', kind: 'playlists', query: '推荐歌单', page: 1 })
+const qqPlaylist = { kind: 'playlist', platform: 'qq', id: '123456789012345678', name: '歌单', cover_url: '', track_count: 10, subtitle: '昵称' }
+pending.at(-1).resolve({ items: [qqPlaylist], has_more: true })
+await qqPlaylists
+assert.deepEqual(store.items, [qqPlaylist])
+const qqPlaylistMore = store.loadMore('qq', 'playlists', '推荐歌单')
+assert.equal(pending.at(-1).args.page, 2)
+pending.at(-1).resolve({ items: [qqPlaylist, { ...qqPlaylist, id: '234' }], has_more: false })
+await qqPlaylistMore
+assert.deepEqual(store.items.map(item => item.id), ['123456789012345678', '234'])
 assert.equal(store.hasMore, false)
 
 console.log('explore search store tests passed')

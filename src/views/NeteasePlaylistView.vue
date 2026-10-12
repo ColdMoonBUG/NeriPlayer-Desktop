@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { filterAndRank, trackSearchTokens } from '@/modules/search/textMatcher'
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { usePlayerStore, type TrackInfo } from '@/stores/player'
 import { useAuthStore } from '@/stores/auth'
@@ -30,7 +30,7 @@ import { recordPlaylistOpen } from '@/modules/library/playlistUsage'
 import { formatTrackDuration as formatDuration } from '@/utils/timeFormat'
 import { resolveNeteaseCover } from '@/utils/neteaseCover'
 
-const props = defineProps<{ isAlbum?: boolean }>()
+const props = defineProps<{ isAlbum?: boolean; isQq?: boolean }>()
 const route = useRoute()
 const router = useRouter()
 const player = usePlayerStore()
@@ -136,7 +136,39 @@ function formatTotalDuration(ms: number): string {
   return `${totalMin}${t('common.minute_short')}`
 }
 
+let qqDetailRequest = 0
+watch(() => auth.qq, () => {
+  if (!props.isQq) return
+  tracks.value = []
+  playlistName.value = coverUrl.value = creator.value = description.value = ''
+  trackCount.value = playCount.value = 0
+  void loadDetail()
+})
+
 async function loadDetail() {
+  if (props.isQq) {
+    const request = ++qqDetailRequest
+    // Keep QQ's string IDs and account-bound reads; share only the presentation.
+    // Do not preview private playlists from a previous account's disk cache.
+    isLoading.value = true
+    error.value = null
+    try {
+      const data = await invoke<any>('get_qq_playlist', { id: String(route.params.id) })
+      if (request !== qqDetailRequest) return
+      playlistName.value = data.name || ''
+      coverUrl.value = data.coverUrl || ''
+      tracks.value = data.tracks || []
+      trackCount.value = tracks.value.length
+      playCount.value = data.playCount || 0
+      description.value = data.description || ''
+      creator.value = data.creator || ''
+    } catch (e: any) {
+      if (request === qqDetailRequest) error.value = e?.toString() || t('player.load_failed')
+    } finally {
+      if (request === qqDetailRequest) isLoading.value = false
+    }
+    return
+  }
   const id = Number(route.params.id)
   if (!id) return
 

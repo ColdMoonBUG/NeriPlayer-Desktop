@@ -545,6 +545,8 @@ export const usePlayerStore = defineStore('player', () => {
     requestGeneration: 0,
   })
   let loadedPlaybackRequestToken = 0
+  // 队列选中项可能先于音频变更，记录后端时长实际属于哪首歌
+  const loadedPlaybackTrackKey = ref<string | null>(null)
   let deferredPlaybackSeek: DeferredPlaybackSeek | null = null
   let _speedInvokeTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -1187,9 +1189,11 @@ export const usePlayerStore = defineStore('player', () => {
 
       // 按自然速度推进，同时把与后端预测值的偏差按指数平滑收敛：
       // 落后时略快、超前时略慢（超前太多则停住等后端追上），从不往回拉
-      const error = clamped - _interpRenderedMs
+      // 先扣除本帧自然推进量，避免后台恢复时把同一段经过时间重复算进校正
+      const naturalStep = dt * _interpSpeed
+      const error = clamped - (_interpRenderedMs + naturalStep)
       const correction = error * Math.min(1, dt / POSITION_SLEW_TAU_MS)
-      const step = Math.max(0, dt * _interpSpeed + correction)
+      const step = Math.max(0, naturalStep + correction)
       _interpRenderedMs = Math.min(_interpRenderedMs + step, clamped)
 
       interpolatedPositionMs.value = Math.round(_interpRenderedMs)
@@ -1929,6 +1933,7 @@ export const usePlayerStore = defineStore('player', () => {
       commitTrack()
       durationMs.value = dur || track.durationMs
       loadedPlaybackRequestToken = token
+      loadedPlaybackTrackKey.value = JSON.stringify([track.playlistKey ?? null, track.id])
       const deferredSeek = deferredPlaybackSeek?.requestGeneration === token
         ? deferredPlaybackSeek
         : null
@@ -3246,7 +3251,7 @@ export const usePlayerStore = defineStore('player', () => {
   return {
     isPlaying, currentTrack, currentBiliVideoSkipTarget, positionMs, durationMs, queue, queueIndex,
     repeatMode, shuffleEnabled, volume, lyrics, playError, isLoadingAudio, isLoadingAudioSlow,
-    hasPlaybackSession,
+    hasPlaybackSession, loadedPlaybackTrackKey,
     audioLevel, beatImpulse, audioInfo, isPlayingFromDownload, isPlayingFromCache,
     lastCommandSource, lastCommandSequence, lastSeekCommand, isRemoteSyncGuardActive,
     playbackSpeed, currentStreamUrl, sleepTimerMode, sleepRemainingSeconds,

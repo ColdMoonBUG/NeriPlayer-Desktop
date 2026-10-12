@@ -790,6 +790,8 @@
     "lyric_blur": "歌詞ぼかし",
     "lyric_blur_desc": "非アクティブ行をぼかし",
     "blur_strength": "ぼかし強度",
+    "lyric_emphasis_threshold": "ロングノートアニメーションの判定時間",
+    "lyric_emphasis_threshold_desc": "この時間以上続く単語でロングノートアニメーションを表示します。値を小さくすると発生しやすくなります。単語単位の高度なアニメーションが有効な場合のみ適用されます。",
     "netease_offset": "網易雲歌詞オフセット",
     "qq_offset": "QQ音楽歌詞オフセット",
     "kugou_offset": "Kugou 歌詞オフセット",
@@ -1341,6 +1343,8 @@
     "seek_here": "この行へジャンプ"
   },
   "desktop_lyrics": {
+    "menu_bar": "macOS のメニューバーに歌詞を表示",
+    "menu_bar_desc": "ステータスアイコンの横に現在の歌詞を表示し、歌詞がない場合は曲名を表示します。デスクトップ歌詞とは独立して有効にできます",
     "title": "デスクトップ歌詞",
     "desc": "単語ごとに進む歌詞を最前面に表示。ドラッグ・サイズ変更・ロックできます",
     "open": "デスクトップ歌詞を表示",
@@ -1418,6 +1422,7 @@
   },
   "tray": {
     "menu_label": "トレイメニュー",
+    "menu_bar_lyrics": "メニューバー歌詞",
     "previous": "前の曲",
     "play": "再生",
     "pause": "一時停止",

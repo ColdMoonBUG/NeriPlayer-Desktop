@@ -11,7 +11,8 @@ interface CachedLyricsEntry {
 
 // 键带版本：跨平台优先 LRCLIB+时长硬门槛后，旧的错误同名歌词缓存一律失效；
 // v4：在线歌词改为去掉制作信息/标题行、补网易云音译，B 站优先逐字歌词，旧缓存缺这些
-const LYRICS_CACHE_VERSION = 'v4'
+// v5：补齐中英文制作署名并收紧误伤规则，重新获取旧版可能误删或漏删的歌词
+const LYRICS_CACHE_VERSION = 'v5'
 const LYRICS_CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
 const LYRICS_CACHE_MAX_ENTRIES = 500
 const LYRICS_CACHE_MAX_BYTES = 32 * 1024 * 1024

@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
+import * as vue from 'vue'
+import { parse } from 'vue/compiler-sfc'
 import ts from 'typescript'
 
 // 桌面歌词外观与时间轴：规整（歌词窗口不信任收到的字段）、配色、CSS 变量、逐字进度、锚点插值
@@ -85,6 +87,100 @@ assert.match(vars['--dl-played'], /^linear-gradient\(180deg, #/)
 assert.match(style.desktopLyricsCssVars(defaults, null)['--dl-stroke'], /^1px #/, '默认描边只露出外半边，实际可见宽度为 0.5px')
 assert.equal(style.desktopLyricsCssVars(defaults, null)['--dl-shadow'], 'drop-shadow(0 1px 1px #000000d9)', '默认阴影偏移和模糊范围均为 1px')
 assert.equal(style.desktopLyricsCssVars({ ...defaults, fontFamily: '' }, null)['--dl-font-family'].startsWith('var('), true)
+
+const effectCases = [
+  [{ shadowEnabled: false, glowEnabled: false, strokeEnabled: false }, '0px'],
+  [{ shadowEnabled: false, glowEnabled: false, strokeWidth: 4 }, '4px'],
+  [{ shadowBlur: 24, strokeWidth: 4, glowEnabled: true, fontSize: 96 }, '82px'],
+  [{ shadowEnabled: false, strokeEnabled: false, glowEnabled: true, fontSize: 96 }, '72px'],
+]
+async function karaokeRuntime(line, boxWidth, padding, align = 'center') {
+  const source = await readFile(new URL('../src/components/desktopLyrics/KaraokeLine.vue', import.meta.url), 'utf8')
+  const script = parse(source).descriptor.scriptSetup.content
+  const parsed = ts.createSourceFile('KaraokeLine.ts', script, ts.ScriptTarget.ES2022, true)
+  const statements = parsed.statements.filter(statement => !ts.isImportDeclaration(statement)).map(statement => statement.getText(parsed)).join('\n')
+  const compiled = ts.transpileModule(statements, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+  }).outputText
+  const dependencies = {
+    computed: vue.computed, nextTick: vue.nextTick, ref: vue.ref, watch: vue.watch,
+    defineProps: () => ({ line, endMs: 2_000, karaoke: 'line', align }),
+    inject: () => null,
+    onMounted() {},
+    onBeforeUnmount() {},
+    KARAOKE_REGISTRY: Symbol(), KARAOKE_WAKE: Symbol(),
+    hasWordTiming: timeline.hasWordTiming, highlightWidth: timeline.highlightWidth,
+    getComputedStyle: () => ({ paddingLeft: `${padding}px`, paddingRight: `${padding}px` }),
+  }
+  const scope = vue.effectScope()
+  const actual = scope.run(() => new Function(...Object.keys(dependencies), `${compiled}\nreturn { container, fit, base, outline, fill, measure, update }`)(...Object.values(dependencies)))
+  actual.container.value = { clientWidth: boxWidth }
+  actual.fit.value = { style: {} }
+  actual.base.value = { offsetWidth: 600, children: [], style: {} }
+  actual.outline.value = { style: {} }
+  actual.fill.value = { style: {} }
+  return { ...actual, dispose: () => scope.stop() }
+}
+
+const karaoke = await karaokeRuntime({ startMs: 1_000, durationMs: 1_000, text: 'long line', words: [] }, 500, 82)
+try {
+  karaoke.measure()
+  assert.equal(karaoke.fit.value.style.transform, 'scale(0.56)', '长行按扣除效果留白后的内容宽度缩放，阴影不能压到窗口边界')
+  karaoke.update(1_500)
+  assert.equal(karaoke.fill.value.style.clipPath, 'inset(0 300px 0 0)', '效果留白不改变歌词原始坐标中的高亮进度')
+  karaoke.base.value.offsetWidth = 1_000
+  karaoke.measure()
+  karaoke.update(2_000)
+  assert.equal(karaoke.fit.value.style.transform, 'scale(0.5)', '超长歌词保留现有的一半缩放下限')
+  assert.equal(karaoke.fill.value.style.clipPath, 'inset(0 164px 0 164px)', '超长歌词在内容边界裁剪字形，滤镜仍可在外部绘制')
+  assert.equal(karaoke.base.value.style.clipPath, 'inset(-100% 164px -100% 164px)', '未唱层也不能越过内容边界')
+  assert.equal(karaoke.outline.value.style.clipPath, 'inset(-100% 164px -100% 164px)', '描边字形在边界内裁剪，外层仍可绘制阴影')
+} finally {
+  karaoke.dispose()
+}
+
+for (const [align, clip] of [['left', 'inset(0 328px 0 0)'], ['right', 'inset(0 0px 0 328px)']]) {
+  const row = await karaokeRuntime({ startMs: 1_000, durationMs: 1_000, text: 'long line', words: [] }, 500, 82, align)
+  try {
+    row.base.value.offsetWidth = 1_000
+    row.measure()
+    row.update(2_000)
+    assert.equal(row.fill.value.style.clipPath, clip, '超长歌词按左右对齐保留正确的可见区间')
+  } finally {
+    row.dispose()
+  }
+}
+
+const stageSource = await readFile(new URL('../src/components/desktopLyrics/DesktopLyricsStage.vue', import.meta.url), 'utf8')
+const stageScript = parse(stageSource).descriptor.scriptSetup.content
+const stageParsed = ts.createSourceFile('DesktopLyricsStage.ts', stageScript, ts.ScriptTarget.ES2022, true)
+const stageStatements = stageParsed.statements.filter(statement => !ts.isImportDeclaration(statement)).map(statement => statement.getText(stageParsed)).join('\n')
+const stageCompiled = ts.transpileModule(stageStatements, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+}).outputText
+const stageDependencies = {
+  computed: vue.computed, ref: vue.ref, watch: vue.watch, nextTick: vue.nextTick,
+  defineProps: () => ({ lines: [], firstIndex: 0, style: defaults, clock: () => 0 }),
+  provide() {}, onMounted() {}, onBeforeUnmount() {},
+  KARAOKE_REGISTRY: Symbol(), KARAOKE_WAKE: Symbol(),
+  desktopLyricsCssVars: style.desktopLyricsCssVars, activeLineIndex: timeline.activeLineIndex, lineEndMs: timeline.lineEndMs,
+}
+const stageScope = vue.effectScope()
+try {
+  const stage = stageScope.run(() => new Function(...Object.keys(stageDependencies), `${stageCompiled}\nreturn { container, content, fitHeight }`)(...Object.values(stageDependencies)))
+  stage.container.value = { clientHeight: 60 }
+  stage.content.value = { offsetHeight: 300, style: {} }
+  stage.fitHeight()
+  assert.equal(stage.content.value.style.transform, 'scale(0.2)', '矮窗口将歌词和效果留白一起缩小到可用高度')
+  stage.container.value.clientHeight = 320
+  stage.fitHeight()
+  assert.equal(stage.content.value.style.transform, '', '窗口有足够高度时恢复原字号')
+} finally {
+  stageScope.stop()
+}
+for (const [effects, inset] of effectCases) {
+  assert.equal(style.desktopLyricsCssVars({ ...defaults, ...effects }, null)['--dl-effect-inset'], inset, '行边缘为描边、阴影和发光预留可见范围')
+}
 
 assert.equal(style.nextDesktopLyricsLayout('single'), 'double')
 assert.equal(style.nextDesktopLyricsLayout('triple'), 'single')
