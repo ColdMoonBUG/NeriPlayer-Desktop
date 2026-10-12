@@ -9,14 +9,17 @@ const playerSource = await readFile(new URL('../src/stores/player.ts', import.me
 const playerParsed = ts.createSourceFile('player.ts', playerSource, ts.ScriptTarget.ES2022, true)
 const playerCommandFunctions = new Map()
 function findPlayerCommandFunction(node) {
-  if (ts.isFunctionDeclaration(node) && ['markCommandSource', 'isRemoteSyncGuardActive', 'markOptimisticSeek'].includes(node.name?.text)) {
+  if (ts.isFunctionDeclaration(node) && ['markCommandSource', 'isRemoteSyncGuardActive', 'markOptimisticSeek', 'moveQueueItem'].includes(node.name?.text)) {
     playerCommandFunctions.set(node.name.text, node.getText(playerParsed))
   }
   ts.forEachChild(node, findPlayerCommandFunction)
 }
 findPlayerCommandFunction(playerParsed)
-assert.equal(playerCommandFunctions.size, 3)
-const commandSourceCode = ts.transpileModule([...playerCommandFunctions.values()].join('\n'), {
+assert.equal(playerCommandFunctions.size, 4)
+const commandSourceCode = ts.transpileModule([...playerCommandFunctions].filter(([name]) => name !== 'moveQueueItem').map(([, code]) => code).join('\n'), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+}).outputText
+const queueReorderCode = ts.transpileModule(playerCommandFunctions.get('moveQueueItem'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText
 let moduleSequence = 0
@@ -87,6 +90,7 @@ for (const specifier of runtimeImports(indexSource).filter(specifier => specifie
 const protocol = helperDependencies['./protocol']
 const mapper = helperDependencies['./mapper']
 const { resolvePlaybackQueueStartIndex } = await loadHelper(new URL('../../modules/playback/playbackQueue.ts', sourceRoot))
+const { buildPersistedPlaybackQueue, restorePersistedPlaybackQueue } = await loadHelper(new URL('../../modules/playback/playerState.ts', sourceRoot))
 
 async function flush() {
   for (let i = 0; i < 12; i++) {
@@ -278,6 +282,13 @@ async function harness(options = {}) {
     'const { Date, setTimeout, clearTimeout, setInterval, clearInterval } = __deps.timers; const localStorage = __deps.storage;')
   const scope = vue.effectScope()
   const store = scope.run(() => module.useListenTogetherStore())
+  player.moveQueueItem = new Function(
+    'queue', 'queueIndex', 'markCommandSource', 'blockedByListenTogether',
+    'useListenTogetherStore', 'savePlayerState', 'maybePrefetchNext',
+    `let shuffleBag = [], shuffleHistory = [], shuffleFuture = [];
+    ${queueReorderCode}; return moveQueueItem`,
+  )(vue.toRef(player, 'queue'), vue.toRef(player, 'queueIndex'), markSource,
+    () => !!store.localControlRestriction.value, () => store, () => {}, () => {})
   return {
     store, player, settings, playback, commands, timers, events, toasts, notices, logs, playGates, pauseGates, seekGates,
     emit,
@@ -557,6 +568,144 @@ await test('duplicate occurrences preserve the room current index and select ano
   assert.equal(h.player.queueIndex, 0)
   assert.equal(h.playback.filter(entry => entry.type === 'play').length, plays + 1)
 })
+
+for (const role of ['controller', 'listener']) {
+  for (const unchangedKeys of [false, true]) {
+    const queueReorder = async h => {
+      await h.join()
+      const tracks = unchangedKeys
+        ? [wireTrack(1), wireTrack(1), wireTrack(2)]
+        : [wireTrack(1), wireTrack(2), wireTrack(1)]
+      const oldIndex = unchangedKeys ? 1 : 2
+      await h.message({ type: 'welcome', role, state: room(tracks, { currentIndex: oldIndex }) })
+      await h.timers.advance(4000)
+      const baseline = h.commands.length
+      const playbackCount = h.playback.length
+      const currentTrack = h.player.currentTrack
+      const positionMs = h.player.positionMs
+      assert.equal(h.player.moveQueueItem(oldIndex, 0), true)
+      await flush()
+      const events = h.commands.slice(baseline).filter(entry => entry.command === 'lt_send_event')
+      assert.equal(events.length, 1, 'reordering must publish one queue change without an extra track event')
+      assert.equal(events[0].args.event.type, role === 'controller' ? 'SET_QUEUE' : 'REQUEST_SET_QUEUE')
+      assert.deepEqual(events[0].args.event.queueMutation.targetCurrent, { stableKey: 'netease:1', occurrence: 1 })
+      const applied = helperDependencies['./queue'].applyListenTogetherQueueMutation({
+        roomQueue: tracks, roomCurrentIndex: oldIndex, roomVersion: 1,
+        mutation: events[0].args.event.queueMutation,
+      })
+      assert.equal(applied.currentIndex, 0, 'the original playing occurrence must move to the first slot on the peer')
+      assert.equal(applied.queue[0], tracks[oldIndex])
+      assert.equal(events[0].args.event.positionMs, positionMs)
+      assert.equal(h.player.currentTrack, currentTrack)
+      assert.equal(h.player.positionMs, positionMs)
+      assert.equal(h.playback.length, playbackCount, 'reordering must not replay or seek the loaded song')
+      await h.message({ type: 'room_state_updated', state: room(applied.queue, { currentIndex: 0, version: 2 }),
+        causedBy: { userUuid: h.store.userUuid.value, eventId: events[0].args.event.eventId, type: events[0].args.event.type } })
+      assert.equal(h.player.currentTrack, currentTrack, 'acknowledging the reorder must keep the loaded track')
+      assert.equal(h.player.queueIndex, 0)
+      const persisted = buildPersistedPlaybackQueue(h.player.queue, h.player.queueIndex, h.player.currentTrack, false)
+      assert.equal(persisted.currentTrackPlaylistKey, h.player.queue[0].playlistKey)
+      const restored = restorePersistedPlaybackQueue(
+        persisted.queue, persisted.queueIndex, persisted.hasPlaybackSession,
+        persisted.currentTrackId, persisted.currentTrackPlaylistKey, raw => raw, () => true,
+      )
+      assert.equal(restored.queueIndex, 0, 'restarting after the acknowledgement must restore the moved occurrence')
+      assert.equal(restored.currentTrack, h.player.queue[0])
+    }
+    queueReorder.options = { role }
+    await test(`${role} reorders the current duplicate using a queue event (${unchangedKeys ? 'equal' : 'changed'} stable-key order)`, queueReorder)
+  }
+}
+
+for (const role of ['controller', 'listener']) {
+  for (const desiredState of ['paused', 'playing']) {
+    const loadingReorder = async h => {
+      await h.join()
+      const gate = deferred()
+      h.playGates.push(gate)
+      const initial = room([wireTrack(1), wireTrack(2)], {
+        playback: { ...room().playback, state: desiredState },
+      })
+      await h.message({ type: 'welcome', role, state: initial })
+      assert.equal(h.player.isLoadingAudio, true)
+      const baseline = h.commands.length
+      const commandSequence = h.player.lastCommandSequence
+      assert.equal(h.player.moveQueueItem(0, 1), true)
+      await flush()
+      const events = h.commands.slice(baseline).filter(entry => entry.command === 'lt_send_event')
+      assert.equal(events.length, 1)
+      assert.equal(events[0].args.event.type, role === 'controller' ? 'SET_QUEUE' : 'REQUEST_SET_QUEUE')
+      assert.equal(events[0].args.event.shouldPlay, desiredState === 'playing', 'sorting during loading must preserve room playback intent')
+      assert.equal(events[0].args.event.positionMs, 5000)
+      assert.equal(h.player.lastCommandSequence, commandSequence, 'sorting must not supersede the in-flight playback command')
+      gate.resolve()
+      await flush()
+      assert.equal(h.player.isPlaying, desiredState === 'playing', 'remote loading must still apply the desired playback state')
+      assert.equal(h.player.queueIndex, 1)
+      assert.equal(h.playback.filter(entry => entry.type === 'play').length, 1)
+      assert.equal(h.playback.filter(entry => entry.type === 'pause').length, desiredState === 'paused' ? 1 : 0)
+    }
+    loadingReorder.options = { role }
+    await test(`${role} preserves ${desiredState} playback while reordering a remote load`, loadingReorder)
+  }
+}
+
+for (const role of ['controller', 'listener']) {
+  const seekThenReorder = async h => {
+    await h.join()
+    const gate = deferred()
+    h.playGates.push(gate)
+    await h.message({ type: 'welcome', role, state: room([wireTrack(1), wireTrack(2)]) })
+    await h.player.seekTo(19000, 'local')
+    await flush()
+    await h.timers.advance(450)
+    assert.ok(h.commands.some(entry => entry.command === 'lt_send_event'
+      && entry.args.event.type === (role === 'controller' ? 'SEEK' : 'REQUEST_SEEK')))
+    const baseline = h.commands.length
+    assert.equal(h.player.moveQueueItem(0, 1), true)
+    await flush()
+    const events = h.commands.slice(baseline).filter(entry => entry.command === 'lt_send_event')
+    assert.equal(events.length, 1)
+    assert.equal(events[0].args.event.type, role === 'controller' ? 'SET_QUEUE' : 'REQUEST_SET_QUEUE')
+    assert.equal(events[0].args.event.positionMs, 19000, 'sorting must keep a local seek that the room has not acknowledged')
+    assert.equal(events[0].args.event.shouldPlay, false)
+    gate.resolve()
+    await flush()
+    assert.equal(h.player.positionMs, 19000)
+    assert.equal(h.player.isPlaying, false)
+  }
+  seekThenReorder.options = { role }
+  await test(`${role} preserves a local seek when sorting an in-flight remote load`, seekThenReorder)
+}
+
+for (const role of ['controller', 'listener']) {
+  const pauseThenReorder = async h => {
+    await h.join()
+    const playGate = deferred(), pauseGate = deferred()
+    h.playGates.push(playGate)
+    h.pauseGates.push(pauseGate)
+    await h.message({ type: 'welcome', role, state: room([wireTrack(1), wireTrack(2)]) })
+    await h.player.seekTo(19000, 'local')
+    await flush()
+    await h.timers.advance(450)
+    playGate.resolve()
+    await flush()
+    assert.equal(h.player.isLoadingAudio, false)
+    assert.equal(h.player.lastCommandSource, 'remote_sync')
+    const baseline = h.commands.length
+    assert.equal(h.player.moveQueueItem(0, 1), true)
+    await flush()
+    const event = h.commands.slice(baseline).find(entry => entry.command === 'lt_send_event')?.args.event
+    assert.equal(event.positionMs, 19000, 'sorting while the native pause is pending must retain the latest seek')
+    assert.equal(event.shouldPlay, false)
+    pauseGate.resolve()
+    await flush()
+    assert.equal(h.player.positionMs, 19000)
+    assert.equal(h.player.isPlaying, false)
+  }
+  pauseThenReorder.options = { role }
+  await test(`${role} preserves the seek while sorting a pending remote pause continuation`, pauseThenReorder)
+}
 
 await test('same desktop id with a different Bilibili subaudio context reloads playback', async h => {
   await h.join()

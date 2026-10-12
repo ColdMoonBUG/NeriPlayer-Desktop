@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { usePlayerStore } from '@/stores/player'
+import { useListenTogetherStore } from '@/stores/listenTogether'
 import { useI18n } from 'vue-i18n'
 import { useIncrementalList } from '@/composables/useIncrementalList'
 import BilibiliCoverImage from './BilibiliCoverImage.vue'
@@ -17,6 +18,7 @@ import { formatTrackDuration as formatDuration } from '@/utils/timeFormat'
 
 const emit = defineEmits<{ close: [] }>()
 const player = usePlayerStore()
+const listenTogether = useListenTogetherStore()
 const { t } = useI18n()
 
 // ESC 只关本面板并消费事件, 阻止全局快捷键继续关闭下层 (对齐 Android 返回语义)
@@ -27,11 +29,139 @@ function handleEscKeydown(event: KeyboardEvent) {
   emit('close')
 }
 onMounted(() => document.addEventListener('keydown', handleEscKeydown))
-onUnmounted(() => document.removeEventListener('keydown', handleEscKeydown))
+onUnmounted(() => {
+  document.removeEventListener('keydown', handleEscKeydown)
+  cancelQueueDrag()
+})
 // 大队列分块渲染（队列可达上千行，WebKitGTK 一次性渲染会卡顿）
-const { visibleItems: visibleQueue, onScroll: onQueueScroll } = useIncrementalList(
+const { visibleItems: visibleQueue, onScroll: onQueueScroll, expand, ensureIndex } = useIncrementalList(
   () => player.queue,
 )
+const queueListRef = ref<HTMLElement | null>(null)
+const canReorderQueue = computed(() => player.queue.length > 1 && !listenTogether.localControlRestriction)
+const queueDragIndex = ref(-1)
+const queueDropIndex = ref(-1)
+const queueDragOffset = ref(0)
+let queueDragPointerId: number | null = null
+let queueDragHandle: HTMLElement | null = null
+let queueDragSnapshot: typeof player.queue = []
+let queueDragStartY = 0
+let queueDragPointerY = 0
+let queueDragStartScrollTop = 0
+let queueDragFrame: number | null = null
+
+// 队列或房间权限变化后，旧手势不能移动新列表里的同一下标
+watch(() => player.queue.slice(), cancelQueueDrag, { flush: 'sync' })
+watch(canReorderQueue, allowed => { if (!allowed) cancelQueueDrag() }, { flush: 'sync' })
+
+function cancelQueueDrag() {
+  if (queueDragFrame !== null) cancelAnimationFrame(queueDragFrame)
+  queueDragFrame = null
+  window.removeEventListener('pointermove', moveQueueDrag)
+  window.removeEventListener('pointerup', finishQueueDrag)
+  window.removeEventListener('pointercancel', cancelQueueDrag)
+  if (queueDragPointerId !== null && queueDragHandle?.hasPointerCapture(queueDragPointerId)) {
+    queueDragHandle.releasePointerCapture(queueDragPointerId)
+  }
+  queueDragPointerId = null
+  queueDragHandle = null
+  queueDragSnapshot = []
+  queueDragIndex.value = -1
+  queueDropIndex.value = -1
+  queueDragOffset.value = 0
+}
+
+function updateQueueDragTarget() {
+  const list = queueListRef.value
+  if (!list || queueDragIndex.value < 0) return
+  queueDragOffset.value = queueDragPointerY - queueDragStartY + list.scrollTop - queueDragStartScrollTop
+  let targetIndex = 0
+  const rows = list.querySelectorAll<HTMLElement>('.queue-item')
+  rows.forEach((row, index) => {
+    if (index === queueDragIndex.value) return
+    const rect = row.getBoundingClientRect()
+    if (queueDragPointerY > rect.top + rect.height / 2) targetIndex++
+  })
+  queueDropIndex.value = targetIndex
+}
+
+function tickQueueDrag() {
+  const list = queueListRef.value
+  if (!list || queueDragPointerId === null) return
+  const rect = list.getBoundingClientRect()
+  const edge = 48
+  const maxStep = 16
+  let delta = 0
+  if (queueDragPointerY < rect.top + edge) {
+    delta = -Math.ceil(maxStep * Math.min(1, (rect.top + edge - queueDragPointerY) / edge))
+  } else if (queueDragPointerY > rect.bottom - edge) {
+    delta = Math.ceil(maxStep * Math.min(1, (queueDragPointerY - rect.bottom + edge) / edge))
+  }
+  if (delta !== 0) {
+    list.scrollTop += delta
+    if (delta > 0 && list.scrollTop + list.clientHeight >= list.scrollHeight - edge) expand()
+    updateQueueDragTarget()
+  }
+  queueDragFrame = requestAnimationFrame(tickQueueDrag)
+}
+
+function startQueueDrag(event: PointerEvent, index: number) {
+  if (!canReorderQueue.value || !player.queue[index]) return
+  if (event.pointerType === 'mouse' && event.button !== 0) return
+  event.preventDefault()
+  cancelQueueDrag()
+  closeQueueContextMenu()
+  queueDragSnapshot = [...player.queue]
+  queueDragIndex.value = index
+  queueDragPointerId = event.pointerId
+  queueDragHandle = event.currentTarget as HTMLElement
+  queueDragStartY = queueDragPointerY = event.clientY
+  queueDragStartScrollTop = queueListRef.value?.scrollTop ?? 0
+  queueDragHandle.setPointerCapture(event.pointerId)
+  updateQueueDragTarget()
+  window.addEventListener('pointermove', moveQueueDrag)
+  window.addEventListener('pointerup', finishQueueDrag)
+  window.addEventListener('pointercancel', cancelQueueDrag)
+  queueDragFrame = requestAnimationFrame(tickQueueDrag)
+}
+
+function moveQueueDrag(event: PointerEvent) {
+  if (event.pointerId !== queueDragPointerId) return
+  event.preventDefault()
+  queueDragPointerY = event.clientY
+  updateQueueDragTarget()
+}
+
+async function finishQueueDrag(event: PointerEvent) {
+  if (event.pointerId !== queueDragPointerId) return
+  event.preventDefault()
+  queueDragPointerY = event.clientY
+  updateQueueDragTarget()
+  const fromIndex = queueDragIndex.value
+  const toIndex = queueDropIndex.value
+  const snapshot = queueDragSnapshot
+  cancelQueueDrag()
+  if (player.moveQueueItem(fromIndex, toIndex, snapshot)) {
+    // 首行换位会重置分块窗口，提交后保留拖动目标的可见范围
+    await nextTick()
+    ensureIndex(Math.max(fromIndex, toIndex))
+  }
+}
+
+async function moveQueueByKeyboard(event: KeyboardEvent, index: number) {
+  if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+  event.preventDefault()
+  event.stopPropagation()
+  if (!canReorderQueue.value) return
+  closeQueueContextMenu()
+  const toIndex = index + (event.key === 'ArrowUp' ? -1 : 1)
+  if (player.moveQueueItem(index, toIndex)) {
+    await nextTick()
+    ensureIndex(Math.max(index, toIndex))
+    await nextTick()
+    queueListRef.value?.querySelectorAll<HTMLElement>('.qi-drag-handle')[toIndex]?.focus()
+  }
+}
 
 const queueContextMenuOpen = ref(false)
 const queueContextMenuPosition = ref<ContextMenuPosition>({ x: 0, y: 0 })
@@ -143,12 +273,18 @@ function handleQueueContextMenuClick(item: ContextMenuActionItem) {
         <p>{{ t('player.no_queue') }}</p>
       </div>
 
-      <div v-else class="queue-list" @scroll="onQueueScroll">
+      <div v-else ref="queueListRef" class="queue-list" @scroll="onQueueScroll">
         <div
           v-for="(track, index) in visibleQueue"
           :key="`${index}:${track.id}`"
           class="queue-item"
-          :class="{ active: index === player.queueIndex }"
+          :class="{
+            active: index === player.queueIndex,
+            dragging: index === queueDragIndex,
+            'drop-before': queueDragIndex >= 0 && queueDropIndex < queueDragIndex && index === queueDropIndex,
+            'drop-after': queueDragIndex >= 0 && queueDropIndex > queueDragIndex && index === queueDropIndex,
+          }"
+          :style="index === queueDragIndex ? { transform: `translateY(${queueDragOffset}px)` } : undefined"
           @click="playFromQueue(index)"
           @contextmenu.prevent.stop="openQueueContextMenu($event, index)"
         >
@@ -167,6 +303,17 @@ function handleQueueContextMenuClick(item: ContextMenuActionItem) {
             <div class="qi-meta">{{ track.artist }}</div>
           </div>
           <div class="qi-duration">{{ formatDuration(track.durationMs) }}</div>
+          <button
+            class="qi-drag-handle"
+            :disabled="!canReorderQueue"
+            :title="t('common.drag_to_reorder')"
+            :aria-label="t('common.drag_to_reorder')"
+            @pointerdown.stop="startQueueDrag($event, index)"
+            @keydown="moveQueueByKeyboard($event, index)"
+            @click.stop
+          >
+            <span class="material-symbols-rounded">drag_handle</span>
+          </button>
           <button class="qi-more" :title="t('player.more_options')" @click.stop="openQueueContextMenu($event, index)">
             <span class="material-symbols-rounded">more_vert</span>
           </button>
@@ -291,6 +438,7 @@ function handleQueueContextMenuClick(item: ContextMenuActionItem) {
 }
 
 .queue-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -302,6 +450,25 @@ function handleQueueContextMenuClick(item: ContextMenuActionItem) {
   &:hover { background: var(--md-surface-container-high); }
   &.active { background: color-mix(in srgb, var(--md-primary) 10%, transparent); }
   &.active .qi-title { color: var(--md-primary); }
+  &.dragging {
+    z-index: 1;
+    background: var(--md-surface-container-highest);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+    cursor: grabbing;
+    user-select: none;
+  }
+  &.drop-before::before,
+  &.drop-after::after {
+    content: '';
+    position: absolute;
+    left: 10px;
+    right: 10px;
+    height: 2px;
+    background: var(--md-primary);
+    border-radius: var(--radius-full);
+  }
+  &.drop-before::before { top: -1px; }
+  &.drop-after::after { bottom: -1px; }
 }
 
 .qi-index {
@@ -391,10 +558,12 @@ function handleQueueContextMenuClick(item: ContextMenuActionItem) {
   flex-shrink: 0;
 }
 
+.qi-drag-handle,
 .qi-more,
 .qi-remove {
   width: 28px;
   height: 28px;
+  flex-shrink: 0;
   border-radius: var(--radius-full);
   display: flex;
   align-items: center;
@@ -406,5 +575,15 @@ function handleQueueContextMenuClick(item: ContextMenuActionItem) {
   .queue-item:hover & { opacity: 0.6; }
   &:hover { opacity: 1 !important; background: var(--md-surface-container-highest); }
   .material-symbols-rounded { font-size: 16px; }
+}
+
+.qi-drag-handle {
+  opacity: 0.6;
+  cursor: grab;
+  touch-action: none;
+
+  &:active { cursor: grabbing; }
+  &:disabled { opacity: 0.2; cursor: default; }
+  &:focus-visible { opacity: 1; outline: 2px solid var(--md-primary); }
 }
 </style>

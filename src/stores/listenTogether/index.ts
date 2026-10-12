@@ -126,7 +126,7 @@ export const useListenTogetherStore = defineStore('listenTogether', () => {
   let _softSyncRate: number | null = null
   let _watchReleaseTimer: ReturnType<typeof setTimeout> | null = null
   let _playbackApplySequence = 0
-  const _pendingRemotePlaybackLoads = new Set<number>()
+  const _pendingRemotePlaybackLoads = new Map<number, number>()
   let _trackSwitchAt = 0
   let _reconnectAttempt = 0
   let _reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -1152,7 +1152,7 @@ export const useListenTogetherStore = defineStore('listenTogether', () => {
         const generation = _sessionGeneration
         const applySequence = ++_playbackApplySequence
         const seekSequence = player.lastSeekCommand.seq
-        _pendingRemotePlaybackLoads.add(applySequence)
+        _pendingRemotePlaybackLoads.set(applySequence, seekSequence)
         // 播放完成后读取最新房态，避免固定延时在慢速解析中暂停错误的会话
         void player.play(player.queue[targetIndex], 'remote_sync', expectedPos).then(async () => {
           if (generation !== _sessionGeneration || applySequence !== _playbackApplySequence) return
@@ -1737,9 +1737,10 @@ export const useListenTogetherStore = defineStore('listenTogether', () => {
     return true
   }
 
-  function reportQueueEvent() {
+  function reportQueueEvent(playback?: { positionMs: number; shouldPlay: boolean }) {
     const player = usePlayerStore()
     const snapshot = buildControlSnapshotFields()
+    const shouldPlay = playback?.shouldPlay ?? player.isPlaying
     _lastReportedQueueKeys = player.queue.map(track => trackInfoToLtTrack(track).stableKey)
     sendQueueEvent({
       type: isController.value ? 'SET_QUEUE' : 'REQUEST_SET_QUEUE',
@@ -1747,11 +1748,32 @@ export const useListenTogetherStore = defineStore('listenTogether', () => {
       track: snapshot.track,
       currentIndex: snapshot.currentIndex,
       requestTrackStableKey: snapshot.requestTrackStableKey,
-      positionMs: player.positionMs,
-      shouldPlay: player.isPlaying,
-      state: player.isPlaying ? 'playing' : 'paused',
+      positionMs: playback?.positionMs ?? player.positionMs,
+      shouldPlay,
+      state: shouldPlay ? 'playing' : 'paused',
       repeatMode: desktopRepeatToWire(player.repeatMode),
       shuffleEnabled: !!player.shuffleEnabled,
+    })
+  }
+
+  function reportQueueReorder() {
+    if (!roomId.value) return
+    // 重排可能改变同一歌曲的 occurrence，只同步队列，避免被 watcher 当成切歌
+    _lastReportedTrackId = playbackIdentity()
+    const player = usePlayerStore()
+    const state = roomState.value
+    // 远程曲目仍在加载时，界面的临时暂停不能覆盖房间希望保持的播放状态
+    const loadingRemoteState = _pendingRemotePlaybackLoads.size > 0 && state
+    const loadSeekSequence = _pendingRemotePlaybackLoads.get(_playbackApplySequence)
+    const hasLocalSeek = loadSeekSequence !== undefined
+      && player.lastSeekCommand.seq > loadSeekSequence
+      && player.lastSeekCommand.source === 'local'
+      && !player.lastSeekCommand.fromPlaybackStart
+    reportQueueEvent({
+      positionMs: loadingRemoteState && player.isLoadingAudio && !hasLocalSeek
+        ? resolveExpectedPosition(state, Date.now() + _serverClockOffsetMs)
+        : player.positionMs,
+      shouldPlay: loadingRemoteState ? state.playback.state === 'playing' : intendsToPlay(),
     })
   }
 
@@ -2188,6 +2210,7 @@ export const useListenTogetherStore = defineStore('listenTogether', () => {
     checkClipboardInvite,
     // 暴露给外部（seek 上报）
     reportSeekEvent,
+    reportQueueReorder,
     // 曲目自然播完上报（供 player.handleTrackEnded 调用）
     reportTrackFinished,
   }

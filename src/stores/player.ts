@@ -3058,6 +3058,37 @@ export const usePlayerStore = defineStore('player', () => {
     savePlayerState()
   }
 
+  function moveQueueItem(fromIndex: number, toIndex: number, expectedQueue?: readonly TrackInfo[]): boolean {
+    if (!Number.isInteger(fromIndex) || !Number.isInteger(toIndex)
+      || fromIndex < 0 || toIndex < 0
+      || fromIndex >= queue.value.length || toIndex >= queue.value.length
+      || fromIndex === toIndex) return false
+    if (expectedQueue && (expectedQueue.length !== queue.value.length
+      || expectedQueue.some((track, index) => track !== queue.value[index]))) return false
+    if (blockedByListenTogether('local')) return false
+
+    // 按槽位映射，重复歌曲也保留各自的播放索引和随机播放历史
+    function remapIndex(index: number): number {
+      if (index === fromIndex) return toIndex
+      if (fromIndex < toIndex && index > fromIndex && index <= toIndex) return index - 1
+      if (fromIndex > toIndex && index >= toIndex && index < fromIndex) return index + 1
+      return index
+    }
+
+    const nextQueue = [...queue.value]
+    const [moved] = nextQueue.splice(fromIndex, 1)
+    nextQueue.splice(toIndex, 0, moved)
+    queueIndex.value = remapIndex(queueIndex.value)
+    shuffleBag = shuffleBag.map(remapIndex)
+    shuffleHistory = shuffleHistory.map(remapIndex)
+    shuffleFuture = shuffleFuture.map(remapIndex)
+    queue.value = nextQueue
+    useListenTogetherStore().reportQueueReorder()
+    savePlayerState()
+    maybePrefetchNext()
+    return true
+  }
+
   // 从队列移除指定索引
   function removeFromQueue(index: number) {
     if (index < 0 || index >= queue.value.length) return
@@ -3266,7 +3297,7 @@ export const usePlayerStore = defineStore('player', () => {
     setLoudnessGain, setEqualizer, setEqualizerPreset, resetAudioEffects,
     applyPersistedSettings, decoderCapabilities,
     startSleepTimer, startSleepTimerEndOfTrack, startSleepTimerEndOfQueue, cancelSleepTimer,
-    playAll, shufflePlay, addToQueueNext, addToQueueEnd, removeFromQueue, clearQueue,
+    playAll, shufflePlay, addToQueueNext, addToQueueEnd, moveQueueItem, removeFromQueue, clearQueue,
     prefetchPlaybackTracks, prefetchIntent, upcomingTrack: () => nextPrefetchTracks()[0] ?? null,
     updateCurrentTrackInfo, patchCurrentTrackSyncPayload, restoreOriginalTrackInfo, hasOriginalTrackInfo,
     handleDownloadedFileRemoved, withReleasedAudioFile, replayWithQuality,

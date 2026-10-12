@@ -33,13 +33,18 @@ export function buildPersistedPlaybackQueue<T extends PlaybackStateTrackIdentity
       ? 0
       : clampQueueIndex(queueIndex, persistedQueue.length)
   }
+  const indexedTrack = persistedQueue[persistedIndex]
+  // 房间重排确认后队列引用可能已更新，持久化身份跟随当前槽位
+  const identityTrack = currentTrack && persistedIndex === queueIndex && indexedTrack?.id === currentTrack.id
+    ? indexedTrack
+    : currentTrack
 
   return {
     queue: persistedQueue,
     queueIndex: persistedIndex,
     hasPlaybackSession: currentTrack !== null,
-    currentTrackId: currentTrack?.id,
-    currentTrackPlaylistKey: currentTrack?.playlistKey,
+    currentTrackId: identityTrack?.id,
+    currentTrackPlaylistKey: identityTrack?.playlistKey,
   }
 }
 
@@ -52,11 +57,16 @@ export function restorePersistedPlaybackQueue<T extends PlaybackStateTrackIdenti
   normalizeTrack: (raw: unknown) => T,
   canRestoreTrack: (track: T) => boolean,
 ): RestoredPlaybackQueue<T> {
+  let savedTrackIndex = -1
+  let restoredQueueLength = 0
   const queue = Array.isArray(rawQueue)
-    ? rawQueue.flatMap((raw) => {
+    ? rawQueue.flatMap((raw, rawIndex) => {
         try {
           const track = normalizeTrack(raw)
-          return canRestoreTrack(track) ? [track] : []
+          if (!canRestoreTrack(track)) return []
+          if (rawIndex === rawQueueIndex) savedTrackIndex = restoredQueueLength
+          restoredQueueLength++
+          return [track]
         } catch {
           return []
         }
@@ -91,11 +101,15 @@ export function restorePersistedPlaybackQueue<T extends PlaybackStateTrackIdenti
     }
   }
 
-  const restoredTrackIndex = findTrackIndex(
-    queue,
-    typeof currentTrackId === 'string' ? currentTrackId : '',
-    typeof currentTrackPlaylistKey === 'string' ? currentTrackPlaylistKey : '',
-  )
+  const persistedId = typeof currentTrackId === 'string' ? currentTrackId : ''
+  const persistedPlaylistKey = typeof currentTrackPlaylistKey === 'string' ? currentTrackPlaylistKey : ''
+  const indexedTrack = queue[savedTrackIndex]
+  const savedIndexMatchesIdentity = hasPersistedIdentity && !!indexedTrack
+    && (!persistedId || indexedTrack.id === persistedId)
+    && (!persistedPlaylistKey || indexedTrack.playlistKey === persistedPlaylistKey)
+  const restoredTrackIndex = savedIndexMatchesIdentity
+    ? savedTrackIndex
+    : findTrackIndex(queue, persistedId, persistedPlaylistKey)
   const fallbackIndex = typeof rawQueueIndex === 'number'
     ? clampQueueIndex(rawQueueIndex, queue.length)
     : 0

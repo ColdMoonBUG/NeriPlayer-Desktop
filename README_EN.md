@@ -93,7 +93,7 @@ CI builds and Releases may correspond to different commits. When reporting issue
 | Explore | Separate search and discovery for NetEase, Bilibili and YouTube Music; optional search history; select a matching version from search results for playback |
 | Library | Local playlists, favorite playlists and artists, downloads, NetEase playlists/albums, Bilibili favorite folders and YouTube Music playlists; search within categories, pagination, multi-select, dragging and context menus |
 | Artists | NetEase, Bilibili and YouTube details and following; local artist grouping, detail search and playback of filtered results |
-| Playback | Queue, shuffle/repeat, remembered position and mode, long-audio resume, progressive buffering, Range streaming and fragmented-audio seeking |
+| Playback | Drag to reorder the queue while keeping the current track and position (Up/Down arrow keys also work on the reorder handle), shuffle/repeat, remembered position and mode, long-audio resume, progressive buffering, Range streaming and fragmented-audio seeking |
 | Audio | Output device, channel balance, speed, loudness gain and normalization, pause/resume fades, track crossfades, 5-band EQ and a multichannel dynamic-range compression option |
 | Lyrics | AMLL word-synced rendering, translation/romanization, automatic multi-source retrieval and manual matching, editing, local lyrics, per-source and per-track offsets, and a separate desktop lyrics window |
 | Desktop | System tray, close to tray, configurable global shortcuts, system media sessions, single instance and macOS menu bar lyrics |
