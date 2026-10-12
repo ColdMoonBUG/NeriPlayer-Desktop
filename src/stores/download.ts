@@ -9,10 +9,7 @@ import i18n from '@/i18n'
 import { createLogger } from '@/utils/logger'
 import { resolveDownloadSource } from '@/modules/playback/playbackSource'
 import { DownloadQueue } from '@/modules/download/downloadQueue'
-import {
-  consumeResolvingCancellation,
-  markResolvingTasksCancelled,
-} from '@/modules/download/downloadCancellation'
+import { consumeResolvingCancellation } from '@/modules/download/downloadCancellation'
 
 const log = createLogger('download')
 const PENDING_DOWNLOADS_KEY = 'neri:pending-downloads'
@@ -62,6 +59,8 @@ interface DownloadBatch {
 interface DownloadAttempt {
   batch: DownloadBatch
   queueId: string
+  backendSubmitted: boolean
+  cancellationStatus?: ActiveDownloadTask['status']
   outcome?: DownloadOutcome
 }
 
@@ -131,6 +130,10 @@ export const useDownloadStore = defineStore('download', () => {
         const { trackId, status, message, downloadedBytes, totalBytes } = e.payload
         const current = downloading.value.get(trackId)
         if (attempts.get(trackId)?.outcome) return
+        if (
+          (!current || current.status === 'cancelling' || current.status === 'cancelled')
+          && ['queued', 'start', 'downloading', 'processing'].includes(status)
+        ) return
 
         if (status === 'queued' || status === 'processing') {
           setTaskStatus(trackId, status)
@@ -488,7 +491,7 @@ export const useDownloadStore = defineStore('download', () => {
     }
     batch ??= { outcomes: new Map(), usedDefaultDir: false }
     batch.outcomes.delete(track.id)
-    const attempt: DownloadAttempt = { batch, queueId: `${track.id}:${++attemptSequence}` }
+    const attempt: DownloadAttempt = { batch, queueId: `${track.id}:${++attemptSequence}`, backendSubmitted: false }
     attempts.set(track.id, attempt)
     batchRevision++
     clearTerminalCleanup(track.id)
@@ -545,6 +548,7 @@ export const useDownloadStore = defineStore('download', () => {
       }
 
       // 确定来源
+      attempt.backendSubmitted = true
       await invoke('download_track', {
         url: resolved.url,
         streamType: resolved.streamType ?? 'direct',
@@ -569,10 +573,17 @@ export const useDownloadStore = defineStore('download', () => {
       // 确保后端任务已注册后仍能收到取消请求
       if (consumeResolvingCancellation(resolvingCancelled, requestToken)) {
         if (resolvingRequestTokens.get(track.id) === requestToken) {
+          let cancelled = false
           try {
-            await invoke('cancel_download', { trackId: track.id })
+            cancelled = await invoke<boolean>('cancel_download', { trackId: track.id })
           } catch (cancelError) {
             log.error('Cancel download after launch failed:', cancelError)
+          }
+          if (
+            !cancelled && attempts.get(track.id) === attempt && !attempt.outcome
+            && downloading.value.get(track.id)?.status === 'cancelling'
+          ) {
+            setTaskStatus(track.id, attempt.cancellationStatus ?? 'downloading', (i18n.global as any).t('download.cancel_failed'))
           }
         }
       }
@@ -663,11 +674,18 @@ export const useDownloadStore = defineStore('download', () => {
     }
     if (current?.status === 'cancelling') return true
     if (!current || !isDownloading(trackId)) return false
-    if (current.status === 'resolving' && resolvingToken) {
+    if (resolvingToken) {
       // 在等待 IPC 前取消解析代际，避免解析先完成后漏掉后台任务
       resolvingCancelled.add(resolvingToken)
     }
+    if (attempt && !attempt.backendSubmitted && resolvingToken) {
+      launching.delete(attempt)
+      setTaskTerminalStatus(trackId, 'cancelled')
+      finishAttempt(trackId, 'cancelled', attempt)
+      return true
+    }
 
+    if (attempt) attempt.cancellationStatus = current.status
     try {
       if (current) {
         setTaskStatus(trackId, 'cancelling')
@@ -676,24 +694,18 @@ export const useDownloadStore = defineStore('download', () => {
       if (cancelled) {
         return true
       }
-      // 后端查无任务：任务仍处于 resolving 阶段（URL 解析中）。标记取消，
-      // 待解析完成时跳过后端下载，而不是误报取消失败（DL-7）
-      if (current.status === 'resolving' && resolvingToken) {
-        if (resolvingRequestTokens.get(trackId) === resolvingToken) {
-          setTaskTerminalStatus(trackId, 'cancelled')
-        }
+      // 启动命令尚未返回时，保留取消标记，等后端完成注册后补发取消
+      if (attempt && resolvingToken && launching.has(attempt)) {
         return true
       }
-      if (downloading.value.get(trackId)?.status === 'cancelling') {
+      if (resolvingToken) resolvingCancelled.delete(resolvingToken)
+      if (attempts.get(trackId) === attempt && downloading.value.get(trackId)?.status === 'cancelling') {
         setTaskStatus(trackId, current.status, (i18n.global as any).t('download.cancel_failed'))
       }
     } catch (e) {
       log.error('Cancel download failed:', e)
-      if (current.status === 'resolving' && resolvingToken) {
-        if (resolvingRequestTokens.get(trackId) === resolvingToken) setTaskTerminalStatus(trackId, 'cancelled')
-        return true
-      }
-      if (downloading.value.get(trackId)?.status === 'cancelling') {
+      if (resolvingToken) resolvingCancelled.delete(resolvingToken)
+      if (attempts.get(trackId) === attempt && downloading.value.get(trackId)?.status === 'cancelling') {
         setTaskStatus(trackId, current.status, (i18n.global as any).t('download.cancel_failed'))
       }
     }
@@ -701,52 +713,49 @@ export const useDownloadStore = defineStore('download', () => {
   }
 
   async function cancelAllDownloads() {
-    const cancelledPending: string[] = []
-    for (const task of activeDownloads.value) {
+    const next = new Map(downloading.value)
+    const locallyCancelled: Array<{ trackId: string; attempt: DownloadAttempt }> = []
+    const backendTasks: Array<{ task: ActiveDownloadTask; attempt?: DownloadAttempt; token?: string }> = []
+    for (const task of next.values()) {
+      if (!PENDING_DOWNLOAD_STATUSES.has(task.status)) continue
       const attempt = attempts.get(task.trackId)
-      if (attempt && queue.cancelPending(attempt.queueId)) cancelledPending.push(task.trackId)
+      const token = resolvingRequestTokens.get(task.trackId)
+      if (token) resolvingCancelled.add(token)
+      const cancelledPending = attempt && queue.cancelPending(attempt.queueId)
+      if (attempt && (cancelledPending || (!attempt.backendSubmitted && token))) {
+        launching.delete(attempt)
+        speedSamples.delete(task.trackId)
+        next.set(task.trackId, { ...task, status: 'cancelled', message: undefined })
+        locallyCancelled.push({ trackId: task.trackId, attempt })
+      } else {
+        if (attempt) attempt.cancellationStatus = task.status
+        next.set(task.trackId, { ...task, status: 'cancelling', message: undefined })
+        backendTasks.push({ task, attempt, token })
+      }
     }
-    for (const trackId of cancelledPending) {
-      setTaskTerminalStatus(trackId, 'cancelled')
-      finishAttempt(trackId, 'cancelled')
+    downloading.value = next
+    // 先清空全部排队任务再释放占位，避免队列调度启动刚被取消的曲目
+    const cancellation = invoke<number>('cancel_all_downloads')
+    for (const { trackId, attempt } of locallyCancelled) finishAttempt(trackId, 'cancelled', attempt)
+
+    function restoreBackendTasks(keepLaunching: boolean) {
+      const restored = new Map(downloading.value)
+      let changed = false
+      for (const { task, attempt, token } of backendTasks) {
+        if (keepLaunching && attempt && token && launching.has(attempt)) continue
+        if (token) resolvingCancelled.delete(token)
+        if (attempts.get(task.trackId) !== attempt || restored.get(task.trackId)?.status !== 'cancelling') continue
+        restored.set(task.trackId, { ...task, message: (i18n.global as any).t('download.cancel_failed') })
+        changed = true
+      }
+      if (changed) downloading.value = restored
     }
-    const resolvingIds = markResolvingTasksCancelled(
-      downloading.value.values(),
-      resolvingCancelled,
-      trackId => resolvingRequestTokens.get(trackId),
-    )
     try {
-      const cancelled = await invoke<number>('cancel_all_downloads')
-      for (const { trackId, token } of resolvingIds) {
-        if (
-          resolvingRequestTokens.get(trackId) === token
-          && downloading.value.get(trackId)?.status === 'resolving'
-        ) {
-          setTaskTerminalStatus(trackId, 'cancelled')
-        }
-      }
-      if (cancelled > 0) {
-        const next = new Map(downloading.value)
-        for (const [trackId, task] of next.entries()) {
-          if (task.status === 'downloading' || task.status === 'processing') {
-            next.set(trackId, { ...task, status: 'cancelling' })
-          }
-        }
-        downloading.value = next
-      }
+      const cancelled = await cancellation
+      if (cancelled === 0) restoreBackendTasks(true)
     } catch (e) {
       log.error('Cancel downloads failed:', e)
-      for (const { trackId, token } of resolvingIds) {
-        if (
-          resolvingRequestTokens.get(trackId) === token
-          && downloading.value.get(trackId)?.status === 'resolving'
-        ) {
-          setTaskTerminalStatus(trackId, 'cancelled')
-        }
-      }
-      for (const task of activeDownloads.value) {
-        if (isDownloading(task.trackId)) setTaskStatus(task.trackId, task.status, (i18n.global as any).t('download.cancel_failed'))
-      }
+      restoreBackendTasks(false)
     }
   }
 
