@@ -194,6 +194,92 @@ a { color: inherit; text-decoration: none; }
   outline: none;
 }
 
+/* 数值编辑保留键盘步进，隐藏系统自带的微调按钮 */
+input[type='number'] {
+  appearance: textfield;
+  &::-webkit-inner-spin-button,
+  &::-webkit-outer-spin-button { appearance: none; margin: 0; }
+}
+
+/* 颜色输入沿用系统选色功能，页面色块使用主题圆角 */
+input[type='color'] {
+  appearance: none;
+  padding: 0;
+  border: 1px solid var(--md-outline-variant);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  overflow: hidden;
+  cursor: pointer;
+  &::-webkit-color-swatch-wrapper { padding: 0; }
+  &::-webkit-color-swatch { border: 0; border-radius: inherit; }
+  &::-moz-color-swatch { border: 0; border-radius: inherit; }
+  &:focus-visible { outline: 2px solid var(--md-primary); outline-offset: 2px; }
+}
+
+/* 普通复选框共用主题外观，已自绘的开关保留各自的隐藏输入 */
+input[type='checkbox']:not(:where(.m3-switch input, .audiofx-toggle input, .debug-switch input)) {
+  appearance: none;
+  -webkit-appearance: none;
+  display: inline-grid;
+  place-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  margin: 0;
+  padding: 0;
+  border: 2px solid var(--md-on-surface-variant);
+  border-radius: var(--radius-xs);
+  background: transparent;
+  cursor: pointer;
+  vertical-align: middle;
+  transition: background var(--duration-short) var(--ease-standard),
+              border-color var(--duration-short) var(--ease-standard);
+
+  &::before {
+    content: '';
+    width: 12px;
+    height: 12px;
+    background: var(--md-on-primary);
+    clip-path: polygon(4% 46%, 18% 32%, 40% 54%, 83% 11%, 97% 25%, 40% 82%);
+    transform: scale(0);
+    transition: transform var(--duration-short) var(--ease-standard);
+  }
+
+  &:hover:not(:disabled) { border-color: var(--md-primary); }
+
+  &:checked,
+  &:indeterminate {
+    border-color: var(--md-primary);
+    background: var(--md-primary);
+    &::before { transform: scale(1); }
+  }
+
+  &:indeterminate::before {
+    clip-path: inset(42% 8%);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--md-primary);
+    outline-offset: 3px;
+  }
+
+  &:disabled { opacity: 0.38; cursor: default; }
+
+  @media (prefers-reduced-motion: reduce) {
+    &, &::before { transition: none; }
+  }
+
+  @media (forced-colors: active) {
+    border-color: CanvasText;
+    &:checked, &:indeterminate {
+      border-color: Highlight;
+      background: Highlight;
+      &::before { background: HighlightText; }
+    }
+    &:focus-visible { outline-color: Highlight; }
+  }
+}
+
 /* 自定义背景图：#app 内的 surface 系变量换成半透明，背景图从页面、侧栏和卡片下透出来。
    实色先在 html 上取下（主题色以行内样式写在 html 上），teleport 到 body 的弹窗、菜单不受影响 */
 html.has-custom-bg {

@@ -272,7 +272,9 @@ onMounted(() => {
           :class="{ selected: selectedIds.has(track.id) }"
           @contextmenu="trackMenuRef?.open($event, track)"
         >
-          <input type="checkbox" :checked="selectedIds.has(track.id)" :aria-label="track.title" @change="toggleSelected(track.id)" />
+          <label class="scan-track-select">
+            <input type="checkbox" :checked="selectedIds.has(track.id)" :aria-label="track.title" @change="toggleSelected(track.id)" />
+          </label>
           <div class="scan-cover">
             <img v-if="track.coverUrl && !failedCovers.has(track.id)" :src="track.coverUrl" loading="lazy" alt="" @error="failedCovers.add(track.id)" />
             <span v-else class="material-symbols-rounded">music_note</span>
@@ -365,9 +367,23 @@ onMounted(() => {
 .scan-error { color: var(--md-error); overflow-wrap: anywhere; font-size: 13px; }
 .scan-message, .scan-summary { color: var(--md-on-surface-variant); font-size: 13px; margin: 16px 0; }
 .scan-search { display: flex; align-items: center; gap: 12px; background: var(--md-surface-container-high); border-radius: 28px; padding: 12px 18px; margin: 20px 0 16px; color: var(--md-on-surface-variant); input { width: 100%; border: 0; outline: none; background: none; font-size: 14px; color: var(--md-on-surface); } }
-.scan-filters { display: flex; gap: 12px 24px; flex-wrap: wrap; label { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; } }
-input[type='checkbox'] { width: 18px; height: 18px; accent-color: var(--md-primary); flex-shrink: 0; cursor: pointer; }
+.scan-filters {
+  display: flex; gap: 8px 16px; flex-wrap: wrap; margin-top: 8px;
+  label {
+    display: inline-flex; align-items: center; gap: 10px; min-height: 40px; padding: 8px 12px;
+    border-radius: var(--radius-sm); font-size: 13px; cursor: pointer;
+    transition: background var(--duration-short) var(--ease-standard);
+    &:hover:not(:has(input:disabled)) { background: var(--md-surface-container); }
+    &:has(input:disabled) { cursor: default; color: var(--md-outline); }
+  }
+}
 .scan-track { display: flex; align-items: center; gap: 14px; padding: 10px 12px; border-radius: 14px; &:hover, &.selected { background: var(--md-surface-container); } }
+.scan-track-select {
+  display: grid; place-items: center; width: 40px; height: 40px; flex-shrink: 0;
+  margin: 0 -4px 0 -8px; border-radius: var(--radius-full); cursor: pointer;
+  transition: background var(--duration-short) var(--ease-standard);
+  &:hover { background: color-mix(in srgb, var(--md-primary) 10%, transparent); }
+}
 .scan-cover { width: 48px; height: 48px; flex-shrink: 0; border-radius: 10px; overflow: hidden; display: grid; place-items: center; background: var(--md-surface-container-high); color: var(--md-on-surface-variant); img { width: 100%; height: 100%; object-fit: cover; } }
 .scan-track-info { text-align: left; flex: 1; min-width: 0; color: var(--md-on-surface); cursor: pointer; strong, span, small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } strong { font-size: 14px; } span { font-size: 12px; color: var(--md-on-surface-variant); margin-top: 4px; } small { font-size: 11px; color: var(--md-on-surface-variant); margin-top: 4px; opacity: .7; } }
 .scan-badge { font-size: 11px; color: var(--md-on-surface-variant); background: var(--md-surface-container-high); border-radius: 8px; padding: 4px 7px; }
@@ -382,6 +398,6 @@ input[type='checkbox'] { width: 18px; height: 18px; accent-color: var(--md-prima
 .scan-show-more { display: flex; margin: 20px auto; }
 .scan-skipped { margin: 24px 0; font-size: 12px; color: var(--md-on-surface-variant); summary { cursor: pointer; } > div { padding: 12px 0; overflow-wrap: anywhere; } p { margin: 5px 0 0; } }
 @keyframes local-scan-spin { to { transform: rotate(360deg); } }
-@media (max-width: 700px) { .scan-badge, .scan-duration { display: none; } .scan-track { gap: 8px; padding: 8px 4px; } }
-@media (prefers-reduced-motion: reduce) { .scanning-icon { animation: none; } }
+@media (max-width: 700px) { .scan-badge, .scan-duration { display: none; } .scan-track { gap: 8px; padding: 8px 4px; } .scan-track-select { margin: 0; } }
+@media (prefers-reduced-motion: reduce) { .scanning-icon { animation: none; } .scan-filters label, .scan-track-select { transition: none; } }
 </style>
