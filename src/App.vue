@@ -703,14 +703,18 @@ onUnmounted(() => {
 
 .content {
   flex: 1;
+  max-height: 100%;
   overflow-y: auto;
   overflow-x: hidden;
   position: relative;
   z-index: 2;
   transition: padding-bottom 300ms var(--ease-standard);
 
-  /* 预留迷你播放器高度 + 少量余量避开进度条热区；余量过大会在列表下方露出白带 */
-  &.has-mini-player { padding-bottom: calc(var(--mini-player-height, 76px) + 6px); }
+  /* 缩小滚动视口，避免正文透过透明底栏，底部少量余量避开进度条热区 */
+  &.has-mini-player {
+    max-height: calc(100% - var(--mini-player-height, 76px));
+    padding-bottom: 6px;
+  }
 }
 
 .np-underlay-scrim {

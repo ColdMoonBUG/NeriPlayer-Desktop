@@ -213,15 +213,21 @@ html.has-custom-bg #app {
   --md-surface-container-highest: color-mix(in srgb, var(--bg-solid-container-highest) 70%, transparent);
 }
 
-/* 标题栏是透明的，侧栏不再自带底色，两者和页面落在同一张背景上 */
-html.has-custom-bg .app-side-nav {
+/* 侧栏和底部播放器共用背景图，避免额外底色形成亮块 */
+html.has-custom-bg .app-side-nav,
+html.has-custom-bg .mini-player {
   background: transparent;
   border-right-color: transparent;
 }
 
+html.has-custom-bg .mini-player {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
 /* 进阶高级模糊（Android enhanced_advanced_blur）：透出背景的卡片和输入框加实时玻璃模糊，文字压在图上也清楚 */
 html.has-custom-bg.enhanced-blur #app :is(
-  .setting-card, .settings-nav-group, .home-search, .search-bar, .search-box, .mini-player
+  .setting-card, .settings-nav-group, .home-search, .search-bar, .search-box
 ) {
   -webkit-backdrop-filter: blur(var(--glass-blur, 36px)) saturate(1.4);
   backdrop-filter: blur(var(--glass-blur, 36px)) saturate(1.4);
