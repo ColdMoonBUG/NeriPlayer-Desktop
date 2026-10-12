@@ -59,6 +59,11 @@ const secondaryText = computed(() => {
   }
 })
 
+const secondaryLine = computed(() => {
+  const line = props.style.secondary === 'next' ? (active.value < 0 ? props.lines[0] : nextLine.value) : current.value
+  return line && secondaryText.value ? { ...line, text: secondaryText.value, words: [] } : null
+})
+
 /** 双行：当前句在奇偶对应的槽位，另一槽放下一句 */
 const doubleSlots = computed(() => {
   if (active.value < 0) {
@@ -160,7 +165,15 @@ onBeforeUnmount(() => {
             :align="style.align"
           />
         </Transition>
-        <p v-if="secondaryText" class="dl-secondary"><span class="dl-secondary-text">{{ secondaryText }}</span></p>
+        <KaraokeLine
+          v-if="style.secondary !== 'none'"
+          class="dl-secondary"
+          :line="secondaryLine"
+          :fallback="'\u00a0'"
+          :end-ms="lineEnds[active] ?? 0"
+          karaoke="off"
+          :align="style.align"
+        />
         <p v-if="style.layout === 'triple'" class="dl-adjacent"><span class="dl-secondary-text">{{ (style.secondary === 'next' ? lines[active + 2]?.text : nextLine?.text) || '\u00a0' }}</span></p>
       </template>
     </div>
@@ -189,18 +202,28 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 0.15em;
   width: 100%;
+  max-width: var(--dl-max-width);
   min-width: 0;
   padding: max(0.25em, var(--dl-effect-inset)) 0;
   box-sizing: border-box;
   transform-origin: center;
 }
 
-.align-left .dl-stage-content { transform-origin: left center; }
-.align-right .dl-stage-content { transform-origin: right center; }
+.align-left .dl-stage-content { justify-self: start; transform-origin: left center; }
+.align-right .dl-stage-content { justify-self: end; transform-origin: right center; }
 
 .dl-current { position: relative; }
 
-.dl-secondary,
+.dl-secondary {
+  filter: var(--dl-shadow);
+  --dl-font-size: var(--dl-secondary-size);
+  --dl-font-weight: 600;
+  --dl-played: linear-gradient(var(--dl-secondary-color), var(--dl-secondary-color));
+  --dl-unplayed: linear-gradient(var(--dl-secondary-color), var(--dl-secondary-color));
+  --dl-stroke: 0 transparent;
+  --dl-glow: none;
+}
+
 .dl-adjacent {
   margin: 0;
   font-family: var(--dl-font-family);
@@ -221,9 +244,9 @@ onBeforeUnmount(() => {
 
 .dl-adjacent { opacity: 0.55; }
 
-.align-left .dl-secondary, .align-left .dl-adjacent { text-align: left; }
-.align-center .dl-secondary, .align-center .dl-adjacent { text-align: center; }
-.align-right .dl-secondary, .align-right .dl-adjacent { text-align: right; }
+.align-left .dl-adjacent { text-align: left; }
+.align-center .dl-adjacent { text-align: center; }
+.align-right .dl-adjacent { text-align: right; }
 
 .layout-double .dl-stage-content { gap: 0.05em; }
 .dl-double-bottom { margin-top: -0.1em; }

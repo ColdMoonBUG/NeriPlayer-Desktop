@@ -79,6 +79,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
   { section: 'desktop_lyrics', title: 'desktop_lyrics.secondary' },
   { section: 'desktop_lyrics', title: 'desktop_lyrics.font' },
   { section: 'desktop_lyrics', title: 'desktop_lyrics.font_size' },
+  { section: 'desktop_lyrics', title: 'desktop_lyrics.max_width', desc: 'desktop_lyrics.max_width_desc', keywords: ['长歌词', '最大宽度', '滚动', 'long lyrics', 'max width', 'scroll'] },
   { section: 'desktop_lyrics', title: 'desktop_lyrics.font_weight' },
   { section: 'desktop_lyrics', title: 'desktop_lyrics.letter_spacing' },
   { section: 'desktop_lyrics', title: 'desktop_lyrics.secondary_size' },

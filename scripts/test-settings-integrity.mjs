@@ -199,6 +199,32 @@ await regression('long-note preferences survive hydration, IPC persistence, and 
   }
 })
 
+await regression('desktop lyric width survives hydration, IPC persistence, reload, and exported snapshots', async store => {
+  loadResult = { settings: { desktopLyrics: { fontSize: 40, maxWidth: 600 } }, persisted: true }
+  await store.hydrate()
+  assert.equal(store.desktopLyrics.maxWidth, 600)
+  store.desktopLyrics = { ...store.desktopLyrics, maxWidth: 1209 }
+  await flushPersist()
+  assert.equal(saved.at(-1).desktopLyrics.maxWidth, 1200)
+  assert.equal(JSON.parse(storage.get('neri:desktop_lyrics')).maxWidth, 1200)
+  const exported = JSON.parse(JSON.stringify(store.snapshot()))
+  store.applySnapshot({ desktopLyrics: { maxWidth: 360 } })
+  store.applySnapshot(exported)
+  assert.equal(store.desktopLyrics.maxWidth, 1200)
+  loadResult = { settings: {}, persisted: false }
+  const reloadedInstance = pinia.createPinia()
+  pinia.setActivePinia(reloadedInstance)
+  try {
+    const reloaded = settingsModule.useSettingsStore()
+    await reloaded.hydrate()
+    assert.equal(reloaded.desktopLyrics.maxWidth, 1200)
+  } finally {
+    pinia.disposePinia(reloadedInstance)
+  }
+  store.applySnapshot({ desktopLyrics: { fontSize: 40 } })
+  assert.equal(store.desktopLyrics.maxWidth, 860, '旧配置导入时补上默认最大宽度')
+})
+
 await regression('the menu bar lyric preference defaults off and survives persistence', async store => {
   await store.hydrate()
   assert.equal(store.showMenuBarLyrics, false)

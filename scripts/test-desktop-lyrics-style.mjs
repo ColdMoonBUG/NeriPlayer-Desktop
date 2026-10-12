@@ -22,6 +22,12 @@ assert.deepEqual(defaults, { ...style.DEFAULT_DESKTOP_LYRICS_STYLE, playedColors
 assert.equal(defaults.layout, 'single')
 assert.equal(defaults.locked, false)
 assert.equal(defaults.bounds, null, '第一次打开由后端摆到屏幕底部居中')
+assert.equal(defaults.maxWidth, 860, '旧设置缺少最大宽度时保留默认窗口的显示规模')
+assert.equal(style.normalizeDesktopLyricsStyle({ maxWidth: Number.NaN }).maxWidth, 860)
+assert.equal(style.normalizeDesktopLyricsStyle({ maxWidth: 'invalid' }).maxWidth, 860)
+assert.equal(style.normalizeDesktopLyricsStyle({ maxWidth: 1209 }).maxWidth, 1200, '最大宽度使用逻辑像素并按滑块步进保存')
+assert.equal(style.normalizeDesktopLyricsStyle({ maxWidth: 0 }).maxWidth, 360)
+assert.equal(style.normalizeDesktopLyricsStyle({ maxWidth: 99_999 }).maxWidth, 4080)
 assert.notEqual(defaults.playedColors, style.DEFAULT_DESKTOP_LYRICS_STYLE.playedColors, '不共享默认值的数组，改了也不污染默认')
 const restored = style.normalizeDesktopLyricsStyle({ strokeWidth: Number.NaN, shadowBlur: 'invalid' })
 assert.deepEqual([restored.strokeWidth, restored.shadowBlur], [0.5, 1], '缺失或无效的描边、阴影回到轻量默认值')
@@ -80,6 +86,7 @@ assert.deepEqual(style.resolveDesktopLyricsColors({ ...defaults, theme: 'accent'
 const vars = style.desktopLyricsCssVars({ ...defaults, fontFamily: 'Noto Sans SC', fontSize: 40, secondaryScale: 0.5, strokeEnabled: false, shadowEnabled: false }, null)
 assert.match(vars['--dl-font-family'], /^"Noto Sans SC", /)
 assert.equal(vars['--dl-font-size'], '40px')
+assert.equal(vars['--dl-max-width'], '860px')
 assert.equal(vars['--dl-secondary-size'], '20px')
 assert.equal(vars['--dl-stroke'], '0 transparent')
 assert.equal(vars['--dl-shadow'], 'none')
@@ -94,7 +101,7 @@ const effectCases = [
   [{ shadowBlur: 24, strokeWidth: 4, glowEnabled: true, fontSize: 96 }, '82px'],
   [{ shadowEnabled: false, strokeEnabled: false, glowEnabled: true, fontSize: 96 }, '72px'],
 ]
-async function karaokeRuntime(line, boxWidth, padding, align = 'center') {
+async function karaokeRuntime(line, boxWidth, padding, align = 'center', options = {}) {
   const source = await readFile(new URL('../src/components/desktopLyrics/KaraokeLine.vue', import.meta.url), 'utf8')
   const script = parse(source).descriptor.scriptSetup.content
   const parsed = ts.createSourceFile('KaraokeLine.ts', script, ts.ScriptTarget.ES2022, true)
@@ -102,53 +109,105 @@ async function karaokeRuntime(line, boxWidth, padding, align = 'center') {
   const compiled = ts.transpileModule(statements, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
   }).outputText
+  const props = vue.reactive({ line, endMs: 2_000, karaoke: 'line', align, ...options })
   const dependencies = {
     computed: vue.computed, nextTick: vue.nextTick, ref: vue.ref, watch: vue.watch,
-    defineProps: () => ({ line, endMs: 2_000, karaoke: 'line', align }),
+    defineProps: () => props,
     inject: () => null,
     onMounted() {},
     onBeforeUnmount() {},
     KARAOKE_REGISTRY: Symbol(), KARAOKE_WAKE: Symbol(),
     hasWordTiming: timeline.hasWordTiming, highlightWidth: timeline.highlightWidth,
+    longLineScrollOffset: timeline.longLineScrollOffset,
     getComputedStyle: () => ({ paddingLeft: `${padding}px`, paddingRight: `${padding}px` }),
   }
   const scope = vue.effectScope()
   const actual = scope.run(() => new Function(...Object.keys(dependencies), `${compiled}\nreturn { container, fit, base, outline, fill, measure, update }`)(...Object.values(dependencies)))
-  actual.container.value = { clientWidth: boxWidth }
+  const classes = new Set()
+  actual.container.value = { clientWidth: boxWidth, classList: { toggle(name, enabled) { enabled ? classes.add(name) : classes.delete(name) } } }
   actual.fit.value = { style: {} }
   actual.base.value = { offsetWidth: 600, children: [], style: {} }
   actual.outline.value = { style: {} }
   actual.fill.value = { style: {} }
-  return { ...actual, dispose: () => scope.stop() }
+  return { ...actual, props, classes, dispose: () => scope.stop() }
 }
 
 const karaoke = await karaokeRuntime({ startMs: 1_000, durationMs: 1_000, text: 'long line', words: [] }, 500, 82)
 try {
   karaoke.measure()
-  assert.equal(karaoke.fit.value.style.transform, 'scale(0.56)', '长行按扣除效果留白后的内容宽度缩放，阴影不能压到窗口边界')
+  karaoke.update(1_000)
+  assert.equal(karaoke.fit.value.style.transform, '', '长行保留设置字号，不随文字长度缩放')
+  assert.equal(karaoke.base.value.style.clipPath, 'inset(-100% 264px -100% 0px)', '长句从开头显示，并为外层效果保留空间')
   karaoke.update(1_500)
   assert.equal(karaoke.fill.value.style.clipPath, 'inset(0 300px 0 0)', '效果留白不改变歌词原始坐标中的高亮进度')
   karaoke.base.value.offsetWidth = 1_000
   karaoke.measure()
+  karaoke.update(1_000)
+  karaoke.update(6_020)
+  assert.equal(karaoke.fit.value.style.transform, 'translateX(-332px)', '长句在起步停顿后平滑移动到中点')
+  assert.equal(karaoke.fill.value.style.clipPath, 'inset(0 332px 0 332px)', '唱完后滚动仍继续，已唱层可见区跟随视窗')
+  assert.equal(karaoke.base.value.style.clipPath, 'inset(-100% 332px -100% 332px)', '未唱字形不能越过滚动视窗')
+  assert.equal(karaoke.outline.value.style.clipPath, 'inset(-100% 332px -100% 332px)', '描边与字形使用相同视窗，阴影留在外层')
+  karaoke.measure()
+  assert.equal(karaoke.fit.value.style.transform, 'translateX(-332px)', '尺寸未变化的重测不能让歌词闪回开头')
+  assert.equal(karaoke.fill.value.style.clipPath, 'inset(0 332px 0 332px)', '重测保留已唱画面，避免一帧闪烁')
+  karaoke.update(6_020)
+  assert.equal(karaoke.fit.value.style.transform, 'translateX(-332px)', '暂停锚点不变时滚动也停住')
+  karaoke.update(10_520)
+  assert.equal(karaoke.fit.value.style.transform, 'translateX(-664px)', '滚动到末尾时完整显示最后一段')
+  karaoke.update(12_770)
+  assert.equal(karaoke.fit.value.style.transform, 'translateX(-560.5px)', '到末尾后缓动返回，不循环跳回起点')
+  karaoke.update(1_000)
+  assert.equal(karaoke.fit.value.style.transform, '', '向前拖回歌词开头时重置滚动')
+  karaoke.base.value.offsetWidth = 100
+  karaoke.measure()
   karaoke.update(2_000)
-  assert.equal(karaoke.fit.value.style.transform, 'scale(0.5)', '超长歌词保留现有的一半缩放下限')
-  assert.equal(karaoke.fill.value.style.clipPath, 'inset(0 164px 0 164px)', '超长歌词在内容边界裁剪字形，滤镜仍可在外部绘制')
-  assert.equal(karaoke.base.value.style.clipPath, 'inset(-100% 164px -100% 164px)', '未唱层也不能越过内容边界')
-  assert.equal(karaoke.outline.value.style.clipPath, 'inset(-100% 164px -100% 164px)', '描边字形在边界内裁剪，外层仍可绘制阴影')
+  assert.equal(karaoke.fit.value.style.transform, '', '短句恢复原对齐并始终保留字号')
+  assert.equal(karaoke.classes.has('overflowing'), false)
 } finally {
   karaoke.dispose()
 }
 
-for (const [align, clip] of [['left', 'inset(0 328px 0 0)'], ['right', 'inset(0 0px 0 328px)']]) {
+for (const align of ['left', 'center', 'right']) {
   const row = await karaokeRuntime({ startMs: 1_000, durationMs: 1_000, text: 'long line', words: [] }, 500, 82, align)
   try {
     row.base.value.offsetWidth = 1_000
     row.measure()
-    row.update(2_000)
-    assert.equal(row.fill.value.style.clipPath, clip, '超长歌词按左右对齐保留正确的可见区间')
+    row.update(1_000)
+    assert.equal(row.fit.value.style.transform, '', '所有对齐方式的长句均从开头开始，保持字号')
+    assert.equal(row.base.value.style.clipPath, 'inset(-100% 664px -100% 0px)')
+    row.update(6_020)
+    assert.equal(row.fill.value.style.clipPath, 'inset(0 332px 0 332px)', '左右对齐的长句也能滚动显示全文')
+    row.update(6_019)
+    assert.equal(row.fit.value.style.transform, 'translateX(-332px)', '播放时钟小幅重锚不能让滚动跳回起点')
+    row.props.line = { ...row.props.line }
+    await vue.nextTick()
+    row.update(6_020)
+    assert.equal(row.fit.value.style.transform, 'translateX(-332px)', '同句的播放帧刷新不能重启滚动')
+    row.props.upcoming = true
+    await vue.nextTick()
+    row.update(8_000)
+    assert.equal(row.fit.value.style.transform, '', '下一句预告固定显示开头，不提前滚动')
+    row.props.upcoming = false
+    await vue.nextTick()
+    row.update(8_000)
+    assert.equal(row.fit.value.style.transform, '', '双行槽位唱到下一句时从头开始滚动')
   } finally {
     row.dispose()
   }
+}
+
+const timedRow = await karaokeRuntime({ startMs: 1_000, durationMs: 1_000, text: 'AB', words: [
+  { startMs: 1_000, durationMs: 500, text: 'A' }, { startMs: 1_500, durationMs: 500, text: 'B' },
+] }, 500, 82, 'center', { karaoke: 'word' })
+try {
+  timedRow.base.value.children = [{ offsetLeft: 0, offsetWidth: 400 }, { offsetLeft: 400, offsetWidth: 200 }]
+  timedRow.measure()
+  timedRow.update(1_000)
+  timedRow.update(1_250)
+  assert.equal(timedRow.fill.value.style.clipPath, 'inset(0 400px 0 0)', '固定字号后仍按真实字宽推进逐字高亮')
+} finally {
+  timedRow.dispose()
 }
 
 const stageSource = await readFile(new URL('../src/components/desktopLyrics/DesktopLyricsStage.vue', import.meta.url), 'utf8')
@@ -216,5 +275,14 @@ assert.equal(timeline.highlightWidth(lines[0], 2_000, 2_500, 100, offsets, true)
 assert.equal(timeline.highlightWidth(lines[0], 2_000, 1_250, 100, offsets, false), 25, '整行扫过按时间比例')
 assert.equal(timeline.highlightWidth(lines[1], 4_000, 3_500, 200, null, true), 100, '没有逐字时间轴时整行扫过')
 assert.equal(timeline.highlightWidth(lines[0], 2_000, 1_250, 100, [[0, 40]], true), 25, '字的位置没量齐时退回整行扫过')
+
+for (const [overflow, elapsed, expected] of [
+  [0, 5_000, 0], [2, 5_000, 0], [200, -10, 0], [200, 520, 0],
+  [342, 2_770, 53.4375], [342, 5_020, 171], [342, 9_520, 342],
+  [342, 11_770, 288.5625], [342, 18_520, 0],
+  [38, 1_620, 19], [3800, 5_020, 1900], [Number.NaN, 6_000, 0], [100, Number.NaN, 0],
+]) {
+  assert.equal(timeline.longLineScrollOffset(overflow, elapsed), expected, '长句平移使用缓动往返，短溢出、暂停前和无效值不滚动')
+}
 
 console.log('desktop lyrics style and timeline tests passed')

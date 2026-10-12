@@ -1404,6 +1404,8 @@
     "font_custom": "Other font…",
     "font_custom_placeholder": "Name of a font installed on this computer",
     "font_size": "Text size",
+    "max_width": "Maximum lyric width",
+    "max_width_desc": "Limited by the window width. Long lines keep their text size and scroll back and forth with easing",
     "font_weight": "Weight",
     "letter_spacing": "Letter spacing",
     "secondary_size": "Second line size",

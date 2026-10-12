@@ -305,6 +305,7 @@ const LEGACY_KEYS: Partial<Record<SettingKey, string>> = {
   lyricBlur: 'lyric_blur',
   lyricBlurAmount: 'lyric_blur_amount',
   lyricEmphasisThresholdMs: 'lyric_emphasis_threshold_ms',
+  desktopLyrics: 'desktop_lyrics',
   cloudMusicOffset: 'cloud_offset',
   qqMusicOffset: 'qq_offset',
   coverStyle: 'cover_style',

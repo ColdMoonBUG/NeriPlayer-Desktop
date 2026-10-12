@@ -14,6 +14,7 @@ import {
   DESKTOP_LYRICS_BACKGROUNDS,
   DESKTOP_LYRICS_FONT_PRESETS,
   DESKTOP_LYRICS_FONT_SIZE,
+  DESKTOP_LYRICS_MAX_WIDTH,
   DESKTOP_LYRICS_KARAOKE,
   DESKTOP_LYRICS_LAYOUTS,
   DESKTOP_LYRICS_LETTER_SPACING,
@@ -2564,6 +2565,15 @@ useEscapeClose(
         </div>
         <input type="range" class="m3-slider" :value="desktopLyricsStyle.fontSize" :min="DESKTOP_LYRICS_FONT_SIZE.min" :max="DESKTOP_LYRICS_FONT_SIZE.max" :step="DESKTOP_LYRICS_FONT_SIZE.step"
           :aria-label="t('desktop_lyrics.font_size')" @input="updateDesktopLyrics({ fontSize: Number(($event.target as HTMLInputElement).value) })" />
+      </div>
+
+      <div class="setting-card sub-card">
+        <div class="setting-info">
+          <div class="setting-title">{{ t('desktop_lyrics.max_width') }}</div>
+          <div class="setting-desc">{{ desktopLyricsStyle.maxWidth }}px · {{ t('desktop_lyrics.max_width_desc') }}</div>
+        </div>
+        <input type="range" class="m3-slider" :value="desktopLyricsStyle.maxWidth" :min="DESKTOP_LYRICS_MAX_WIDTH.min" :max="DESKTOP_LYRICS_MAX_WIDTH.max" :step="DESKTOP_LYRICS_MAX_WIDTH.step"
+          :aria-label="t('desktop_lyrics.max_width')" @input="updateDesktopLyrics({ maxWidth: Number(($event.target as HTMLInputElement).value) })" />
       </div>
 
       <div class="setting-card setting-card--select sub-card">

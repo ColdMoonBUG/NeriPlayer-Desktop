@@ -1404,6 +1404,8 @@
     "font_custom": "その他のフォント…",
     "font_custom_placeholder": "インストール済みのフォント名を入力",
     "font_size": "文字サイズ",
+    "max_width": "歌詞の最大幅",
+    "max_width_desc": "ウィンドウ幅を上限とします。長い行は文字サイズを維持し、滑らかに往復スクロールします",
     "font_weight": "太さ",
     "letter_spacing": "字間",
     "secondary_size": "2 行目のサイズ",

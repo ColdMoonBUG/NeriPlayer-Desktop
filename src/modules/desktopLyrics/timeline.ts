@@ -26,6 +26,21 @@ export interface PlaybackAnchor {
 /** 没有行时长也没有下一行时，最后一行按这么长算 */
 const FALLBACK_LINE_MS = 4_000
 
+// 沿用 Android 悬浮歌词的停顿、速度和时长边界，往返加入缓入缓出
+const SCROLL_DELAY_MS = 520
+const SCROLL_PIXELS_PER_SECOND = 38
+const SCROLL_MIN_MS = 2_200
+const SCROLL_MAX_MS = 9_000
+
+/** 长句往返的位移，使用播放时钟，让暂停时的文字也停住 */
+export function longLineScrollOffset(overflow: number, elapsedMs: number): number {
+  if (!Number.isFinite(overflow) || overflow <= 2 || !Number.isFinite(elapsedMs) || elapsedMs <= SCROLL_DELAY_MS) return 0
+  const duration = Math.min(SCROLL_MAX_MS, Math.max(SCROLL_MIN_MS, overflow / SCROLL_PIXELS_PER_SECOND * 1_000))
+  const phase = (elapsedMs - SCROLL_DELAY_MS) % (duration * 2) / duration
+  const progress = phase <= 1 ? phase : 2 - phase
+  return overflow * progress * progress * (3 - 2 * progress)
+}
+
 export function anchoredPositionMs(anchor: PlaybackAnchor, now: number): number {
   if (!anchor.isPlaying) return anchor.positionMs
   const rate = Number.isFinite(anchor.rate) && anchor.rate > 0 ? anchor.rate : 1

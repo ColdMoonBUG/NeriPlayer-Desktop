@@ -34,6 +34,8 @@ export interface DesktopLyricsStyle {
   /** 空串用应用默认字体 */
   fontFamily: string
   fontSize: number
+  /** 歌词区域的最大宽度，逻辑像素，实际不超过窗口可用宽度 */
+  maxWidth: number
   fontWeight: number
   letterSpacing: number
   secondaryScale: number
@@ -76,6 +78,7 @@ export const DESKTOP_LYRICS_THEMES: readonly DesktopLyricsTheme[] = [
 ]
 
 export const DESKTOP_LYRICS_FONT_SIZE = { min: 16, max: 96, step: 2 } as const
+export const DESKTOP_LYRICS_MAX_WIDTH = { min: 360, max: 4080, step: 20 } as const
 export const DESKTOP_LYRICS_LETTER_SPACING = { min: -2, max: 12, step: 0.5 } as const
 export const DESKTOP_LYRICS_SECONDARY_SCALE = { min: 0.4, max: 1, step: 0.05 } as const
 export const DESKTOP_LYRICS_STROKE_WIDTH = { min: 0.5, max: 4, step: 0.5 } as const
@@ -102,6 +105,7 @@ export const DEFAULT_DESKTOP_LYRICS_STYLE: Readonly<DesktopLyricsStyle> = Object
   background: 'hover',
   fontFamily: '',
   fontSize: 36,
+  maxWidth: 860,
   fontWeight: 700,
   letterSpacing: 0,
   secondaryScale: 0.55,
@@ -179,6 +183,7 @@ export function normalizeDesktopLyricsStyle(value: unknown): DesktopLyricsStyle 
     background: pick(raw.background, DESKTOP_LYRICS_BACKGROUNDS, defaults.background),
     fontFamily: sanitizeFontFamily(raw.fontFamily),
     fontSize: stepped(raw.fontSize, DESKTOP_LYRICS_FONT_SIZE, defaults.fontSize),
+    maxWidth: stepped(raw.maxWidth, DESKTOP_LYRICS_MAX_WIDTH, defaults.maxWidth),
     fontWeight: pick(Number(raw.fontWeight), DESKTOP_LYRICS_WEIGHTS, defaults.fontWeight as typeof DESKTOP_LYRICS_WEIGHTS[number]),
     letterSpacing: stepped(raw.letterSpacing, DESKTOP_LYRICS_LETTER_SPACING, defaults.letterSpacing),
     secondaryScale: stepped(raw.secondaryScale, DESKTOP_LYRICS_SECONDARY_SCALE, defaults.secondaryScale),
@@ -271,6 +276,7 @@ export function desktopLyricsCssVars(style: DesktopLyricsStyle, accent: string |
   return {
     '--dl-font-family': `${family}var(--font-family, "MiSans", system-ui, sans-serif)`,
     '--dl-font-size': `${style.fontSize}px`,
+    '--dl-max-width': `${style.maxWidth}px`,
     '--dl-font-weight': String(style.fontWeight),
     '--dl-letter-spacing': `${style.letterSpacing}px`,
     '--dl-played': `linear-gradient(180deg, ${colors.played[0]}, ${colors.played[1]})`,

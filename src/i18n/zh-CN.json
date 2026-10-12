@@ -1404,6 +1404,8 @@
     "font_custom": "其他字体…",
     "font_custom_placeholder": "输入系统中已安装的字体名",
     "font_size": "字号",
+    "max_width": "最大歌词宽度",
+    "max_width_desc": "实际宽度不超过窗口；长句保持字号，在宽度内缓动往返滚动",
     "font_weight": "字重",
     "letter_spacing": "字间距",
     "secondary_size": "第二行字号",

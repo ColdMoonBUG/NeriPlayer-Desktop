@@ -1404,6 +1404,8 @@
     "font_custom": "其他字型…",
     "font_custom_placeholder": "輸入系統中已安裝的字型名稱",
     "font_size": "字級",
+    "max_width": "歌詞最大寬度",
+    "max_width_desc": "實際寬度不超過視窗；長句保持字級，在寬度內緩動往返捲動",
     "font_weight": "字重",
     "letter_spacing": "字距",
     "secondary_size": "第二行字級",
