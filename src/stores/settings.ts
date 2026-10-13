@@ -121,6 +121,7 @@ export interface AppSettings {
   volume: number
   audioOutputDevice: string
   playbackSpeed: number
+  playbackPitch: number
   loudnessGainMb: number
   equalizerEnabled: boolean
   equalizerPresetId: string
@@ -263,6 +264,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   volume: 1,
   audioOutputDevice: '',
   playbackSpeed: 1,
+  playbackPitch: 1,
   loudnessGainMb: 0,
   equalizerEnabled: false,
   equalizerPresetId: 'flat',
@@ -346,6 +348,12 @@ const LEGACY_KEYS: Partial<Record<SettingKey, string>> = {
   ltAllowMemberControl: 'lt_allow_member_control',
   ltAutoPauseOnMemberChange: 'lt_auto_pause_on_change',
   ltShareAudioLinks: 'lt_share_audio_links',
+  playbackSpeed: 'playback_speed',
+  playbackPitch: 'playback_pitch',
+  loudnessGainMb: 'loudness_gain_mb',
+  equalizerEnabled: 'equalizer_enabled',
+  equalizerPresetId: 'equalizer_preset_id',
+  equalizerBands: 'equalizer_bands',
 }
 
 function detectLocale(): string {
@@ -499,7 +507,8 @@ function normalizeSnapshot(input: unknown): AppSettings {
   )
   result.volume = clamp(result.volume, 0, 1)
   result.audioOutputDevice = result.audioOutputDevice.trim()
-  result.playbackSpeed = clamp(result.playbackSpeed, 0.25, 3)
+  result.playbackSpeed = normalizePlaybackSpeed(result.playbackSpeed)
+  result.playbackPitch = normalizePlaybackPitch(result.playbackPitch)
   result.loudnessGainMb = clamp(Math.round(result.loudnessGainMb), 0, 1500)
   result.volumeBalance = normalizeVolumeBalance(result.volumeBalance)
   result.equalizerBands = result.equalizerBands.slice(0, 5).map(value => clamp(Math.round(value), -1500, 1500))
@@ -551,6 +560,20 @@ function clamp(value: number, min: number, max: number): number {
 
 function clampInteger(value: number, min: number, max: number): number {
   return clamp(Math.round(value), min, max)
+}
+
+// 与 Android 一样按 0.05 对齐，坏输入恢复原速和原调
+export function normalizePlaybackSpeed(value: unknown): number {
+  return normalizePlaybackParameter(value, 0.1, 4)
+}
+
+export function normalizePlaybackPitch(value: unknown): number {
+  return normalizePlaybackParameter(value, 0.25, 2)
+}
+
+function normalizePlaybackParameter(value: unknown, min: number, max: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 1
+  return Math.round(Math.min(max, Math.max(min, value)) * 20) / 20
 }
 
 function sameSnapshot(left: AppSettings, right: AppSettings): boolean {
@@ -664,6 +687,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const volume = ref(initial.volume)
   const audioOutputDevice = ref(initial.audioOutputDevice)
   const playbackSpeed = ref(initial.playbackSpeed)
+  const playbackPitch = ref(initial.playbackPitch)
   const loudnessGainMb = ref(initial.loudnessGainMb)
   const equalizerEnabled = ref(initial.equalizerEnabled)
   const equalizerPresetId = ref(initial.equalizerPresetId)
@@ -694,7 +718,7 @@ export const useSettingsStore = defineStore('settings', () => {
     downloadFollowPlaybackQuality, downloadNeteaseQuality, downloadQqMusicQuality,
     downloadYoutubeQuality, downloadBiliQuality,
     ltAllowMemberControl, ltAutoPauseOnMemberChange, ltShareAudioLinks, volume, audioOutputDevice,
-    playbackSpeed, loudnessGainMb, equalizerEnabled, equalizerPresetId,
+    playbackSpeed, playbackPitch, loudnessGainMb, equalizerEnabled, equalizerPresetId,
     equalizerBands, desktopLyrics, showMenuBarLyrics, shortcutBindings, globalShortcutsEnabled,
   }
 
@@ -791,7 +815,7 @@ export const useSettingsStore = defineStore('settings', () => {
     downloadParallelism, downloadAutoFillMetadata, downloadEmbedLyrics,
     downloadFollowPlaybackQuality, downloadNeteaseQuality, downloadQqMusicQuality,
     downloadYoutubeQuality, downloadBiliQuality,
-    ltAutoPauseOnMemberChange, ltShareAudioLinks, volume, audioOutputDevice, playbackSpeed,
+    ltAutoPauseOnMemberChange, ltShareAudioLinks, volume, audioOutputDevice, playbackSpeed, playbackPitch,
     loudnessGainMb, equalizerEnabled, equalizerPresetId, equalizerBands, desktopLyrics, showMenuBarLyrics,
     shortcutBindings, globalShortcutsEnabled,
   }

@@ -7,6 +7,8 @@ import { useToastStore } from './toast'
 import {
   MAX_MEDIA_CACHE_SIZE_MB,
   MIN_MEDIA_CACHE_SIZE_MB,
+  normalizePlaybackSpeed,
+  normalizePlaybackPitch,
   useSettingsStore,
 } from './settings'
 import { useDownloadStore } from './download'
@@ -290,27 +292,29 @@ interface PendingSeekState {
 // 均衡器预设（5频段: 60Hz, 230Hz, 910Hz, 3.6kHz, 14kHz，单位 mB）
 export const EQ_PRESETS: Record<string, number[]> = {
   flat:           [0, 0, 0, 0, 0],
-  acoustic:       [300, 200, 0, 100, 200],
-  bass_boost:     [600, 400, 0, 0, 0],
-  bass_reduce:    [-600, -400, 0, 0, 0],
-  classical:      [400, 200, -100, 200, 300],
-  dance:          [500, 200, 100, -100, 200],
-  deep:           [500, 300, 100, -100, -200],
-  electronic:     [500, 300, 0, 100, 400],
-  hip_hop:        [500, 300, 0, 100, 300],
-  jazz:           [300, 100, -100, 100, 300],
-  latin:          [300, 0, -100, 200, 400],
+  acoustic:       [300, 200, 100, 200, 300],
+  bass_boost:     [700, 500, 200, -100, -300],
+  bass_reduce:    [-700, -500, -200, 0, 100],
+  classical:      [400, 200, -100, 300, 500],
+  club:           [500, 300, 0, 300, 400],
+  dance:          [600, 400, 100, 400, 500],
+  deep:           [800, 500, 100, 0, 200],
+  electronic:     [500, 200, -100, 400, 600],
+  folk:           [100, 300, 0, 400, 500],
+  hip_hop:        [700, 400, 100, 200, 400],
+  jazz:           [300, 200, 100, 300, 400],
+  latin:          [400, 300, 100, 400, 500],
   loudness:       [500, 200, 0, -100, -200],
-  lounge:         [-200, -100, 0, 100, 200],
-  piano:          [200, 100, 0, 100, 200],
-  pop:            [-100, 200, 400, 200, -100],
-  rnb:            [500, 400, 100, -100, 200],
-  rock:           [400, 200, -100, 200, 400],
-  small_speakers: [400, 200, 100, 200, 400],
-  spoken_word:    [-200, 0, 300, 200, -100],
-  treble_boost:   [0, 0, 0, 400, 600],
-  treble_reduce:  [0, 0, 0, -400, -600],
-  vocal_boost:    [-200, 0, 400, 300, 0],
+  lounge:         [200, 100, 100, 300, 400],
+  piano:          [200, 100, 0, 300, 400],
+  pop:            [-100, 300, 500, 300, 0],
+  rnb:            [400, 300, 200, 400, 300],
+  rock:           [600, 300, -100, 300, 600],
+  small_speakers: [400, 100, -200, 400, 700],
+  spoken_word:    [-400, -200, 400, 500, 200],
+  treble_boost:   [-300, -100, 200, 500, 800],
+  treble_reduce:  [100, 0, -200, -500, -800],
+  vocal_boost:    [-200, 100, 500, 500, 100],
   custom:         [0, 0, 0, 0, 0],
 }
 
@@ -547,6 +551,7 @@ export const usePlayerStore = defineStore('player', () => {
   const loadedPlaybackTrackKey = ref<string | null>(null)
   let deferredPlaybackSeek: DeferredPlaybackSeek | null = null
   let _speedInvokeTimer: ReturnType<typeof setTimeout> | null = null
+  let _pitchInvokeTimer: ReturnType<typeof setTimeout> | null = null
 
   function markCommandSource(source: PlaybackCommandSource) {
     lastCommandSource.value = source
@@ -1130,7 +1135,7 @@ export const usePlayerStore = defineStore('player', () => {
     }
 
     const elapsedMs = Math.max(0, now - pendingSeek.issuedAt)
-    const speed = _interpIsPlaying ? Math.max(0.25, effectivePlaybackSpeed() || _interpSpeed || 1) : 0
+    const speed = _interpIsPlaying ? Math.max(0.1, effectivePlaybackSpeed() || _interpSpeed || 1) : 0
     const durationLimit = nextDurationMs || durationMs.value || currentTrack.value?.durationMs || 0
     const lowerBound = Math.max(0, pendingSeek.targetMs - SEEK_BACKWARD_TOLERANCE_MS)
     const upperCandidate = pendingSeek.targetMs + elapsedMs * speed + SEEK_FORWARD_TOLERANCE_MS
@@ -2671,7 +2676,8 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   // 播放速度
-  const playbackSpeed = ref(settings.playbackSpeed)
+  const playbackSpeed = ref(normalizePlaybackSpeed(settings.playbackSpeed))
+  const playbackPitch = ref(normalizePlaybackPitch(settings.playbackPitch))
   const currentStreamUrl = ref<string | null>(null)
   let currentResolvedStreamUrls: string[] = []
   // 自己解析出的直链对应的一起听频道和音质，分享给听众时据此加音质标记
@@ -2698,7 +2704,7 @@ export const usePlayerStore = defineStore('player', () => {
 
   function effectivePlaybackSpeed(): number {
     const multiplier = listenTogetherSyncRateMultiplier ?? 1
-    return Math.max(0.25, Math.min(3, playbackSpeed.value * multiplier))
+    return Math.max(0.1, Math.min(4, playbackSpeed.value * multiplier))
   }
 
   function setListenTogetherSyncPlaybackRate(multiplier: number | null) {
@@ -2797,7 +2803,7 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   async function setSpeed(spd: number) {
-    const next = Math.max(0.25, Math.min(3, spd))
+    const next = normalizePlaybackSpeed(spd)
     const wasPlaying = _interpIsPlaying
     // 先锚定当前渲染位置，立刻切换插值速度，歌词/进度同步跟手
     const nowMs = currentRenderedPosition()
@@ -2827,6 +2833,18 @@ export const usePlayerStore = defineStore('player', () => {
     }, 200)
   }
 
+  async function setPitch(pitch: number) {
+    playbackPitch.value = normalizePlaybackPitch(pitch)
+    settings.playbackPitch = playbackPitch.value
+    // 音调不参与媒体时钟和歌词插值，只改变 DSP 的重采样倍率
+    if (_pitchInvokeTimer) clearTimeout(_pitchInvokeTimer)
+    _pitchInvokeTimer = setTimeout(() => {
+      _pitchInvokeTimer = null
+      invoke('set_pitch', { pitch: playbackPitch.value })
+        .catch(error => log.warn('playback pitch not applied:', error))
+    }, 80)
+  }
+
   // 音效参数（响度增益 + 均衡器）
   const loudnessGainMb = ref(settings.loudnessGainMb)
   const equalizerEnabled = ref(settings.equalizerEnabled)
@@ -2836,12 +2854,13 @@ export const usePlayerStore = defineStore('player', () => {
   /** 是否有任何非默认音效 */
   const hasActiveEffects = computed(() =>
     playbackSpeed.value !== 1.0
+    || playbackPitch.value !== 1.0
     || loudnessGainMb.value !== 0
     || equalizerEnabled.value
   )
 
   async function setLoudnessGain(mb: number) {
-    loudnessGainMb.value = Math.round(Math.max(0, Math.min(1500, mb)))
+    loudnessGainMb.value = Number.isFinite(mb) ? Math.round(Math.max(0, Math.min(1500, mb))) : 0
     settings.loudnessGainMb = loudnessGainMb.value
     try {
       await invoke('set_loudness_gain', { gainMb: loudnessGainMb.value })
@@ -2870,7 +2889,10 @@ export const usePlayerStore = defineStore('player', () => {
 
   async function setEqualizer(enabled: boolean, bands: number[]) {
     equalizerEnabled.value = enabled
-    equalizerBands.value = bands.map(v => Math.round(Math.max(-1500, Math.min(1500, v))))
+    equalizerBands.value = Array.from({ length: 5 }, (_, i) => {
+      const value = bands[i]
+      return Number.isFinite(value) ? Math.round(Math.max(-1500, Math.min(1500, value))) : 0
+    })
     settings.equalizerEnabled = enabled
     settings.equalizerBands = [...equalizerBands.value]
     try {
@@ -2881,32 +2903,63 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   async function setEqualizerPreset(presetId: string) {
+    if (!Object.prototype.hasOwnProperty.call(EQ_PRESETS, presetId)) presetId = 'flat'
     equalizerPresetId.value = presetId
     settings.equalizerPresetId = presetId
-    const bands = EQ_PRESETS[presetId] || [0, 0, 0, 0, 0]
+    const bands = presetId === 'custom' ? equalizerBands.value : EQ_PRESETS[presetId]
     await setEqualizer(presetId !== 'flat', [...bands])
   }
 
   async function resetAudioEffects() {
+    if (_speedInvokeTimer) clearTimeout(_speedInvokeTimer)
+    if (_pitchInvokeTimer) clearTimeout(_pitchInvokeTimer)
+    _speedInvokeTimer = null
+    _pitchInvokeTimer = null
     loudnessGainMb.value = 0
     equalizerEnabled.value = false
     equalizerPresetId.value = 'flat'
     equalizerBands.value = [0, 0, 0, 0, 0]
     playbackSpeed.value = 1.0
-    listenTogetherSyncRateMultiplier = null
+    playbackPitch.value = 1.0
     settings.loudnessGainMb = 0
     settings.equalizerEnabled = false
     settings.equalizerPresetId = 'flat'
     settings.equalizerBands = [0, 0, 0, 0, 0]
     settings.playbackSpeed = 1.0
-    _interpSpeed = 1.0
-    try {
-      await invoke('reset_audio_effects')
-      await invoke('set_speed', { speed: 1.0 })
-    } catch (error) {
-      log.warn('audio effects reset not applied:', error)
+    settings.playbackPitch = 1.0
+    const nowMs = currentRenderedPosition()
+    _interpSpeed = effectivePlaybackSpeed()
+    _interpAnchorMs = nowMs
+    _interpAnchorTime = performance.now()
+    _interpRenderedMs = nowMs
+    interpolatedPositionMs.value = nowMs
+    const results = await Promise.allSettled([
+      invoke('reset_audio_effects'),
+      invoke('set_speed', { speed: effectivePlaybackSpeed() }),
+    ])
+    for (const result of results) {
+      if (result.status === 'rejected') log.warn('audio effects reset not applied:', result.reason)
     }
   }
+
+  // 导入配置和后端规整后的值也要及时作用于当前播放会话
+  watch(() => settings.playbackSpeed, value => {
+    if (value !== playbackSpeed.value) void setSpeed(value)
+  })
+  watch(() => settings.playbackPitch, value => {
+    if (value !== playbackPitch.value) void setPitch(value)
+  })
+  watch(() => settings.loudnessGainMb, value => {
+    if (value !== loudnessGainMb.value) void setLoudnessGain(value)
+  })
+  watch(() => [settings.equalizerEnabled, settings.equalizerPresetId, ...settings.equalizerBands], () => {
+    equalizerPresetId.value = settings.equalizerPresetId
+    if (settings.equalizerEnabled !== equalizerEnabled.value
+      || settings.equalizerBands.some((value, i) => value !== equalizerBands.value[i])
+      || settings.equalizerBands.length !== equalizerBands.value.length) {
+      void setEqualizer(settings.equalizerEnabled, settings.equalizerBands)
+    }
+  })
 
   // 取流按后端实际能解的编码挑选；查询失败或 FFmpeg 没加载上时只认内置解码器，
   // Opus、E-AC-3 这类流排到后面，选出来的流一定能播
@@ -2925,13 +2978,18 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   async function applyPersistedSettings() {
+    if (_speedInvokeTimer) clearTimeout(_speedInvokeTimer)
+    if (_pitchInvokeTimer) clearTimeout(_pitchInvokeTimer)
+    _speedInvokeTimer = null
+    _pitchInvokeTimer = null
     volume.value = Math.max(0, Math.min(1, settings.volume))
-    playbackSpeed.value = Math.max(0.25, Math.min(3, settings.playbackSpeed))
+    playbackSpeed.value = normalizePlaybackSpeed(settings.playbackSpeed)
+    playbackPitch.value = normalizePlaybackPitch(settings.playbackPitch)
     loudnessGainMb.value = Math.round(Math.max(0, Math.min(1500, settings.loudnessGainMb)))
     equalizerEnabled.value = settings.equalizerEnabled
     equalizerPresetId.value = settings.equalizerPresetId
     equalizerBands.value = settings.equalizerBands.map(value => Math.round(Math.max(-1500, Math.min(1500, value))))
-    _interpSpeed = playbackSpeed.value
+    _interpSpeed = effectivePlaybackSpeed()
 
     const restored: Array<[string, Promise<unknown>]> = [
       ['volume', invoke('set_volume', { level: volume.value })],
@@ -2941,6 +2999,7 @@ export const usePlayerStore = defineStore('player', () => {
           return invoke('set_audio_output_device', { name: null })
         })],
       ['speed', invoke('set_speed', { speed: effectivePlaybackSpeed() })],
+      ['pitch', invoke('set_pitch', { pitch: playbackPitch.value })],
       ['loudness gain', invoke('set_loudness_gain', { gainMb: loudnessGainMb.value })],
       ['volume normalization', invoke('set_normalize_volume', { enabled: settings.normalizeVolume })],
       ['multichannel dynamic range compression', invoke('set_multichannel_drc', { enabled: settings.multichannelDrc })],
@@ -3284,14 +3343,14 @@ export const usePlayerStore = defineStore('player', () => {
     hasPlaybackSession, loadedPlaybackTrackKey,
     audioLevel, beatImpulse, audioInfo, isPlayingFromDownload, isPlayingFromCache,
     lastCommandSource, lastCommandSequence, lastSeekCommand, isRemoteSyncGuardActive,
-    playbackSpeed, currentStreamUrl, sleepTimerMode, sleepRemainingSeconds,
+    playbackSpeed, playbackPitch, currentStreamUrl, sleepTimerMode, sleepRemainingSeconds,
     loudnessGainMb, equalizerEnabled, equalizerPresetId, equalizerBands, hasActiveEffects,
     progress, interpolatedPositionMs, interpolatedProgress, livePositionMs, effectivePlaybackSpeed,
     currentTimeFormatted, durationFormatted,
     play, togglePlayPause, pause, resume, seekTo, next, previous,
     flushPlayerState,
     toggleRepeatMode, toggleShuffle, cyclePlayMode, applyListenTogetherPlaybackMode,
-    playMode, setVolume, setSpeed, setListenTogetherSyncPlaybackRate, getCurrentStreamUrl, getCurrentStreamUrls,
+    playMode, setVolume, setSpeed, setPitch, setListenTogetherSyncPlaybackRate, getCurrentStreamUrl, getCurrentStreamUrls,
     resolveShareableStreamUrls,
     localPlaylistIdFor,
     setLoudnessGain, setEqualizer, setEqualizerPreset, resetAudioEffects,

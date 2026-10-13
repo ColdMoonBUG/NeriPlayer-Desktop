@@ -94,7 +94,7 @@ CI builds and Releases may correspond to different commits. When reporting issue
 | Library | Local playlists, favorite playlists and artists, downloads, NetEase playlists/albums, Bilibili favorite folders and YouTube Music playlists; search within categories, pagination, multi-select, dragging and context menus |
 | Artists | NetEase, Bilibili and YouTube details and following; local artist grouping, detail search and playback of filtered results |
 | Playback | Drag to reorder the queue while keeping the current track and position (Up/Down arrow keys also work on the reorder handle), shuffle/repeat, remembered position and mode, long-audio resume, progressive buffering, Range streaming and fragmented-audio seeking |
-| Audio | Output device, channel balance, speed, loudness gain and normalization, pause/resume fades, track crossfades, 5-band EQ and a multichannel dynamic-range compression option |
+| Audio | Output device, channel balance, independent speed and pitch, loudness gain and normalization, pause/resume fades, track crossfades, 5-band EQ with presets and a multichannel dynamic-range compression option |
 | Lyrics | AMLL word-synced rendering, translation/romanization, automatic multi-source retrieval and manual matching, editing, local lyrics, per-source and per-track offsets, and a separate desktop lyrics window |
 | Desktop | System tray, close to tray, configurable global shortcuts, system media sessions, single instance and macOS menu bar lyrics |
 | Data | SQLite persistence, playlist and full-configuration import/export, GitHub / WebDAV metadata sync, playback stats and recent-play management |
@@ -114,6 +114,7 @@ CI builds and Releases may correspond to different commits. When reporting issue
 
 ### Playback sources and audio information
 
+- Audio Effects on the playback page provides basic speed, pitch, EQ enable, and preset controls. Detailed Audio Settings opens Settings → Audio Effects & Speed. Speed ranges from **0.1x to 4x**, and pitch from **0.25x to 2x**, adjusted independently. The detailed page provides sliders, numeric input, loudness gain, and a 5-band EQ at 60 / 230 / 910 / 3600 / 14000 Hz. Reset restores original speed, pitch, and loudness, then disables and clears the EQ.
 - Settings → Playback Sources lets you select a preferred YouTube client: Auto, visionOS, Android VR, Web Remix, TV HTML5 or Web Creator. Other available clients are tried after a failure.
 - When NetEase does not allow full playback or only offers a preview, local-audio matching and Bilibili fallback audio can be enabled separately. Local matching takes priority; the original track's queue and sync identity are preserved, while downloads still use the original platform source.
 - New defaults show the actual bitrate and format. Channels, sample rate and bit depth can each be enabled in personalization settings. Unknown parameters are omitted, and existing display preferences are preserved.

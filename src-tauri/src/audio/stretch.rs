@@ -8,8 +8,9 @@
 /// 分析窗长：音乐用 30 ms 左右，短了相位感重，长了瞬态发糊
 const FRAME_SECONDS: f64 = 0.030;
 const UNITY_TOLERANCE: f32 = 1e-4;
-const MIN_SPEED: f32 = 0.25;
-const MAX_SPEED: f32 = 3.0;
+// 独立音调先按 speed / pitch 伸缩，再重采样，内部范围覆盖两者的全部组合
+const MIN_SPEED: f32 = 0.05;
+const MAX_SPEED: f32 = 16.0;
 /// 粗搜索的步长与相关计算的抽样间隔；之后在最佳点附近逐样本细搜
 const COARSE_STEP: usize = 8;
 const FINE_RADIUS: usize = COARSE_STEP - 1;
@@ -38,11 +39,10 @@ pub struct Stretcher {
     active: bool,
     /// 上一段分析窗的起点；它的后半段还在 `overlap` 里等着叠加
     previous: usize,
-    /// 下一段分析窗的名义起点，每跳前进 hop × 倍速
-    nominal: f64,
-    /// 上一跳实际选中的窗口起点减去它的名义起点（±search）。变速期间按名义位置报媒体
-    /// 时间，回到直通时实际位置差着这么多，要补进媒体时间，否则每段变速都留下一个误差
-    drift: f64,
+    /// 下一段输出对应的媒体位置；短曲也从第一帧按倍速推进
+    media_position: f64,
+    source_ended: bool,
+    first_hop: bool,
     overlap: Vec<f32>,
     pending: Vec<f32>,
     pending_frames: usize,
@@ -65,8 +65,8 @@ impl Stretcher {
                 (0.5 - 0.5 * (std::f64::consts::TAU * index as f64 / frame as f64).cos()) as f32
             })
             .collect();
-        // 历史 (hop + search) + 前瞻 (frame + search + 3 × hop)，再留出压缩前的余量
-        let capacity = 4 * (frame + 4 * hop + 2 * search);
+        // 高倍速的一跳也要预读到媒体落点，EOF 才能限制尾部的实际输出时长
+        let capacity = 4 * (frame + (MAX_SPEED as usize + 1) * hop + 2 * search);
         Self {
             channels,
             frame,
@@ -79,8 +79,9 @@ impl Stretcher {
             read: 0,
             active: false,
             previous: 0,
-            nominal: 0.0,
-            drift: 0.0,
+            media_position: 0.0,
+            source_ended: false,
+            first_hop: false,
             overlap: vec![0.0; hop * channels],
             pending: vec![0.0; hop * channels],
             pending_frames: 0,
@@ -98,7 +99,7 @@ impl Stretcher {
     pub fn buffered_frames(&self) -> usize {
         let pending = self.pending_frames - self.pending_read;
         let queued = if self.active {
-            self.filled.saturating_sub(self.previous + self.hop)
+            self.filled.saturating_sub(self.media_position.ceil().max(0.0) as usize)
         } else {
             self.filled - self.read
         };
@@ -108,7 +109,7 @@ impl Stretcher {
     /// 生成 `out.len() / channels` 帧交错输出
     ///
     /// `pull` 往给定缓冲里填尽可能多的整帧并返回帧数，0 表示暂时没有数据。
-    /// `draining` 为真表示上游已经结束：凑不齐一跳时把剩下的输入原样送出，不丢尾巴。
+    /// `draining` 为真表示上游已经结束，尾部按剩余媒体帧限制输出，不退回原速
     pub fn render(
         &mut self,
         out: &mut [f32],
@@ -138,35 +139,29 @@ impl Stretcher {
                     .copy_from_slice(&self.pending[source..source + take * channels]);
                 self.pending_read += take;
                 rendered.frames += take;
-                rendered.media_frames += take as f64 * self.pending_speed;
+                let media = take as f64 * self.pending_speed;
+                rendered.media_frames += media;
+                self.media_position += media;
                 continue;
             }
             self.compact();
             if self.active {
-                if self.synthesize_hop(speed, unity, pull) {
+                if self.synthesize_hop(speed, unity, draining, pull) {
                     continue;
                 }
-                if !draining {
-                    break;
-                }
-                // 上游已经结束、凑不齐一跳：从自然延续处直通剩下的输入
-                self.active = false;
-                self.read = (self.previous + self.hop).min(self.filled);
-                rendered.media_frames += std::mem::take(&mut self.drift);
-                continue;
+                break;
             }
-            // 激活前就要备齐第一跳的前瞻：只够半窗时激活会立刻凑不齐一跳，
-            // 上游结束时又退回直通，两边来回打转
-            if !unity
-                && self.read >= self.hop + self.search
-                && self.ensure(self.activation_end(speed), pull)
-            {
-                self.activate(speed);
-                continue;
+            if !unity {
+                let end = self.read + self.frame;
+                if self.ensure(end, draining, pull) || self.source_ended && self.read < self.filled {
+                    self.activate();
+                    continue;
+                }
+                break;
             }
             if self.read >= self.filled {
                 let need = (wanted - rendered.frames).min(self.capacity - self.filled);
-                if need == 0 || !self.ensure(self.filled + need, pull) && self.read >= self.filled {
+                if need == 0 || !self.ensure(self.filled + need, draining, pull) && self.read >= self.filled {
                     break;
                 }
             }
@@ -179,32 +174,33 @@ impl Stretcher {
             out[target..target + take * channels]
                 .copy_from_slice(&self.input[source..source + take * channels]);
             self.read += take;
+            self.media_position = self.read as f64;
             rendered.frames += take;
             rendered.media_frames += take as f64;
         }
         rendered
     }
 
-    /// 激活后第一跳需要的输入终点，与 `synthesize_hop` 的前瞻一致
-    fn activation_end(&self, speed: f32) -> usize {
-        let target = (self.read - self.hop) as f64 + self.hop as f64 * f64::from(speed);
-        let lookahead = target.round() as usize + self.search + self.frame;
-        lookahead.max(self.read + self.hop)
+    fn input_sample(&self, frame: usize, channel: usize) -> f32 {
+        if frame < self.filled {
+            self.input[frame * self.channels + channel]
+        } else {
+            0.0
+        }
     }
 
-    /// 把直通位置当作上一段窗口后半的起点：叠加缓冲取 read 之后半窗乘下降半窗
-    fn activate(&mut self, speed: f32) {
+    fn activate(&mut self) {
         let channels = self.channels;
-        self.previous = self.read - self.hop;
+        self.previous = self.read;
         for index in 0..self.hop {
             let weight = self.window[self.hop + index];
             for channel in 0..channels {
-                self.overlap[index * channels + channel] =
-                    self.input[(self.read + index) * channels + channel] * weight;
+                let sample = self.input_sample(self.read + index, channel);
+                self.overlap[index * channels + channel] = sample * weight;
             }
         }
-        self.nominal = self.previous as f64 + self.hop as f64 * f64::from(speed);
-        self.drift = 0.0;
+        self.media_position = self.read as f64;
+        self.first_hop = true;
         self.active = true;
     }
 
@@ -212,57 +208,72 @@ impl Stretcher {
         &mut self,
         speed: f32,
         unity: bool,
+        draining: bool,
         pull: &mut dyn FnMut(&mut [f32]) -> usize,
     ) -> bool {
         let channels = self.channels;
-        let reference = self.previous + self.hop;
-        let target = if unity {
-            reference
-        } else {
-            self.nominal.round().max(0.0) as usize
-        };
-        let (low, high) = if unity {
+        let reference = if self.first_hop { self.previous } else { self.previous + self.hop };
+        let target = self.media_position.round().max(0.0) as usize;
+        let (low, high) = if unity || self.first_hop {
             (target, target)
         } else {
             (target.saturating_sub(self.search), target + self.search)
         };
-        if !self.ensure((high + self.frame).max(reference + self.hop), pull) {
+        let media_end = (self.media_position + self.hop as f64 * f64::from(speed)).ceil() as usize;
+        let need = (high + self.frame).max(reference + self.hop).max(media_end);
+        if !self.ensure(need, draining, pull) && !self.source_ended {
             return false;
         }
-        let start = if unity { reference } else { self.best_match(low, high, reference) };
-        for index in 0..self.hop {
+        let remaining = (self.filled as f64 - self.media_position).max(0.0);
+        if self.source_ended && remaining <= 1e-7 {
+            self.active = false;
+            self.read = self.filled;
+            return false;
+        }
+        let start = if unity || self.first_hop {
+            target.min(self.filled.saturating_sub(1))
+        } else {
+            self.best_match(low, high, reference)
+        };
+        let frames = if self.source_ended {
+            (remaining / f64::from(speed)).ceil().max(1.0) as usize
+        } else {
+            self.hop
+        }.min(self.hop);
+        let frames = if unity { frames.min(self.filled.saturating_sub(start)) } else { frames };
+        for index in 0..frames {
             let rising = self.window[index];
             let falling = self.window[self.hop + index];
             for channel in 0..channels {
                 let slot = index * channels + channel;
+                let sample = self.input_sample(start + index, channel);
+                let next = self.input_sample(start + self.hop + index, channel);
                 self.pending[slot] =
-                    self.overlap[slot] + self.input[(start + index) * channels + channel] * rising;
-                self.overlap[slot] =
-                    self.input[(start + self.hop + index) * channels + channel] * falling;
+                    self.overlap[slot] + sample * rising;
+                self.overlap[slot] = next * falling;
             }
         }
-        self.pending_frames = self.hop;
+        self.pending_frames = frames;
         self.pending_read = 0;
         self.previous = start;
+        self.first_hop = false;
         if unity {
-            // 这一跳已经接回原始信号的自然延续，此后从 start + hop 起原样直通；
-            // 补上最后一个变速窗与名义位置的差，直通后的媒体时间与实际读到的位置一致
-            let hop = self.hop as f64;
-            self.pending_speed = (hop + std::mem::take(&mut self.drift)) / hop;
+            // 叠加过渡后恢复逐样本直通，四舍五入造成的位置差也计入媒体时间
+            self.pending_speed = (start as f64 + frames as f64 - self.media_position) / frames.max(1) as f64;
             self.active = false;
-            self.read = start + self.hop;
+            self.read = start + frames;
         } else {
-            self.drift = start as f64 - self.nominal;
-            self.pending_speed = f64::from(speed);
-            self.nominal += self.hop as f64 * f64::from(speed);
+            let media = frames as f64 * f64::from(speed);
+            self.pending_speed = if self.source_ended { media.min(remaining) } else { media } / frames.max(1) as f64;
         }
         true
     }
 
     /// 在 [low, high] 里找与 reference 起的自然延续最相似的窗口起点（归一化互相关）
     fn best_match(&self, low: usize, high: usize, reference: usize) -> usize {
-        let mut best = low;
-        let mut best_score = f32::MIN;
+        let nominal = low + (high - low) / 2;
+        let mut best = nominal;
+        let mut best_score = self.similarity(nominal, reference, COARSE_STEP);
         let mut start = low;
         while start <= high {
             let score = self.similarity(start, reference, COARSE_STEP);
@@ -274,7 +285,7 @@ impl Stretcher {
         }
         let from = best.saturating_sub(FINE_RADIUS).max(low);
         let to = (best + FINE_RADIUS).min(high);
-        best_score = f32::MIN;
+        best_score = self.similarity(best, reference, 2);
         for start in from..=to {
             let score = self.similarity(start, reference, 2);
             if score > best_score {
@@ -291,28 +302,29 @@ impl Stretcher {
         let mut energy = 1e-9f32;
         let mut index = 0;
         while index < self.hop {
-            let candidate_at = (start + index) * channels;
-            let reference_at = (reference + index) * channels;
-            let mut candidate = 0.0f32;
-            let mut natural = 0.0f32;
             for channel in 0..channels {
-                candidate += self.input[candidate_at + channel];
-                natural += self.input[reference_at + channel];
+                // 逐声道比较，避免反相立体声相加成静音
+                let candidate = self.input_sample(start + index, channel);
+                let natural = self.input_sample(reference + index, channel);
+                dot += candidate * natural;
+                energy += candidate * candidate;
             }
-            dot += candidate * natural;
-            energy += candidate * candidate;
             index += stride;
         }
         dot / energy.sqrt()
     }
 
     /// 补足输入直到有 `end` 帧；只取需要的量，避免把上游缓冲提前抽空
-    fn ensure(&mut self, end: usize, pull: &mut dyn FnMut(&mut [f32]) -> usize) -> bool {
+    fn ensure(&mut self, end: usize, draining: bool, pull: &mut dyn FnMut(&mut [f32]) -> usize) -> bool {
         let end = end.min(self.capacity);
+        if self.source_ended {
+            return self.filled >= end;
+        }
         while self.filled < end {
             let channels = self.channels;
             let got = pull(&mut self.input[self.filled * channels..end * channels]);
             if got == 0 {
+                self.source_ended |= draining;
                 return false;
             }
             self.filled += got;
@@ -322,7 +334,7 @@ impl Stretcher {
 
     fn keep_from(&self) -> usize {
         if self.active {
-            let floor = (self.nominal.floor() as usize).saturating_sub(self.search);
+            let floor = (self.media_position.floor().max(0.0) as usize).saturating_sub(self.search);
             self.previous.min(floor)
         } else {
             self.read.saturating_sub(self.hop + self.search)
@@ -339,13 +351,331 @@ impl Stretcher {
         self.filled -= shift;
         self.read = self.read.saturating_sub(shift);
         self.previous = self.previous.saturating_sub(shift);
-        self.nominal -= shift as f64;
+        self.media_position -= shift as f64;
+    }
+}
+
+struct LowPassSection {
+    coefficients: [f64; 5],
+    target_coefficients: [f64; 5],
+    coefficient_steps: [f64; 5],
+    remaining: usize,
+    states: Vec<[f64; 2]>,
+}
+
+impl LowPassSection {
+    fn new(channels: usize) -> Self {
+        Self {
+            coefficients: [1.0, 0.0, 0.0, 0.0, 0.0],
+            target_coefficients: [1.0, 0.0, 0.0, 0.0, 0.0],
+            coefficient_steps: [0.0; 5],
+            remaining: 0,
+            states: vec![[0.0; 2]; channels],
+        }
+    }
+
+    fn tune(&mut self, normalized_cutoff: f64, q: f64, ramp_frames: usize) {
+        let omega = std::f64::consts::TAU * normalized_cutoff;
+        let cosine = omega.cos();
+        let alpha = omega.sin() / (2.0 * q);
+        let a0 = 1.0 + alpha;
+        let b0 = (1.0 - cosine) / (2.0 * a0);
+        let target = [b0, 2.0 * b0, b0, -2.0 * cosine / a0, (1.0 - alpha) / a0];
+        if target.iter().zip(self.target_coefficients).any(|(new, old)| (new - old).abs() > 1e-9) {
+            self.target_coefficients = target;
+            self.remaining = ramp_frames;
+            for ((step, target), value) in self.coefficient_steps.iter_mut().zip(target).zip(self.coefficients) {
+                *step = (target - value) / ramp_frames as f64;
+            }
+        }
+    }
+
+    fn advance(&mut self) {
+        if self.remaining > 0 {
+            for (coefficient, step) in self.coefficients.iter_mut().zip(self.coefficient_steps) {
+                *coefficient += step;
+            }
+            self.remaining -= 1;
+            if self.remaining == 0 {
+                self.coefficients = self.target_coefficients;
+            }
+        }
+    }
+
+    fn process(&mut self, input: f64, channel: usize) -> f64 {
+        let [b0, b1, b2, a1, a2] = self.coefficients;
+        let state = &mut self.states[channel];
+        let output = b0 * input + state[0];
+        state[0] = b1 * input - a1 * output + state[1];
+        state[1] = b2 * input - a2 * output;
+        for value in state {
+            if value.abs() < 1e-30 {
+                *value = 0.0;
+            }
+        }
+        output
+    }
+}
+
+struct AntialiasFilter {
+    sections: [LowPassSection; 2],
+    mix: f64,
+    target_mix: f64,
+    mix_step: f64,
+    remaining: usize,
+    ramp_frames: usize,
+}
+
+impl AntialiasFilter {
+    fn new(channels: usize, sample_rate: u32, pitch: f64) -> Self {
+        let mix = if pitch > 1.0 { 1.0 } else { 0.0 };
+        let mut filter = Self {
+            sections: std::array::from_fn(|_| LowPassSection::new(channels)),
+            mix,
+            target_mix: mix,
+            mix_step: 0.0,
+            remaining: 0,
+            ramp_frames: (f64::from(sample_rate.max(1)) * 0.03).round().max(1.0) as usize,
+        };
+        filter.prepare(pitch);
+        for section in &mut filter.sections {
+            section.coefficients = section.target_coefficients;
+            section.remaining = 0;
+        }
+        filter
+    }
+
+    fn prepare(&mut self, pitch: f64) {
+        let target = if pitch > 1.0 + 1e-6 { 1.0 } else { 0.0 };
+        if target != self.target_mix {
+            self.target_mix = target;
+            self.remaining = self.ramp_frames;
+            self.mix_step = (target - self.mix) / self.ramp_frames as f64;
+        }
+        if pitch > 1.0 {
+            // 四阶 Butterworth 在重采样后的 Nyquist 之前留出过渡带
+            let cutoff = 0.45 / pitch;
+            self.sections[0].tune(cutoff, 0.541_196_1, self.ramp_frames);
+            self.sections[1].tune(cutoff, 1.306_563, self.ramp_frames);
+        }
+    }
+
+    fn is_idle(&self) -> bool {
+        self.mix == 0.0 && self.remaining == 0
+    }
+
+    fn process(&mut self, frame: &mut [f32]) {
+        if self.is_idle() {
+            return;
+        }
+        if self.remaining > 0 {
+            self.mix += self.mix_step;
+            self.remaining -= 1;
+            if self.remaining == 0 {
+                self.mix = self.target_mix;
+            }
+        }
+        for section in &mut self.sections {
+            section.advance();
+        }
+        for (channel, sample) in frame.iter_mut().enumerate() {
+            let input = if sample.is_finite() { f64::from(*sample) } else { 0.0 };
+            let mut filtered = input;
+            for section in &mut self.sections {
+                filtered = section.process(filtered, channel);
+            }
+            *sample = (input + (filtered - input) * self.mix) as f32;
+        }
+        if self.is_idle() {
+            for section in &mut self.sections {
+                section.states.fill([0.0; 2]);
+            }
+        }
+    }
+}
+
+/// 先保持音高地伸缩，再按音调比例采样，最终媒体速度只由 speed 决定
+pub struct PitchShifter {
+    channels: usize,
+    stretcher: Stretcher,
+    antialias: AntialiasFilter,
+    current: Vec<f32>,
+    next: Vec<f32>,
+    current_media: f64,
+    next_media: f64,
+    has_current: bool,
+    has_next: bool,
+    phase: f64,
+    pending_step: f64,
+    pitch: f64,
+    target_pitch: f64,
+    pitch_step: f64,
+    ramp_remaining: usize,
+    ramp_frames: usize,
+}
+
+impl PitchShifter {
+    pub fn new(channels: usize, sample_rate: u32, pitch: f32) -> Self {
+        let channels = channels.max(1);
+        let pitch = f64::from(pitch.clamp(0.25, 2.0));
+        Self {
+            channels,
+            stretcher: Stretcher::new(channels, sample_rate),
+            antialias: AntialiasFilter::new(channels, sample_rate, pitch),
+            current: vec![0.0; channels],
+            next: vec![0.0; channels],
+            current_media: 0.0,
+            next_media: 0.0,
+            has_current: false,
+            has_next: false,
+            phase: 0.0,
+            pending_step: 0.0,
+            pitch,
+            target_pitch: pitch,
+            pitch_step: 0.0,
+            ramp_remaining: 0,
+            ramp_frames: (f64::from(sample_rate.max(1)) * 0.03).round().max(1.0) as usize,
+        }
+    }
+
+    pub fn buffered_frames(&self) -> usize {
+        self.stretcher.buffered_frames()
+            + usize::from(self.has_current)
+            + usize::from(self.has_next)
+    }
+
+    fn read_frame(
+        &mut self,
+        next: bool,
+        speed: f32,
+        draining: bool,
+        pull: &mut dyn FnMut(&mut [f32]) -> usize,
+        media_frames: &mut f64,
+    ) -> bool {
+        let target = if next { &mut self.next } else { &mut self.current };
+        let rendered = self.stretcher.render(target, speed / self.pitch as f32, draining, pull);
+        if rendered.frames == 0 {
+            // 退出伸缩时可能只剩媒体位置校正，仍要记入时钟
+            *media_frames += rendered.media_frames;
+            return false;
+        }
+        self.antialias.process(target);
+        if next {
+            self.next_media = rendered.media_frames;
+            self.has_next = true;
+        } else {
+            self.current_media = rendered.media_frames;
+            self.has_current = true;
+        }
+        true
+    }
+
+    fn advance(
+        &mut self,
+        speed: f32,
+        draining: bool,
+        pull: &mut dyn FnMut(&mut [f32]) -> usize,
+        media_frames: &mut f64,
+    ) -> bool {
+        while self.pending_step > 1e-9 {
+            if !self.has_current && !self.read_frame(false, speed, draining, pull, media_frames) {
+                if draining {
+                    self.pending_step = 0.0;
+                }
+                return false;
+            }
+            let step = self.pending_step.min(1.0 - self.phase);
+            *media_frames += step * self.current_media;
+            self.phase += step;
+            self.pending_step -= step;
+            if self.phase >= 1.0 - 1e-9 {
+                self.phase = 0.0;
+                self.has_current = self.has_next;
+                if self.has_next {
+                    std::mem::swap(&mut self.current, &mut self.next);
+                    self.current_media = self.next_media;
+                    self.has_next = false;
+                }
+            }
+        }
+        self.pending_step = 0.0;
+        true
+    }
+
+    /// 全部状态预分配；保留欠载时的插值与前瞻，恢复后继续同一段音频
+    pub fn render(
+        &mut self,
+        out: &mut [f32],
+        speed: f32,
+        pitch: f32,
+        draining: bool,
+        pull: &mut dyn FnMut(&mut [f32]) -> usize,
+    ) -> Rendered {
+        let target = f64::from(pitch.clamp(0.25, 2.0));
+        if (target - self.target_pitch).abs() > 1e-6 {
+            self.target_pitch = target;
+            self.ramp_remaining = self.ramp_frames;
+            self.pitch_step = (target - self.pitch) / self.ramp_frames as f64;
+        }
+        self.antialias.prepare(self.pitch.max(target));
+        let channels = self.channels;
+        let wanted = out.len() / channels;
+        let mut rendered = Rendered::default();
+        if !self.advance(speed, draining, pull, &mut rendered.media_frames) {
+            return rendered;
+        }
+        while rendered.frames < wanted {
+            if self.ramp_remaining > 0 {
+                self.pitch += self.pitch_step;
+                self.ramp_remaining -= 1;
+                if self.ramp_remaining == 0 {
+                    self.pitch = self.target_pitch;
+                    if self.pitch == 1.0 && self.has_current {
+                        // 回到原音调后接回整帧，半帧位置差也交给媒体时钟处理
+                        rendered.media_frames -= self.phase * self.current_media;
+                        self.phase = 0.0;
+                    }
+                }
+            }
+            if self.pitch == 1.0 && self.ramp_remaining == 0
+                && !self.has_current && !self.has_next
+                && self.antialias.is_idle()
+            {
+                let rest = self.stretcher.render(
+                    &mut out[rendered.frames * channels..], speed, draining, pull,
+                );
+                rendered.frames += rest.frames;
+                rendered.media_frames += rest.media_frames;
+                break;
+            }
+            if !self.has_current && !self.read_frame(false, speed, draining, pull, &mut rendered.media_frames) {
+                break;
+            }
+            if self.phase > 1e-9 && !self.has_next
+                && !self.read_frame(true, speed, draining, pull, &mut rendered.media_frames)
+                && !draining
+            {
+                break;
+            }
+            let target = &mut out[rendered.frames * channels..(rendered.frames + 1) * channels];
+            for (channel, sample) in target.iter_mut().enumerate() {
+                let current = self.current[channel];
+                let next = if self.has_next { self.next[channel] } else { current };
+                *sample = current + (next - current) * self.phase as f32;
+            }
+            rendered.frames += 1;
+            self.pending_step = self.pitch;
+            if !self.advance(speed, draining, pull, &mut rendered.media_frames) {
+                break;
+            }
+        }
+        rendered
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Stretcher;
+    use super::{PitchShifter, Stretcher};
 
     const RATE: u32 = 48_000;
 
@@ -428,10 +758,217 @@ mod tests {
             let frequency = rising_crossings(tail) as f64 / (tail.len() as f64 / f64::from(RATE));
             assert!((frequency - 440.0).abs() < 4.0, "speed {speed}: 音调应保持 440 Hz，实测 {frequency:.1} Hz");
             let consumed = source.cursor as f64;
-            // 开始变速前先直通约 22 ms 攒历史，这段按 1:1 计
+            // 固定速度的媒体推进不受 WSOLA 选中窗口的相位影响
             assert!((media - 96_000.0 * f64::from(speed)).abs() < 400.0, "speed {speed}: 媒体时间按倍速折算: {media}");
             assert!((consumed - media).abs() < 4_000.0, "speed {speed}: 消耗的输入 {consumed} 应接近媒体时间 {media}");
         }
+    }
+
+    #[test]
+    fn android_speed_extremes_keep_the_pitch_and_advance_media_time() {
+        for (speed, expected_media) in [(0.1f32, 9_600.0), (4.0, 384_000.0)] {
+            let mut source = Source::sine(14.0, 440.0);
+            let mut stretcher = Stretcher::new(1, RATE);
+            render(&mut stretcher, &mut source, 4_800, speed, 480);
+            let (output, media) = render(&mut stretcher, &mut source, 96_000, speed, 480);
+            assert_eq!(output.len(), 96_000);
+            assert!((media - expected_media).abs() < 2.0, "speed {speed}: media {media}");
+            let tail = &output[48_000..];
+            let frequency = rising_crossings(tail) as f64;
+            assert!((frequency - 440.0).abs() < 8.0, "speed {speed}: frequency {frequency}");
+            assert_eq!(stretcher.stalls(), 0);
+        }
+    }
+
+    fn pitched_source(speed: f32, pitch: f32, seconds: f64) -> (Vec<f32>, f64) {
+        let mut source = Source::sine(seconds, 440.0);
+        let mut processor = PitchShifter::new(1, RATE, pitch);
+        let mut output = Vec::new();
+        let mut media = 0.0;
+        let mut block = [0.0f32; 480];
+        for _ in 0..10_000 {
+            let rendered = processor.render(&mut block, speed, pitch, true, &mut |out| source.pull(out));
+            output.extend_from_slice(&block[..rendered.frames]);
+            media += rendered.media_frames;
+            if rendered.frames < block.len() && processor.buffered_frames() == 0 {
+                break;
+            }
+        }
+        assert_eq!(source.cursor, source.samples.len());
+        assert_eq!(processor.buffered_frames(), 0);
+        assert_eq!(processor.stretcher.stalls(), 0);
+        (output, media)
+    }
+
+    #[test]
+    fn independent_pitch_changes_frequency_without_changing_media_speed() {
+        for (speed, pitch, expected_frequency, expected_frames) in [
+            (1.0f32, 0.5f32, 220.0, 144_000usize),
+            (1.0, 2.0, 880.0, 144_000),
+            (2.0, 0.5, 220.0, 72_000),
+            (0.5, 1.5, 660.0, 288_000),
+        ] {
+            let (output, media) = pitched_source(speed, pitch, 3.0);
+            let middle = &output[output.len() / 3..output.len() * 2 / 3];
+            let frequency = rising_crossings(middle) as f64 / (middle.len() as f64 / 48_000.0);
+            assert!((frequency - expected_frequency).abs() < 8.0, "speed {speed}, pitch {pitch}: frequency {frequency}");
+            assert!(output.len().abs_diff(expected_frames) < 5_000, "speed {speed}, pitch {pitch}: duration frames {}", output.len());
+            assert!((media - 144_000.0).abs() < 2.0, "speed {speed}, pitch {pitch}: media {media}");
+        }
+    }
+
+    #[test]
+    fn raising_pitch_rejects_above_nyquist_input_without_muffling_the_passband() {
+        for (input_frequency, output_frequency, minimum, maximum) in [
+            (18_000.0, 12_000.0, 0.0, 0.02),
+            (4_000.0, 8_000.0, 0.45, 0.51),
+        ] {
+            let mut source = Source::sine(2.0, input_frequency);
+            let mut processor = PitchShifter::new(1, RATE, 2.0);
+            let mut block = [0.0f32; 480];
+            let mut steady = Vec::new();
+            for index in 0..100 {
+                let rendered = processor.render(&mut block, 1.0, 2.0, false, &mut |out| source.pull(out));
+                assert_eq!(rendered.frames, block.len());
+                if index >= 50 {
+                    steady.extend_from_slice(&block);
+                }
+            }
+            let (sine, cosine) = steady.iter().enumerate().fold((0.0, 0.0), |(sine, cosine), (index, sample)| {
+                let phase = std::f64::consts::TAU * output_frequency * index as f64 / 48_000.0;
+                (sine + f64::from(*sample) * phase.sin(), cosine + f64::from(*sample) * phase.cos())
+            });
+            let amplitude = 2.0 * sine.hypot(cosine) / steady.len() as f64;
+            assert!((minimum..=maximum).contains(&amplitude), "input {input_frequency}: output {output_frequency} amplitude {amplitude}");
+        }
+    }
+
+    #[test]
+    fn independent_pitch_drains_short_tracks_and_extreme_combinations() {
+        for (speed, pitch) in [(0.1f32, 2.0f32), (4.0, 0.25), (1.0, 0.25), (1.0, 2.0)] {
+            let (_, media) = pitched_source(speed, pitch, 0.3);
+            assert!((media - 14_400.0).abs() < 2.0, "speed {speed}, pitch {pitch}: media {media}");
+        }
+    }
+
+    #[test]
+    fn pitch_and_speed_preserve_the_actual_output_duration_at_track_boundaries() {
+        for (seconds, speed, pitch, expected_frames) in [
+            (0.02, 1.0f32, 0.25f32, 960usize),
+            (0.3, 1.0, 0.25, 14_400),
+            (0.3, 4.0, 0.25, 3_600),
+            (0.3, 0.1, 2.0, 144_000),
+            (3.0, 4.0, 0.25, 36_000),
+            (30.0, 4.0, 0.25, 360_000),
+        ] {
+            let (output, _) = pitched_source(speed, pitch, seconds);
+            assert!(output.len().abs_diff(expected_frames) <= 3, "{seconds}s, speed {speed}, pitch {pitch}: {} output frames, expected {expected_frames}", output.len());
+        }
+    }
+
+    #[test]
+    fn silent_and_opposite_phase_stereo_tracks_finish_without_looping_the_tail() {
+        for silent in [false, true] {
+            let mut source = Source { samples: Vec::with_capacity(28_800), cursor: 0, channels: 2 };
+            for index in 0..14_400 {
+                let sample = if silent { 0.0 } else { (0.5 * (std::f64::consts::TAU * 440.0 * index as f64 / 48_000.0).sin()) as f32 };
+                source.samples.extend_from_slice(&[sample, -sample]);
+            }
+            let mut processor = PitchShifter::new(2, RATE, 2.0);
+            let mut block = [0.0f32; 960];
+            let mut media = 0.0;
+            let mut frames = 0;
+            for _ in 0..100 {
+                let rendered = processor.render(&mut block, 1.0, 2.0, true, &mut |out| source.pull(out));
+                assert!(block[..rendered.frames * 2].chunks_exact(2).all(|frame| (frame[0] + frame[1]).abs() < 1e-6));
+                media += rendered.media_frames;
+                frames += rendered.frames;
+                if rendered.frames < block.len() / 2 && processor.buffered_frames() == 0 {
+                    break;
+                }
+            }
+            assert_eq!(processor.buffered_frames(), 0, "silent {silent}: tail must finish");
+            assert!((media - 14_400.0).abs() < 2.0, "silent {silent}: media {media}");
+            assert!(frames.abs_diff(14_400) <= 3, "silent {silent}: frames {frames}");
+        }
+    }
+
+    #[test]
+    fn original_pitch_and_speed_preserve_exact_stereo_samples() {
+        let mut source = Source {
+            samples: (0..20_000).map(|index| index as f32 / 20_000.0).collect(),
+            channels: 2,
+            cursor: 0,
+        };
+        let mut processor = PitchShifter::new(2, RATE, 1.0);
+        let mut output = [0.0f32; 960];
+        let rendered = processor.render(&mut output, 1.0, 1.0, false, &mut |out| source.pull(out));
+        assert_eq!(output, source.samples[..960]);
+        assert_eq!(rendered.media_frames, 480.0);
+        assert_eq!(processor.buffered_frames(), 0);
+    }
+
+    #[test]
+    fn changing_pitch_preserves_continuity_and_returns_to_exact_passthrough() {
+        let mut source = Source::sine(4.0, 440.0);
+        let mut processor = PitchShifter::new(1, RATE, 1.0);
+        let mut block = [0.0f32; 480];
+        let mut output = Vec::new();
+        let mut media = 0.0;
+        for pitch in [1.0f32, 1.5, 0.75, 2.0, 1.0] {
+            for _ in 0..40 {
+                let rendered = processor.render(&mut block, 1.0, pitch, false, &mut |out| source.pull(out));
+                assert_eq!(rendered.frames, block.len());
+                output.extend_from_slice(&block);
+                media += rendered.media_frames;
+            }
+        }
+        let (index, largest_step) = output.windows(2).enumerate()
+            .map(|(index, pair)| (index, (pair[1] - pair[0]).abs()))
+            .max_by(|left, right| left.1.total_cmp(&right.1)).unwrap();
+        assert!(largest_step < 0.13, "pitch change step {largest_step} at frame {index}");
+        let tail = &output[output.len() - 4_800..];
+        assert!(source.samples.windows(tail.len()).any(|window| window == tail));
+        for _ in 0..500 {
+            let rendered = processor.render(&mut block, 1.0, 1.0, true, &mut |out| source.pull(out));
+            media += rendered.media_frames;
+            if rendered.frames < block.len() && processor.buffered_frames() == 0 {
+                break;
+            }
+        }
+        assert!((media - 192_000.0).abs() < 2.0, "media after pitch changes {media}");
+    }
+
+    #[test]
+    fn pitch_underflow_retains_interpolation_and_drains_after_recovery() {
+        let mut source = Source::sine(1.0, 440.0);
+        let mut processor = PitchShifter::new(1, RATE, 1.5);
+        let mut block = [0.0f32; 480];
+        let mut media = 0.0;
+        let mut frames = 0;
+        for _ in 0..100 {
+            let rendered = processor.render(&mut block, 1.0, 1.5, false, &mut |out| {
+                let available = 9_600usize.saturating_sub(source.cursor);
+                let take = out.len().min(available);
+                source.pull(&mut out[..take])
+            });
+            media += rendered.media_frames;
+            frames += rendered.frames;
+            if rendered.frames < block.len() {
+                break;
+            }
+        }
+        assert!(frames > 0);
+        assert!(processor.buffered_frames() > 0);
+        for _ in 0..300 {
+            let rendered = processor.render(&mut block, 1.0, 1.5, true, &mut |out| source.pull(out));
+            media += rendered.media_frames;
+            if rendered.frames < block.len() && processor.buffered_frames() == 0 {
+                break;
+            }
+        }
+        assert_eq!(processor.buffered_frames(), 0);
+        assert!((media - 48_000.0).abs() < 2.0, "media after underflow {media}");
     }
 
     #[test]
@@ -476,7 +1013,7 @@ mod tests {
         assert!((media - position).abs() < 2.0, "媒体时间 {media} 应等于实际读到的位置 {position}");
     }
 
-    /// 上游结束时从变速直接退出到直通：同样要把窗口偏差补进媒体时间
+    /// 上游结束时按剩余媒体帧排空，不能为了尾部完整而退回原速
     #[test]
     fn draining_out_of_a_stretch_reports_the_exact_input_length() {
         let mut source = Source {

@@ -1501,10 +1501,17 @@ function nudgeLyricFontScale(steps: number) {
 const audioEffectsSummary = computed(() => {
   const parts: string[] = []
   if (player.playbackSpeed !== 1) parts.push(`${player.playbackSpeed.toFixed(2)}x`)
+  if (player.playbackPitch !== 1) parts.push(`${t('player.pitch')} ${player.playbackPitch.toFixed(2)}x`)
   if (player.loudnessGainMb !== 0) parts.push(`+${(player.loudnessGainMb / 100).toFixed(1)}dB`)
   if (player.equalizerEnabled) parts.push(t(`player.eq_${player.equalizerPresetId}`))
   return parts.length ? parts.join(' · ') : t('player.audio_effects_desc')
 })
+
+function openAudioEffectsSettings() {
+  showAudioFxPanel.value = false
+  showMoreSheet.value = false
+  void router.push('/settings?section=audio_effects').then(() => emit('collapse'))
+}
 
 function openLyricsFill() {
   openLyricMatch('track')
@@ -2416,7 +2423,7 @@ const sliderActiveColor = computed(() => dynamicColorVars.value['--np-primary'] 
             </button>
             <Transition name="np-popover">
               <div v-if="showAudioFxPanel" class="audiofx-popover np-floating-popover np-floating-popover--audiofx">
-                <AudioEffectsPanel />
+                <AudioEffectsPanel @details="openAudioEffectsSettings" />
               </div>
             </Transition>
           </div>
@@ -2757,7 +2764,7 @@ const sliderActiveColor = computed(() => dynamicColorVars.value['--np-primary'] 
               </button>
               <h4 class="np-more-title">{{ t('player.audio_effects') }}</h4>
             </div>
-            <AudioEffectsPanel class="np-more-effects" />
+            <AudioEffectsPanel class="np-more-effects" @details="openAudioEffectsSettings" />
           </template>
 
           <!-- 子视图：获取歌曲信息 -->

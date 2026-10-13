@@ -1189,8 +1189,24 @@ pub async fn set_multichannel_drc(enabled: bool) -> AppResult<()> {
 
 #[tauri::command]
 pub async fn set_speed(speed: f32, state: State<'_, AppState>) -> AppResult<()> {
+    require_finite_ratio(speed, "speed")?;
     state.player.lock().set_speed(speed);
     Ok(())
+}
+
+#[tauri::command]
+pub async fn set_pitch(pitch: f32, state: State<'_, AppState>) -> AppResult<()> {
+    require_finite_ratio(pitch, "pitch")?;
+    state.player.lock().set_pitch(pitch);
+    Ok(())
+}
+
+fn require_finite_ratio(value: f32, name: &str) -> AppResult<()> {
+    if value.is_finite() {
+        Ok(())
+    } else {
+        Err(AppError::Audio(format!("Invalid playback {name}: {value}")))
+    }
 }
 
 #[tauri::command]
@@ -2204,6 +2220,16 @@ pub async fn cycle_repeat(state: State<'_, AppState>) -> AppResult<crate::state:
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn playback_ratios_reject_non_finite_values() {
+        for name in ["speed", "pitch"] {
+            for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                assert!(super::require_finite_ratio(value, name).is_err());
+            }
+            assert!(super::require_finite_ratio(1.05, name).is_ok());
+        }
+    }
+
     use super::{
         balance_centi, claim_generation, is_generation_current, playback_referer,
         playback_trace_field, stream_length_matches, CachedAudioPlaybackRequest,

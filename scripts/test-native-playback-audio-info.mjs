@@ -40,6 +40,11 @@ async function load(source, dependencies = {}) {
 
 const root = new URL('../src/', import.meta.url)
 const source = await readFile(new URL('stores/player.ts', root), 'utf8')
+const settingsSource = await readFile(new URL('stores/settings.ts', root), 'utf8')
+const settingsTree = ts.createSourceFile('settings.ts', settingsSource, ts.ScriptTarget.ES2022, true)
+const soundNormalization = await load(settingsTree.statements.filter(node => ts.isFunctionDeclaration(node)
+  && ['normalizePlaybackSpeed', 'normalizePlaybackPitch', 'normalizePlaybackParameter'].includes(node.name?.text))
+  .map(node => node.getText(settingsTree)).join('\n'))
 const sourceText = await readFile(new URL('modules/playback/playbackSource.ts', root), 'utf8')
 const policy = await load(await readFile(new URL('modules/playback/playbackPolicy.ts', root), 'utf8'))
 const request = await load(await readFile(new URL('modules/playback/playbackRequest.ts', root), 'utf8'))
@@ -98,7 +103,7 @@ async function runtime(options = {}) {
   const localInfo = await load(localInfoText, { '@tauri-apps/api/core': core })
   const playbackInfo = await load(metadataText, { '@tauri-apps/api/core': core })
   const settings = vue.reactive({
-    volume: 0.7, playbackSpeed: 1, loudnessGainMb: 0, equalizerEnabled: false, equalizerPresetId: 'flat', equalizerBands: [0, 0, 0, 0, 0],
+    volume: 0.7, playbackSpeed: 1, playbackPitch: 1, loudnessGainMb: 0, equalizerEnabled: false, equalizerPresetId: 'flat', equalizerBands: [0, 0, 0, 0, 0],
     volumeBalance: 0, maxCacheSize: 1024, fadeIn: false, crossfade: !!options.crossfade, crossfadeNext: !!options.crossfade,
     crossfadeInDuration: 100, crossfadeOutDuration: 100, fadeInDuration: 100, fadeOutDuration: 100,
     neteaseQuality: 'hires', qqMusicQuality: 'high', biliQuality: 'high', youtubeQuality: 'high',
@@ -110,7 +115,7 @@ async function runtime(options = {}) {
     '@tauri-apps/api/event': { listen: async (name, callback) => { events.set(name, callback); return () => events.delete(name) } },
     './history': { useHistoryStore: () => options.history ?? { record: () => {}, rememberedPosition: () => 0, updateResumePosition() {} } },
     './toast': { useToastStore: () => ({ error: message => options.toasts?.push(message) }) },
-    './settings': { useSettingsStore: () => settings, MIN_MEDIA_CACHE_SIZE_MB: 128, MAX_MEDIA_CACHE_SIZE_MB: 16384 },
+    './settings': { ...soundNormalization, useSettingsStore: () => settings, MIN_MEDIA_CACHE_SIZE_MB: 128, MAX_MEDIA_CACHE_SIZE_MB: 16384 },
     './download': { useDownloadStore: () => ({ getDownloadedTrack: () => options.downloaded ? {
       filePath: 'C:/Music/download.flac', durationMs: 180000,
       ...(typeof options.downloaded === 'object' ? options.downloaded : {}),

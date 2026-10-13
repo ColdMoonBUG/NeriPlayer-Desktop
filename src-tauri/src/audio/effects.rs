@@ -53,8 +53,10 @@ const EQ_CROSSFADE_SECONDS: f64 = 0.02;
 const DENORMAL_FLOOR: f64 = 1e-30;
 
 /// 用户的音效设置，单位与前端一致（毫贝）
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EffectsSettings {
+    /// 独立音调比例，25～200 表示 0.25～2.0
+    pub pitch_centi: i32,
     /// 响度增益，0～1500 mB（0～+15 dB）
     pub loudness_gain_mb: i32,
     pub eq_enabled: bool,
@@ -64,6 +66,19 @@ pub struct EffectsSettings {
     pub normalize_volume: bool,
     /// 声道平衡，-100（只剩左声道）～100（只剩右声道），步进与 Android 一样是 0.01
     pub balance_centi: i32,
+}
+
+impl Default for EffectsSettings {
+    fn default() -> Self {
+        Self {
+            pitch_centi: 100,
+            loudness_gain_mb: 0,
+            eq_enabled: false,
+            eq_band_levels_mb: [0; EQ_BANDS],
+            normalize_volume: false,
+            balance_centi: 0,
+        }
+    }
 }
 
 impl EffectsSettings {
@@ -80,6 +95,7 @@ impl EffectsSettings {
     }
 
     fn clamped(mut self) -> Self {
+        self.pitch_centi = ((self.pitch_centi.clamp(25, 200) + 2) / 5) * 5;
         self.loudness_gain_mb = self.loudness_gain_mb.clamp(0, MAX_LOUDNESS_GAIN_MB);
         self.balance_centi = self.balance_centi.clamp(-MAX_BALANCE_CENTI, MAX_BALANCE_CENTI);
         for level in &mut self.eq_band_levels_mb {
@@ -109,6 +125,7 @@ impl EffectsSettings {
 pub struct EffectsControl {
     writer: Mutex<()>,
     version: AtomicU64,
+    pitch_centi: AtomicI32,
     loudness_gain_mb: AtomicI32,
     eq_enabled: AtomicBool,
     eq_band_levels_mb: [AtomicI32; EQ_BANDS],
@@ -121,6 +138,7 @@ impl EffectsControl {
         Arc::new(Self {
             writer: Mutex::new(()),
             version: AtomicU64::new(0),
+            pitch_centi: AtomicI32::new(100),
             loudness_gain_mb: AtomicI32::new(0),
             eq_enabled: AtomicBool::new(false),
             eq_band_levels_mb: std::array::from_fn(|_| AtomicI32::new(0)),
@@ -131,6 +149,7 @@ impl EffectsControl {
 
     pub fn snapshot(&self) -> EffectsSettings {
         EffectsSettings {
+            pitch_centi: self.pitch_centi.load(Ordering::Relaxed),
             loudness_gain_mb: self.loudness_gain_mb.load(Ordering::Relaxed),
             eq_enabled: self.eq_enabled.load(Ordering::Relaxed),
             eq_band_levels_mb: std::array::from_fn(|band| {
@@ -149,6 +168,7 @@ impl EffectsControl {
         let mut settings = self.snapshot();
         change(&mut settings);
         let settings = settings.clamped();
+        self.pitch_centi.store(settings.pitch_centi, Ordering::Relaxed);
         self.loudness_gain_mb
             .store(settings.loudness_gain_mb, Ordering::Relaxed);
         self.eq_enabled.store(settings.eq_enabled, Ordering::Relaxed);
@@ -1367,6 +1387,7 @@ mod tests {
             settings.eq_band_levels_mb = [300, 0, 0, 0, -300];
             settings.normalize_volume = true;
             settings.balance_centi = -35;
+            settings.pitch_centi = 150;
         });
 
         control.update(|settings| *settings = settings.reset_panel());

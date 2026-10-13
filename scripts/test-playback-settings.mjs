@@ -172,4 +172,43 @@ await regression('channel balance is clamped and rounded like Android, and cente
   assert.equal(exports.normalizeVolumeBalance(Number.POSITIVE_INFINITY), 0)
 })
 
+await regression('legacy settings restore neutral pitch independently from speed', async store => {
+  loadResult = { persisted: true, settings: { playbackSpeed: 0.85 } }
+  await store.hydrate()
+  assert.equal(store.playbackSpeed, 0.85)
+  assert.equal(store.playbackPitch, 1)
+  assert.equal(store.snapshot().playbackPitch, 1)
+})
+
+await regression('speed and pitch follow Android ranges and 0.05 steps', store => {
+  for (const [speed, pitch, expectedSpeed, expectedPitch] of [
+    [0.1, 0.25, 0.1, 0.25], [4, 2, 4, 2],
+    [0.01, 0.01, 0.1, 0.25], [8, 8, 4, 2],
+    [1.234, 0.876, 1.25, 0.9], [Number.NaN, Number.POSITIVE_INFINITY, 1, 1],
+    ['2', '0.5', 1, 1],
+  ]) {
+    store.applySnapshot({ playbackSpeed: speed, playbackPitch: pitch })
+    assert.equal(store.playbackSpeed, expectedSpeed)
+    assert.equal(store.playbackPitch, expectedPitch)
+  }
+})
+
+await regression('independent speed and pitch persist and survive snapshot import', async store => {
+  await store.hydrate()
+  saved.length = 0
+  timers.clear()
+  store.playbackSpeed = 1.5
+  store.playbackPitch = 0.75
+  await vue.nextTick()
+  for (const callback of timers.values()) callback()
+  timers.clear()
+  await Promise.resolve()
+  assert.equal(saved.at(-1).playbackSpeed, 1.5)
+  assert.equal(saved.at(-1).playbackPitch, 0.75)
+  assert.equal(storage.get('neri:playback_pitch'), '0.75')
+  store.applySnapshot(saved.at(-1))
+  assert.equal(store.playbackSpeed, 1.5)
+  assert.equal(store.playbackPitch, 0.75)
+})
+
 console.log(`Playback settings regressions: ${cases} passed`)

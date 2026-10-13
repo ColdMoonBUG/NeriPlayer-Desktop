@@ -148,6 +148,7 @@ pub struct AppSettings {
     pub volume: f32,
     pub audio_output_device: String,
     pub playback_speed: f32,
+    pub playback_pitch: f32,
     #[serde(deserialize_with = "lenient_i32")]
     pub loudness_gain_mb: i32,
     pub equalizer_enabled: bool,
@@ -291,6 +292,7 @@ impl Default for AppSettings {
             volume: 1.0,
             audio_output_device: String::new(),
             playback_speed: 1.0,
+            playback_pitch: 1.0,
             loudness_gain_mb: 0,
             equalizer_enabled: false,
             equalizer_preset_id: "flat".into(),
@@ -371,7 +373,8 @@ impl AppSettings {
             .download_parallelism
             .clamp(MIN_DOWNLOAD_PARALLELISM, MAX_DOWNLOAD_PARALLELISM);
         self.volume = clamp_f32(self.volume, 0.0, 1.0, 1.0);
-        self.playback_speed = clamp_f32(self.playback_speed, 0.25, 3.0, 1.0);
+        self.playback_speed = (clamp_f32(self.playback_speed, 0.1, 4.0, 1.0) * 20.0).round() / 20.0;
+        self.playback_pitch = (clamp_f32(self.playback_pitch, 0.25, 2.0, 1.0) * 20.0).round() / 20.0;
         self.loudness_gain_mb = self.loudness_gain_mb.clamp(0, 1_500);
         self.volume_balance = (clamp_f32(self.volume_balance, -1.0, 1.0, 0.0) * 100.0).round() / 100.0;
         let style_bytes = serde_json::to_vec(&self.desktop_lyrics).map_or(usize::MAX, |bytes| bytes.len());
@@ -641,10 +644,12 @@ fn normalize_equalizer_preset(value: &str) -> String {
             "bass_boost",
             "bass_reduce",
             "classical",
+            "club",
             "dance",
             "deep",
             "electronic",
             "hip_hop",
+            "folk",
             "jazz",
             "latin",
             "loudness",
@@ -697,6 +702,25 @@ fn non_empty_or_default(value: &str, fallback: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn audio_ratios_use_android_ranges_steps_and_legacy_defaults() {
+        let settings: AppSettings = serde_json::from_str("{}").unwrap();
+        let value = serde_json::to_value(settings.normalized()).unwrap();
+        assert_eq!(value["playbackPitch"], serde_json::json!(1.0));
+        for (speed, pitch, expected_speed, expected_pitch) in [
+            (0.01, 0.1, 0.1, 0.25),
+            (4.5, 2.5, 4.0, 2.0),
+            (1.234, 0.876, 1.25, 0.9),
+        ] {
+            let settings: AppSettings = serde_json::from_value(serde_json::json!({
+                "playbackSpeed": speed, "playbackPitch": pitch,
+            })).unwrap();
+            let value = serde_json::to_value(settings.normalized()).unwrap();
+            assert!((value["playbackSpeed"].as_f64().unwrap() - expected_speed).abs() < 1e-5);
+            assert!((value["playbackPitch"].as_f64().unwrap() - expected_pitch).abs() < 1e-5);
+        }
+    }
+
     #[test]
     fn audio_display_settings_new_defaults_show_bitrate_and_format() {
         let settings: AppSettings = serde_json::from_str("{}").expect("new settings");

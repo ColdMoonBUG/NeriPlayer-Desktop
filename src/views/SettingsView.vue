@@ -82,6 +82,7 @@ import { applyTheme, switchThemeWithRipple, type ThemeMode } from '@/utils/theme
 import { THEME_COLORS, getSwatchColor, applyThemeColor, getSavedThemeColor, switchThemeColorWithRipple } from '@/utils/themeColor'
 import ShortcutSettings from '@/components/settings/ShortcutSettings.vue'
 import FontFamilyControl from '@/components/settings/FontFamilyControl.vue'
+import AudioEffectsSettings from '@/components/settings/AudioEffectsSettings.vue'
 import { SETTINGS_SEARCH_INDEX } from '@/modules/settings/searchIndex'
 import { isMacPlatform } from '@/modules/shortcuts/platform'
 import { filterAndRank, searchValue } from '@/modules/search/textMatcher'
@@ -552,6 +553,7 @@ type SettingsSectionId =
   | 'language'
   | 'playback'
   | 'audio'
+  | 'audio_effects'
   | 'quality'
   | 'playback_sources'
   | 'appearance'
@@ -569,7 +571,7 @@ type SettingsSectionId =
 
 const SETTINGS_UI_STATE_KEY = 'neri:settings-ui-state'
 const SETTINGS_SECTION_IDS: SettingsSectionId[] = [
-  'accounts', 'general', 'shortcuts', 'language', 'playback', 'audio', 'quality', 'playback_sources',
+  'accounts', 'general', 'shortcuts', 'language', 'playback', 'audio', 'audio_effects', 'quality', 'playback_sources',
   'appearance', 'now_playing', 'background', 'motion', 'lyrics', 'desktop_lyrics',
   'downloads', 'storage', 'network', 'backup', 'listen_together', 'about',
 ]
@@ -667,6 +669,7 @@ const settingsNavGroups = computed<{ items: SettingsNavItem[] }[]>(() => [
     items: [
       { id: 'playback', label: t('settings.playback'), description: t('settings.nav_playback_desc'), icon: 'play_circle' },
       { id: 'audio', label: t('settings.audio_processing'), description: t('settings.nav_audio_desc'), icon: 'graphic_eq' },
+      { id: 'audio_effects', label: t('settings.audio_effects_section'), description: t('settings.audio_effects_desc'), icon: 'tune' },
       { id: 'quality', label: t('settings.audio_quality'), description: t('settings.audio_quality_desc'), icon: 'high_quality' },
       { id: 'playback_sources', label: t('settings.playback_sources'), description: t('settings.playback_sources_desc'), icon: 'alt_route' },
     ],
@@ -721,6 +724,7 @@ function selectSettingsSection(id: SettingsSectionId) {
       language: [],
       playback: ['playback'],
       audio: [],
+      audio_effects: [],
       quality: ['quality'],
       playback_sources: [],
       appearance: [],
@@ -1886,6 +1890,11 @@ useEscapeClose(
         </div>
         <label class="m3-switch"><input type="checkbox" v-model="multichannelDrc" /><span class="track"><span class="thumb"><span v-if="multichannelDrc" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
       </div>
+        </div>
+
+    <!-- 详细音效 -->
+        <div v-show="activeSettingsSection === 'audio_effects'" class="settings-section-panel" data-section="audio_effects">
+          <AudioEffectsSettings />
         </div>
 
     <!-- 播放 -->

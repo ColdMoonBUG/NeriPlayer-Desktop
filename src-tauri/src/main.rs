@@ -452,6 +452,7 @@ fn main() {
             player_cmd::seek,
             player_cmd::stop,
             player_cmd::set_speed,
+            player_cmd::set_pitch,
             player_cmd::set_loudness_gain,
             player_cmd::set_normalize_volume,
             player_cmd::set_volume_balance,
