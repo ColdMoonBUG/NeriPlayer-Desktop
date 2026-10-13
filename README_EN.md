@@ -245,6 +245,8 @@ Syncing local track metadata does not give another device the files. Download di
 
 Current writes use **V4 ProtoBuf manifests + Zstd chunked archives**, with support for reading legacy JSON, GZIP and V3. The manifest is still named `neriplayer-sync-v3.manifest`; the filename does not mean its contents are V3. Merging retains deletion/clear markers to prevent older devices from restoring deleted content.
 
+Archive leaf chunks download in batches of up to four concurrent requests. GitHub reuses local objects after checking them against a fixed commit tree, publishes small changes with one conditional commit, and retains staged uploads for larger changes. WebDAV continues to verify remote content and protect writes with leases and conditions.
+
 Cross-platform use requires both clients to support the current protocol. The repository includes frozen Android test vectors and a [Kotlin interoperability validation script](./scripts/test-sync-android-interop.ps1). Codec checks do not replace testing real accounts, a shared remote and alternating sync across multiple devices.
 
 ### Manual backups

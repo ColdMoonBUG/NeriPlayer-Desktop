@@ -42,11 +42,14 @@ function localSourceKeys(track: LocalScanTrack): string[] {
 }
 
 export function scanMetadataFingerprint(track: LocalScanTrack): string | null {
-  const title = normalizeText(track.title)
-  const artist = normalizeText(track.artist)
-  const album = normalizeText(track.album)
-  if (!title || !artist || !album || album === '__local_files__' || track.durationMs <= 0) return null
-  return JSON.stringify([title, artist, album, track.durationMs])
+  if (!meaningfulMetadata(track)) return null
+  const title = normalizeText(track.title.normalize('NFKC'))
+  const artist = [...new Set(normalizeText(track.artist.normalize('NFKC'))
+    .split(/[/、,;]/).map(name => name.trim()).filter(Boolean))].sort()
+  const album = normalizeText(track.album.normalize('NFKC'))
+  if (!artist.length) return null
+  // 文件格式和平台时长精度不会改变歌名、歌手、专辑所标识的歌曲
+  return JSON.stringify([title, artist, album])
 }
 
 export function duplicateScanTrackIds(tracks: LocalScanTrack[]): Set<string> {
@@ -63,12 +66,20 @@ export function duplicateScanTrackIds(tracks: LocalScanTrack[]): Set<string> {
 
 export function existingScanTrackIds(tracks: LocalScanTrack[], playlistTracks: LocalScanTrack[]): Set<string> {
   const keys = new Set(playlistTracks.flatMap(localSourceKeys))
-  return new Set(tracks.filter(track => localSourceKeys(track).some(key => keys.has(key))).map(track => track.id))
+  const metadata = new Set(playlistTracks.map(scanMetadataFingerprint).filter((key): key is string => key !== null))
+  return new Set(tracks.filter(track => {
+    const fingerprint = scanMetadataFingerprint(track)
+    return (fingerprint !== null && metadata.has(fingerprint))
+      || localSourceKeys(track).some(key => keys.has(key))
+  }).map(track => track.id))
 }
 
 function meaningfulMetadata(track: LocalScanTrack): boolean {
-  const unknown = /^(unknown(?: artist| album)?|未知(?:艺术家|歌手|专辑)?|不明|__local_files__)$/i
-  return [track.title, track.artist, track.album].every(value => value.trim() && !unknown.test(value.trim()))
+  const unknown = /^(unknown(?: artist| album)?|<unknown>|未知(?:艺术家|歌手|专辑)?|不明|__local_files__)$/i
+  return [track.title, track.artist, track.album].every(value => {
+    const normalized = normalizeText(value.normalize('NFKC'))
+    return normalized && !unknown.test(normalized)
+  })
 }
 
 export interface ScanFilterOptions {

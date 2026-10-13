@@ -45,6 +45,7 @@ window.addEventListener(exports.HISTORY_CHANGED_EVENT, event => events.push(even
 Date.now = () => now
 
 const digestQueue = []
+let digestCalls = 0
 function digestBytes(value) {
   const bytes = createHash('sha256').update(value).digest()
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
@@ -55,6 +56,7 @@ Object.defineProperty(globalThis, 'crypto', {
     subtle: {
       async digest(algorithm, bytes) {
         assert.equal(algorithm, 'SHA-256')
+        digestCalls++
         const digest = digestBytes(bytes)
         const waiting = digestQueue.shift()
         if (!waiting) return digest
@@ -109,6 +111,7 @@ async function regression(name, run) {
   writes = 0
   events.length = 0
   digestQueue.length = 0
+  digestCalls = 0
   now = 1_000
   pinia.setActivePinia(pinia.createPinia())
   const store = exports.useHistoryStore()
@@ -261,6 +264,7 @@ async function databaseRegression(name, run) {
   events.length = 0
   persisted.length = 0
   digestQueue.length = 0
+  digestCalls = 0
   now = 1_000
   preloaded = {
     history: { entries: [{ track: track('netease:stored'), playedAt: 500 }], deletions: [] },
@@ -354,6 +358,69 @@ await databaseRegression('database mode replaces history only for the current sy
   const [command, args] = persisted[0]
   assert.equal(command, 'replace_play_history')
   assert.deepEqual(args.history.entries.map(item => [item.track.id, item.playedAt]), [['netease:cloud', 1_500]])
+})
+
+await databaseRegression('many remote tombstones hash each candidate once despite repeated snapshot tracks', async store => {
+  const tracks = [...Array.from({ length: 24 }, (_, index) => track(`youtube:fixture-${index}`, 'youtube')), candidate]
+  store.entries = tracks.map(item => ({ track: item, playedAt: 1_000 }))
+  const tombstones = Array.from({ length: 50 }, (_, index) => ({ songId: `unknown-${index}`, deletedAt: 3_000 }))
+  assert.equal(await store.applySyncPayload({
+    entries: tracks.map(item => ({ track: item, playedAt: 1_500 })),
+    deletions: [...tombstones, deletion],
+  }), 'applied')
+  assert.deepEqual(store.entries.map(entry => entry.track.id), tracks.slice(0, -1).map(item => item.id))
+  assert.deepEqual(store.deletions.map(item => [item.track.id, item.deletedAt]), [[candidate.id, 2_000]])
+  assert.ok(digestCalls <= tracks.length, `expected at most ${tracks.length} hashes, received ${digestCalls}`)
+})
+
+await databaseRegression('a tombstone matching the first candidate does not hash later tracks', async store => {
+  store.entries = [candidate, ...Array.from({ length: 24 }, (_, index) => track(`youtube:later-${index}`, 'youtube'))]
+    .map(item => ({ track: item, playedAt: 1_000 }))
+  await store.applySyncPayload({ entries: [], deletions: [deletion] })
+  assert.deepEqual(store.deletions.map(item => item.track.id), [candidate.id])
+  assert.equal(digestCalls, 1, 'early matches keep their existing fast path')
+})
+
+for (const [album, title] of [['', 'first album'], ['first album', 'first album'], ['second album', 'second album']]) {
+  await databaseRegression(`indexed tombstones preserve candidate priority for album ${album || 'unspecified'}`, async store => {
+    store.entries = ['first album', 'second album'].map(name => ({
+      track: { ...candidate, album: name, title: name }, playedAt: 1_000,
+    }))
+    await store.applySyncPayload({
+      entries: [{ track: { ...candidate, album: 'first album', title: 'incoming title' }, playedAt: 1_500 }],
+      deletions: [{ ...deletion, album }],
+    })
+    assert.deepEqual(store.entries, [])
+    assert.deepEqual(store.deletions.map(item => item.track.title), [title])
+  })
+}
+
+for (const [mediaUri, source] of [['', 'netease'], [deletion.mediaUri, 'youtube']]) {
+  await databaseRegression(`indexed tombstones preserve optional media URI matching for ${source}`, async store => {
+    store.entries = [
+      { track: { ...track(`netease:${deletion.songId}`), album: candidate.album }, playedAt: 1_000 },
+      { track: candidate, playedAt: 1_000 },
+    ]
+    await store.applySyncPayload({ entries: [], deletions: [{ ...deletion, mediaUri }] })
+    assert.deepEqual(store.deletions.map(item => item.track.source), [source])
+  })
+}
+
+await databaseRegression('indexed tombstones retain QQ identity and Bilibili part boundaries', async store => {
+  const songs = [track('qq:qq-song', 'qq'), page(1), page(2)]
+  store.entries = songs.map(item => ({ track: item, playedAt: 1_000 }))
+  await store.applySyncPayload({
+    entries: songs.map(item => ({ track: item, playedAt: 1_500 })),
+    deletions: [
+      { songId: '-6323550006513068467', deletedAt: 3_000 },
+      { songId: '3409221603982616090', album: 'Bilibili|2', deletedAt: 2_000 },
+    ],
+  })
+  assert.deepEqual(store.entries.map(item => item.track.title), ['P1'])
+  assert.deepEqual(store.deletions.map(item => [item.track.id, item.track.album]), [
+    ['qq:qq-song', 'netease'], ['bilibili:BV1xx', 'Bilibili|2'],
+  ])
+  assert.equal(digestCalls, 3)
 })
 
 await databaseRegression('long-form positions survive replays and only change when they move', async store => {

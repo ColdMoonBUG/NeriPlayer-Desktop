@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::io::{Read, Write};
 
+use futures_util::{stream, StreamExt, TryStreamExt};
 use prost::Message;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -19,6 +20,7 @@ pub const MANIFEST_FILE: &str = "neriplayer-sync-v3.manifest";
 pub const MAX_OBJECT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_METADATA_BYTES: usize = 32 * 1024 * 1024;
 const MAX_RECORDS: u64 = 131_072;
+const MAX_PARALLEL_DOWNLOADS: usize = 4;
 const LEGACY_CANDIDATES: &str = "_legacyLyricCandidates";
 
 #[derive(Clone, PartialEq, Message, serde::Serialize, serde::Deserialize)]
@@ -350,16 +352,19 @@ fn validate_archive_wire(bytes: &[u8], context: &str) -> AppResult<()> {
     Ok(())
 }
 
-async fn read_stream<F, Fut>(
+async fn read_stream<F, Fut, V>(
     stream: &Stream,
     protocol: u8,
     fetch: &F,
     objects: &mut HashMap<String, (ObjectRef, Vec<u8>)>,
     paths: &mut HashSet<String>,
+    directory: Option<&std::path::Path>,
+    verify_cached: &V,
 ) -> AppResult<Vec<u8>>
 where
     F: Fn(String) -> Fut,
     Fut: Future<Output = AppResult<Vec<u8>>>,
+    V: Fn(&str, &[u8]) -> AppResult<bool>,
 {
     validate_stream(stream)?;
     let mut pending = stream
@@ -367,8 +372,9 @@ where
         .clone()
         .map(|root| vec![(root, 0)])
         .unwrap_or_default();
-    let mut output = Vec::new();
-    let mut leaves = 0_i64;
+    let mut leaves = Vec::new();
+    let mut descriptors = HashMap::new();
+    let mut remaining = stream.raw_bytes;
     let mut visits = 0_i64;
     while let Some((reference, depth)) = pending.pop() {
         visits += 1;
@@ -377,43 +383,28 @@ where
         }
         validate_ref(&reference, protocol)?;
         let path = format!("neriplayer-sync-v{protocol}-{}.zst", reference.hash);
-        let raw = if let Some((descriptor, raw)) = objects.get(&path) {
-            if descriptor != &reference {
+        if let Some(descriptor) = descriptors.insert(path.clone(), reference.clone()) {
+            if descriptor != reference {
                 return Err(invalid(
                     "conflicting descriptors for content addressed object",
                 ));
             }
-            raw.clone()
-        } else {
-            let compressed = fetch(path.clone()).await?;
-            if compressed.len() != reference.compressed_bytes as usize
-                || digest(&compressed) != reference.hash
-            {
-                return Err(invalid("object checksum mismatch"));
-            }
-            let maximum = if reference.index {
-                128 * 1024
-            } else if protocol == 4 {
-                4 * 1024 * 1024
-            } else {
-                1024 * 1024
-            };
-            let raw = decompress(
-                &compressed,
-                reference.raw_bytes as usize,
-                maximum,
-                if protocol == 4 { 22 } else { 20 },
-            )?;
-            if digest(&raw) != reference.raw_hash {
-                return Err(invalid("raw checksum mismatch"));
-            }
-            objects.insert(path.clone(), (reference.clone(), raw.clone()));
-            raw
-        };
-        paths.insert(path);
+        }
+        if objects
+            .get(&path)
+            .is_some_and(|(descriptor, _)| descriptor != &reference)
+        {
+            return Err(invalid("conflicting descriptors for content addressed object"));
+        }
         if reference.index {
-            validate_archive_wire(&raw, "index")?;
-            let index: ObjectIndex = proto_decode(&raw)?;
+            if !objects.contains_key(&path) {
+                let raw = read_object(&reference, protocol, fetch, directory, verify_cached).await?;
+                objects.insert(path.clone(), (reference.clone(), raw));
+            }
+            let raw = &objects[&path].1;
+            paths.insert(path);
+            validate_archive_wire(raw, "index")?;
+            let index: ObjectIndex = proto_decode(raw)?;
             if index.children.is_empty() || index.children.len() > 512 {
                 return Err(invalid("invalid index fanout"));
             }
@@ -425,19 +416,94 @@ where
                     .map(|child| (child, depth + 1)),
             );
         } else {
-            leaves += 1;
-            if leaves > stream.chunks
-                || raw.len() > (stream.raw_bytes as usize).saturating_sub(output.len())
-            {
+            if leaves.len() as i64 >= stream.chunks || reference.raw_bytes as i64 > remaining {
                 return Err(invalid("stream exceeds declared budget"));
             }
-            output.extend_from_slice(&raw);
+            remaining -= reference.raw_bytes as i64;
+            leaves.push((path, reference));
         }
     }
-    if leaves != stream.chunks || output.len() != stream.raw_bytes as usize {
+    if leaves.len() as i64 != stream.chunks || remaining != 0 {
         return Err(invalid("stream chunk or byte count mismatch"));
     }
+
+    // 先验证整棵树，再按 Android 的上限下载叶子，避免异常清单放大请求和解压缓冲
+    let mut output = Vec::with_capacity(stream.raw_bytes as usize);
+    for batch in leaves.chunks(MAX_PARALLEL_DOWNLOADS) {
+        let mut scheduled = HashSet::new();
+        let mut missing = Vec::new();
+        for (path, reference) in batch {
+            if !objects.contains_key(path) && scheduled.insert(path.clone()) {
+                missing.push((path.clone(), reference.clone()));
+            }
+        }
+        let downloaded: Vec<_> = stream::iter(missing)
+        .map(|(path, reference)| async move {
+            let raw = read_object(&reference, protocol, fetch, directory, verify_cached).await?;
+            Ok::<_, crate::error::AppError>((path, reference, raw))
+        })
+        .buffer_unordered(MAX_PARALLEL_DOWNLOADS)
+        .try_collect()
+        .await?;
+        for (path, reference, raw) in downloaded {
+            objects.insert(path, (reference, raw));
+        }
+        for (path, _) in batch {
+            output.extend_from_slice(&objects[path].1);
+            paths.insert(path.clone());
+        }
+    }
     Ok(output)
+}
+
+async fn read_object<F, Fut, V>(
+    reference: &ObjectRef,
+    protocol: u8,
+    fetch: &F,
+    directory: Option<&std::path::Path>,
+    verify_cached: &V,
+) -> AppResult<Vec<u8>>
+where
+    F: Fn(String) -> Fut,
+    Fut: Future<Output = AppResult<Vec<u8>>>,
+    V: Fn(&str, &[u8]) -> AppResult<bool>,
+{
+    let path = format!("neriplayer-sync-v{protocol}-{}.zst", reference.hash);
+    let cached =
+        directory.and_then(|directory| cache::read_downloaded(directory, reference, protocol));
+    let (compressed, downloaded) = if let Some(compressed) = cached {
+        if verify_cached(&path, &compressed)? {
+            (compressed, false)
+        } else {
+            (fetch(path).await?, true)
+        }
+    } else {
+        (fetch(path).await?, true)
+    };
+    if compressed.len() != reference.compressed_bytes as usize || digest(&compressed) != reference.hash
+    {
+        return Err(invalid("object checksum mismatch"));
+    }
+    let maximum = if reference.index {
+        128 * 1024
+    } else if protocol == 4 {
+        4 * 1024 * 1024
+    } else {
+        1024 * 1024
+    };
+    let raw = decompress(
+        &compressed,
+        reference.raw_bytes as usize,
+        maximum,
+        if protocol == 4 { 22 } else { 20 },
+    )?;
+    if digest(&raw) != reference.raw_hash {
+        return Err(invalid("raw checksum mismatch"));
+    }
+    if let Some(directory) = directory.filter(|_| downloaded) {
+        cache::write_downloaded(directory, reference, &compressed, protocol);
+    }
+    Ok(raw)
 }
 
 pub async fn load<F, Fut>(content: &[u8], fetch: F) -> AppResult<LoadedArchive>
@@ -445,6 +511,21 @@ where
     F: Fn(String) -> Fut,
     Fut: Future<Output = AppResult<Vec<u8>>>,
 {
+    load_cached_at(content, fetch, |_, _| Ok(false), None).await
+}
+
+async fn load_cached_at<F, Fut, V>(
+    content: &[u8],
+    fetch: F,
+    verify_cached: V,
+    directory: Option<&std::path::Path>,
+) -> AppResult<LoadedArchive>
+where
+    F: Fn(String) -> Fut,
+    Fut: Future<Output = AppResult<Vec<u8>>>,
+    V: Fn(&str, &[u8]) -> AppResult<bool>,
+{
+    let _cache_trim = cache::TrimOnDrop(directory);
     let (protocol, raw) = envelope(content)?;
     validate_archive_wire(&raw, if protocol == 4 { "v4" } else { "original" })?;
     let mut objects = HashMap::new();
@@ -462,6 +543,8 @@ where
             &fetch,
             &mut objects,
             &mut paths,
+            directory,
+            &verify_cached,
         )
         .await?;
         let legacy = if let Some(source) = &original.legacy {
@@ -475,6 +558,8 @@ where
                 &fetch,
                 &mut objects,
                 &mut paths,
+                directory,
+                &verify_cached,
             )
             .await?
         } else {
@@ -508,9 +593,9 @@ where
         if compact_bytes < 0 || compact_bytes > budget {
             return Err(invalid("compact streams exceed budget"));
         }
-        let main = read_stream(&main, 4, &fetch, &mut objects, &mut paths).await?;
-        let legacy = read_stream(&legacy, 4, &fetch, &mut objects, &mut paths).await?;
-        let pool = read_stream(&pool, 4, &fetch, &mut objects, &mut paths).await?;
+        let main = read_stream(&main, 4, &fetch, &mut objects, &mut paths, directory, &verify_cached).await?;
+        let legacy = read_stream(&legacy, 4, &fetch, &mut objects, &mut paths, directory, &verify_cached).await?;
+        let pool = read_stream(&pool, 4, &fetch, &mut objects, &mut paths, directory, &verify_cached).await?;
         let (main, legacy) = compact::unpack(
             &main,
             &legacy,
@@ -550,6 +635,21 @@ where
         protocol,
     })
 }
+
+pub(crate) async fn load_cached<F, Fut, V>(
+    content: &[u8],
+    fetch: F,
+    verify_cached: V,
+) -> AppResult<LoadedArchive>
+where
+    F: Fn(String) -> Fut,
+    Fut: Future<Output = AppResult<Vec<u8>>>,
+    V: Fn(&str, &[u8]) -> AppResult<bool>,
+{
+    let directory = (!cfg!(test)).then(cache::directory);
+    load_cached_at(content, fetch, verify_cached, directory.as_deref()).await
+}
+
 
 fn frames(bytes: &[u8], expected: u64) -> AppResult<Vec<(u8, Vec<u8>)>> {
     if bytes.len() > MAX_METADATA_BYTES || expected > MAX_RECORDS {
@@ -1091,10 +1191,203 @@ mod tests {
             &|path| std::future::ready(Ok(objects[&path].clone())),
             &mut HashMap::new(),
             &mut HashSet::new(),
+            None,
+            &|_, _| Ok(false),
         )
         .await
         .unwrap_err();
         assert!(error.to_string().contains("conflicting descriptors"));
+    }
+
+    #[tokio::test]
+    async fn leaf_downloads_overlap_in_bounded_batches_and_keep_stream_order() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let mut remote = BTreeMap::new();
+        let children: Vec<_> = (0..12)
+            .map(|value| store_object(&[value], false, 4, &mut remote).unwrap())
+            .collect();
+        let root = store_object(
+            &ObjectIndex { children }.encode_to_vec(),
+            true,
+            4,
+            &mut remote,
+        )
+        .unwrap();
+        let root_path = format!("neriplayer-sync-v4-{}.zst", root.hash);
+        let stream = Stream { root: Some(root), raw_bytes: 12, chunks: 12 };
+        let active = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        let rendezvous = tokio::sync::Barrier::new(4);
+        let fetch = |path: String| {
+            let remote = &remote;
+            let root_path = &root_path;
+            let active = &active;
+            let peak = &peak;
+            let rendezvous = &rendezvous;
+            async move {
+                if &path != root_path {
+                    let count = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(count, Ordering::SeqCst);
+                    let met = tokio::time::timeout(
+                        std::time::Duration::from_secs(2), rendezvous.wait(),
+                    ).await.is_ok();
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    if !met { return Err(invalid("leaf requests were serialized")); }
+                }
+                Ok(remote[&path].clone())
+            }
+        };
+        let decoded = read_stream(
+            &stream, 4, &fetch, &mut HashMap::new(), &mut HashSet::new(), None, &|_, _| Ok(false),
+        ).await.unwrap();
+        assert_eq!(decoded, (0..12).collect::<Vec<u8>>());
+        assert_eq!(peak.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn invalid_leaf_budget_fails_before_downloading_any_leaves() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let mut remote = BTreeMap::new();
+        let leaf = store_object(b"large", false, 4, &mut remote).unwrap();
+        let root = store_object(
+            &ObjectIndex { children: vec![leaf.clone(), leaf] }.encode_to_vec(),
+            true, 4, &mut remote,
+        ).unwrap();
+        let root_path = format!("neriplayer-sync-v4-{}.zst", root.hash);
+        let stream = Stream { root: Some(root), raw_bytes: 5, chunks: 2 };
+        let leaf_fetches = AtomicUsize::new(0);
+        let result = read_stream(
+            &stream, 4,
+            &|path: String| {
+                if path != root_path { leaf_fetches.fetch_add(1, Ordering::SeqCst); }
+                std::future::ready(Ok(remote[&path].clone()))
+            },
+            &mut HashMap::new(), &mut HashSet::new(),
+            None, &|_, _| Ok(false),
+        ).await;
+        assert!(result.is_err());
+        assert_eq!(leaf_fetches.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn later_leaf_failure_cancels_an_earlier_stalled_download() {
+        let mut remote = BTreeMap::new();
+        let first = store_object(b"first", false, 4, &mut remote).unwrap();
+        let first_path = format!("neriplayer-sync-v4-{}.zst", first.hash);
+        let second = store_object(b"second", false, 4, &mut remote).unwrap();
+        let second_path = format!("neriplayer-sync-v4-{}.zst", second.hash);
+        let root = store_object(&ObjectIndex { children: vec![first, second] }.encode_to_vec(), true, 4, &mut remote).unwrap();
+        let stream = Stream { root: Some(root), raw_bytes: 11, chunks: 2 };
+        let fetch = |path: String| {
+            let remote = &remote;
+            let first_path = &first_path;
+            let second_path = &second_path;
+            async move {
+                if &path == first_path { std::future::pending::<()>().await; }
+                if &path == second_path { return Err(invalid("leaf transport failed")); }
+                Ok(remote[&path].clone())
+            }
+        };
+        let mut objects = HashMap::new();
+        let mut paths = HashSet::new();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            read_stream(&stream, 4, &fetch, &mut objects, &mut paths, None, &|_, _| Ok(false)),
+        ).await.expect("a later failure must not wait for a stalled earlier request");
+        assert!(result.err().unwrap().to_string().contains("leaf transport failed"));
+        assert!(!paths.contains(&first_path));
+        assert!(!paths.contains(&second_path));
+    }
+
+    #[tokio::test]
+    async fn downloaded_objects_are_reused_only_with_current_remote_proof() {
+        let directory = tempfile::tempdir().unwrap();
+        let prepared = prepare(&SyncData::default(), None).unwrap();
+        let fetched = std::sync::atomic::AtomicUsize::new(0);
+        let fetch = |path: String| {
+            fetched.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::future::ready(Ok(prepared.objects[&path].clone()))
+        };
+        let first = load_cached_at(&prepared.content, &fetch, |_, _| Ok(false), Some(directory.path())).await.unwrap();
+        assert_eq!(fetched.load(std::sync::atomic::Ordering::SeqCst), prepared.objects.len());
+        fetched.store(0, std::sync::atomic::Ordering::SeqCst);
+        let reused = load_cached_at(
+            &prepared.content, &fetch,
+            |path, compressed| Ok(prepared.objects.get(path).is_some_and(|known| known == compressed)),
+            Some(directory.path()),
+        ).await.unwrap();
+        assert_eq!(fetched.load(std::sync::atomic::Ordering::SeqCst), 0, "proven cache should avoid object downloads");
+        assert_eq!(first.paths, reused.paths);
+        fetched.store(0, std::sync::atomic::Ordering::SeqCst);
+        load_cached_at(&prepared.content, &fetch, |_, _| Ok(false), Some(directory.path())).await.unwrap();
+        assert_eq!(fetched.load(std::sync::atomic::Ordering::SeqCst), prepared.objects.len(), "unproven cache must still verify the remote closure");
+    }
+
+    #[tokio::test]
+    async fn corrupt_cached_objects_are_refetched_before_remote_proof_is_consulted() {
+        let directory = tempfile::tempdir().unwrap();
+        let prepared = prepare(&SyncData::default(), None).unwrap();
+        let fetch = |path: String| std::future::ready(Ok(prepared.objects[&path].clone()));
+        load_cached_at(&prepared.content, &fetch, |_, _| Ok(false), Some(directory.path())).await.unwrap();
+        let damaged = prepared.objects.keys().next().unwrap();
+        std::fs::write(directory.path().join(damaged), vec![0; prepared.objects[damaged].len()]).unwrap();
+        let fetched = std::sync::atomic::AtomicUsize::new(0);
+        load_cached_at(
+            &prepared.content,
+            |path: String| {
+                assert_eq!(&path, damaged);
+                fetched.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                std::future::ready(Ok(prepared.objects[&path].clone()))
+            },
+            |path, _| { assert_ne!(path, damaged); Ok(true) },
+            Some(directory.path()),
+        ).await.unwrap();
+        assert_eq!(fetched.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn rejected_cache_proof_cannot_mask_missing_remote_objects() {
+        let directory = tempfile::tempdir().unwrap();
+        let prepared = prepare(&SyncData::default(), None).unwrap();
+        load_cached_at(
+            &prepared.content,
+            |path: String| std::future::ready(Ok(prepared.objects[&path].clone())),
+            |_, _| Ok(false), Some(directory.path()),
+        ).await.unwrap();
+        let result = load_cached_at(
+            &prepared.content,
+            |_| std::future::ready(Err(invalid("remote object is missing"))),
+            |_, _| Ok(false), Some(directory.path()),
+        ).await;
+        assert!(result.err().unwrap().to_string().contains("remote object is missing"));
+        let result = load_cached_at(
+            &prepared.content,
+            |_| std::future::ready(Err(invalid("must not download after proof failure"))),
+            |_, _| Err(invalid("fixed commit proof is invalid")), Some(directory.path()),
+        ).await;
+        assert!(result.err().unwrap().to_string().contains("fixed commit proof is invalid"));
+    }
+
+    #[tokio::test]
+    async fn failed_and_cancelled_reads_still_enforce_the_cache_capacity() {
+        for cancel in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let obsolete = directory.path().join(format!("neriplayer-sync-v4-{}.zst", "0".repeat(64)));
+            let file = std::fs::File::create(&obsolete).unwrap();
+            file.set_len(257 * 1024 * 1024).unwrap();
+            drop(file);
+            let prepared = prepare(&SyncData::default(), None).unwrap();
+            if cancel {
+                let result = tokio::time::timeout(
+                    std::time::Duration::from_millis(20),
+                    load_cached_at(&prepared.content, |_| std::future::pending::<AppResult<Vec<u8>>>(), |_, _| Ok(false), Some(directory.path())),
+                ).await;
+                assert!(result.is_err());
+            } else {
+                assert!(load_cached_at(b"invalid manifest", |_| std::future::ready(Ok(Vec::new())), |_, _| Ok(false), Some(directory.path())).await.is_err());
+            }
+            assert!(!obsolete.exists(), "failed and cancelled loads must trim oversized cache files");
+        }
     }
 
     #[test]

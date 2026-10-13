@@ -4,7 +4,7 @@ use super::archive::{
     self,
     approval::{self, SyncProtocolUpgrade},
 };
-use super::github_api::{GitHubApiClient, GitHubHead};
+use super::github_api::{GitHubApiClient, GitHubArchiveProof, GitHubHead};
 use super::models::{GitHubSyncConfig, SyncData, WebDavSyncConfig};
 use super::webdav_archive::{self, Lease, RemoteFile, WebDavArchiveClient};
 use super::{manager, merge, serializer};
@@ -18,6 +18,7 @@ struct Snapshot {
     paths: HashSet<String>,
     protocol: u8,
     challenge: Option<SyncProtocolUpgrade>,
+    github_proof: Option<GitHubArchiveProof>,
 }
 
 pub(crate) struct Completed {
@@ -54,17 +55,41 @@ async fn github_snapshot(
         )
         .await?;
     if let Some(content) = content {
-        let loaded = archive::load(&content, |path| async move {
-            api.get_file_at_ref(
-                &config.owner,
-                &config.repo,
-                &path,
-                &head.sha,
-                archive::MAX_OBJECT_BYTES,
-            )
-            .await?
-            .ok_or_else(|| AppError::Other("GitHub archive closure has a missing object".into()))
-        })
+        let proof = api
+            .get_archive_proof(&config.owner, &config.repo, head)
+            .await?;
+        let loaded = archive::load_cached(
+            &content,
+            |path| {
+                let proof = &proof;
+                async move {
+                    if !proof.object_ids.contains_key(&path) {
+                        return Err(AppError::NotFound(
+                            "GitHub archive object missing from fixed commit".into(),
+                        ));
+                    }
+                    let compressed = api
+                        .get_file_at_ref(
+                            &config.owner,
+                            &config.repo,
+                            &path,
+                            &head.sha,
+                            archive::MAX_OBJECT_BYTES,
+                        )
+                        .await?
+                        .ok_or_else(|| {
+                            AppError::Other("GitHub archive closure has a missing object".into())
+                        })?;
+                    if !proof.verify_cached(&path, &compressed)? {
+                        return Err(AppError::Other(
+                            "GitHub archive object differs from its fixed commit tree".into(),
+                        ));
+                    }
+                    Ok(compressed)
+                }
+            },
+            |path, compressed| Ok(proof.verify_cached(path, compressed)?),
+        )
         .await?;
         let challenge = (loaded.protocol != 4).then(|| {
             SyncProtocolUpgrade::new(
@@ -79,6 +104,7 @@ async fn github_snapshot(
             paths: loaded.paths,
             protocol: loaded.protocol,
             challenge,
+            github_proof: Some(proof),
         }));
     }
     for filename in serializer::legacy_backup_filenames(config.data_saver) {
@@ -124,6 +150,7 @@ where
             protocol: loaded.protocol.min(3),
             data: loaded.data,
             paths: loaded.paths,
+            github_proof: None,
         });
     }
     Ok(Snapshot {
@@ -131,6 +158,7 @@ where
         paths: HashSet::new(),
         protocol: 0,
         challenge: Some(SyncProtocolUpgrade::new(backend, target, content, 0)),
+        github_proof: None,
     })
 }
 
@@ -142,14 +170,18 @@ async fn webdav_snapshot(
         .get(archive::MANIFEST_FILE, lease, archive::MAX_OBJECT_BYTES)
         .await?
     {
-        let loaded = archive::load(&file.content, |path| async move {
-            api.get(&path, lease, archive::MAX_OBJECT_BYTES)
-                .await?
-                .map(|file| file.content)
-                .ok_or_else(|| {
-                    AppError::Other("WebDAV archive closure has a missing object".into())
-                })
-        })
+        let loaded = archive::load_cached(
+            &file.content,
+            |path| async move {
+                api.get(&path, lease, archive::MAX_OBJECT_BYTES)
+                    .await?
+                    .map(|file| file.content)
+                    .ok_or_else(|| {
+                        AppError::Other("WebDAV archive closure has a missing object".into())
+                    })
+            },
+            |_, _| Ok(false),
+        )
         .await?;
         let challenge = (loaded.protocol != 4).then(|| {
             SyncProtocolUpgrade::new("webdav", api.target(), &file.content, loaded.protocol)
@@ -159,6 +191,7 @@ async fn webdav_snapshot(
             paths: loaded.paths,
             protocol: loaded.protocol,
             challenge,
+            github_proof: None,
         };
         return Ok((Some(file), Some(snapshot)));
     }
@@ -266,7 +299,10 @@ pub(super) async fn github(
             .map(|snapshot| snapshot.paths.clone())
             .unwrap_or_default();
         match api
-            .publish_archive(&config.owner, &config.repo, &head, &prepared, &verified)
+            .publish_archive_with_proof(
+                &config.owner, &config.repo, &head, &prepared, &verified,
+                snapshot.as_ref().and_then(|snapshot| snapshot.github_proof.as_ref()),
+            )
             .await
         {
             Ok(version) => {
@@ -285,29 +321,7 @@ pub(super) async fn github(
                         "GitHub publication content mismatch".into(),
                     ));
                 }
-                let loaded = archive::load(&committed, |path| {
-                    let version = &version;
-                    let api = &api;
-                    async move {
-                        api.get_file_at_ref(
-                            &config.owner,
-                            &config.repo,
-                            &path,
-                            version,
-                            archive::MAX_OBJECT_BYTES,
-                        )
-                        .await?
-                        .ok_or_else(|| {
-                            AppError::Other("Published GitHub closure missing object".into())
-                        })
-                    }
-                })
-                .await?;
-                if loaded.paths != prepared.objects.keys().cloned().collect() {
-                    return Err(AppError::Other(
-                        "GitHub publication closure mismatch".into(),
-                    ));
-                }
+                // 原闭包已按固定提交验证，新对象由原子发布回执确认，避免再次下载整份归档
                 if let Some(challenge) = snapshot
                     .as_ref()
                     .and_then(|snapshot| snapshot.challenge.as_ref())
@@ -527,6 +541,74 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn github_snapshot_reads_and_checks_objects_against_the_fixed_commit_tree() {
+        use sha1::{Digest, Sha1};
+        for damaged in [false, true] {
+            let prepared = archive::prepare(&SyncData::default(), None).unwrap();
+            let head = GitHubHead { branch: "main".into(), sha: "1".repeat(40), repository_id: "repository".into() };
+            let tree = "2".repeat(40);
+            let mut routes = BTreeMap::from([
+                (format!("/repos/owner/repo/contents/{}", archive::MANIFEST_FILE), prepared.content.clone()),
+                (format!("/repos/owner/repo/git/commits/{}", head.sha), serde_json::to_vec(&serde_json::json!({"sha":head.sha,"tree":{"sha":tree}})).unwrap()),
+            ]);
+            let entries: Vec<_> = prepared.objects.iter().map(|(path, bytes)| {
+                let mut hash = Sha1::new();
+                hash.update(format!("blob {}\0", bytes.len()).as_bytes());
+                hash.update(bytes);
+                serde_json::json!({"path":path,"type":"blob","mode":"100644","sha":if damaged { "0".repeat(40) } else { hex::encode(hash.finalize()) }})
+            }).collect();
+            routes.insert(format!("/repos/owner/repo/git/trees/{tree}"), serde_json::to_vec(&serde_json::json!({"sha":tree,"truncated":false,"tree":entries})).unwrap());
+            for (path, bytes) in &prepared.objects { routes.insert(format!("/repos/owner/repo/contents/{path}"), bytes.clone()); }
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let (stop, mut stopped) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                let mut requests = Vec::new();
+                loop {
+                    let (mut socket, _) = tokio::select! {
+                        _ = &mut stopped => break,
+                        incoming = listener.accept() => incoming.unwrap(),
+                    };
+                    let mut request = Vec::new();
+                    let mut buffer = [0; 2048];
+                    while !request.windows(4).any(|part| part == b"\r\n\r\n") {
+                        let count = socket.read(&mut buffer).await.unwrap();
+                        if count == 0 { break; }
+                        request.extend_from_slice(&buffer[..count]);
+                    }
+                    let request = String::from_utf8(request).unwrap();
+                    let target = request.split_whitespace().nth(1).unwrap();
+                    let path = target.split('?').next().unwrap();
+                    let body = routes.get(path).expect("unexpected GitHub archive request");
+                    let response = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                    socket.write_all(response.as_bytes()).await.unwrap();
+                    socket.write_all(body).await.unwrap();
+                    socket.shutdown().await.unwrap();
+                    requests.push(request);
+                }
+                requests
+            });
+            let http = reqwest::Client::builder().no_proxy().build().unwrap();
+            let api = GitHubApiClient::new_with_api_base(&http, "fixture", &base);
+            let config = GitHubSyncConfig { owner: "owner".into(), repo: "repo".into(), ..Default::default() };
+            let result = github_snapshot(&api, &config, &head).await;
+            stop.send(()).unwrap();
+            let requests = server.await.unwrap();
+            if damaged {
+                assert!(result.err().unwrap().to_string().contains("fixed commit tree"));
+            } else {
+                let snapshot = result.unwrap().unwrap();
+                assert_eq!(snapshot.paths, prepared.objects.keys().cloned().collect());
+                assert!(snapshot.github_proof.is_some());
+                assert_eq!(requests.len(), 3 + prepared.objects.len());
+            }
+            for request in requests.iter().filter(|request| request.contains("/contents/")) {
+                assert!(request.contains(&format!("ref={}", head.sha)));
+            }
+        }
+    }
 
     struct LegacyServerResult {
         requests: Vec<Vec<u8>>,
