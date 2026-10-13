@@ -1201,6 +1201,26 @@ pub async fn set_pitch(pitch: f32, state: State<'_, AppState>) -> AppResult<()> 
     Ok(())
 }
 
+#[tauri::command]
+pub async fn set_vinyl_effect(enabled: bool, state: State<'_, AppState>) -> AppResult<()> {
+    state.player.lock().set_vinyl_effect(enabled);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_audio_effects(
+    settings: crate::audio::dsp_settings::AudioEffectsSettings,
+    output_device: String,
+    state: State<'_, AppState>,
+) -> AppResult<crate::audio::dsp_settings::AudioEffectsSettings> {
+    Ok(state.player.lock().set_audio_effects(settings, &output_device))
+}
+
+#[tauri::command]
+pub async fn get_audio_effects_stats(state: State<'_, AppState>) -> AppResult<crate::audio::dsp::AudioEffectsStats> {
+    Ok(state.player.lock().audio_effects_stats())
+}
+
 fn require_finite_ratio(value: f32, name: &str) -> AppResult<()> {
     if value.is_finite() {
         Ok(())

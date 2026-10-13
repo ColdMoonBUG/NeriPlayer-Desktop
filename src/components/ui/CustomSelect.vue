@@ -12,6 +12,7 @@ const props = withDefaults(defineProps<{
   surface?: 'default' | 'dark'
   id?: string
   label?: string
+  selectedLabel?: string
   disabled?: boolean
 }>(), {
   surface: 'default',
@@ -32,7 +33,7 @@ const activeIndex = ref(-1)
 
 const selectedLabel = computed(() => {
   const opt = props.options.find(o => o.value === props.modelValue)
-  return opt?.label ?? props.modelValue
+  return props.selectedLabel ?? opt?.label ?? props.modelValue
 })
 const isDarkSurface = computed(() => props.surface === 'dark')
 

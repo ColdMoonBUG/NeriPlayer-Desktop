@@ -9,8 +9,8 @@
 const FRAME_SECONDS: f64 = 0.030;
 const UNITY_TOLERANCE: f32 = 1e-4;
 // 独立音调先按 speed / pitch 伸缩，再重采样，内部范围覆盖两者的全部组合
-const MIN_SPEED: f32 = 0.05;
-const MAX_SPEED: f32 = 16.0;
+const MIN_SPEED: f32 = 0.025;
+const MAX_SPEED: f32 = 40.0;
 /// 粗搜索的步长与相关计算的抽样间隔；之后在最佳点附近逐样本细搜
 const COARSE_STEP: usize = 8;
 const FINE_RADIUS: usize = COARSE_STEP - 1;
@@ -517,7 +517,7 @@ pub struct PitchShifter {
 impl PitchShifter {
     pub fn new(channels: usize, sample_rate: u32, pitch: f32) -> Self {
         let channels = channels.max(1);
-        let pitch = f64::from(pitch.clamp(0.25, 2.0));
+        let pitch = f64::from(pitch.clamp(0.1, 4.0));
         Self {
             channels,
             stretcher: Stretcher::new(channels, sample_rate),
@@ -611,7 +611,7 @@ impl PitchShifter {
         draining: bool,
         pull: &mut dyn FnMut(&mut [f32]) -> usize,
     ) -> Rendered {
-        let target = f64::from(pitch.clamp(0.25, 2.0));
+        let target = f64::from(pitch.clamp(0.1, 4.0));
         if (target - self.target_pitch).abs() > 1e-6 {
             self.target_pitch = target;
             self.ramp_remaining = self.ramp_frames;
@@ -798,6 +798,18 @@ mod tests {
         assert_eq!(processor.buffered_frames(), 0);
         assert_eq!(processor.stretcher.stalls(), 0);
         (output, media)
+    }
+
+    #[test]
+    fn vinyl_pitch_covers_the_full_playback_speed_range() {
+        for speed in [0.1f32, 0.95, 1.05, 4.0] {
+            let (output, media) = pitched_source(speed, speed, 0.3);
+            let middle = &output[output.len() / 3..output.len() * 2 / 3];
+            let frequency = rising_crossings(middle) as f64 / (middle.len() as f64 / f64::from(RATE));
+            assert!((frequency - 440.0 * f64::from(speed)).abs() < 35.0, "speed {speed}: frequency {frequency}");
+            assert!(output.len().abs_diff((14_400.0 / f64::from(speed)).round() as usize) <= 3);
+            assert!((media - 14_400.0).abs() < 2.0);
+        }
     }
 
     #[test]

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { usePlayerStore, displayAlbum, type AudioInfo, type LyricLine, type TrackInfo } from '@/stores/player'
+import { AUDIO_EFFECT_PRESETS } from '@/modules/audioEffects/model'
 import { useLikedSongsStore } from '@/stores/likedSongs'
 import {
   COVER_BLUR_PX_PER_UNIT,
@@ -1501,9 +1502,14 @@ function nudgeLyricFontScale(steps: number) {
 const audioEffectsSummary = computed(() => {
   const parts: string[] = []
   if (player.playbackSpeed !== 1) parts.push(`${player.playbackSpeed.toFixed(2)}x`)
-  if (player.playbackPitch !== 1) parts.push(`${t('player.pitch')} ${player.playbackPitch.toFixed(2)}x`)
+  if (player.vinylEffectEnabled) parts.push(t('player.vinyl_effect'))
+  else if (player.playbackPitch !== 1) parts.push(`${t('player.pitch')} ${player.playbackPitch.toFixed(2)}x`)
   if (player.loudnessGainMb !== 0) parts.push(`+${(player.loudnessGainMb / 100).toFixed(1)}dB`)
-  if (player.equalizerEnabled) parts.push(t(`player.eq_${player.equalizerPresetId}`))
+  if (player.audioEffectsProfile.enabled) {
+    const id = player.audioEffectsProfile.presetId
+    parts.push(player.audioEffects.userPresets.find(preset => preset.id === id)?.name
+      ?? (AUDIO_EFFECT_PRESETS.some(preset => preset.id === id) ? t(`dsp.presets.${id}`) : t('dsp.manual')))
+  }
   return parts.length ? parts.join(' · ') : t('player.audio_effects_desc')
 })
 

@@ -4,6 +4,7 @@ use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 
 use crate::error::{AppError, AppResult};
+use crate::audio::dsp_settings::{AudioEffectsSettings, ParametricEqBand};
 
 pub const SETTINGS_FORMAT_VERSION: u32 = 1;
 pub const SETTINGS_STORE_FILE: &str = "settings.json";
@@ -149,6 +150,9 @@ pub struct AppSettings {
     pub audio_output_device: String,
     pub playback_speed: f32,
     pub playback_pitch: f32,
+    pub vinyl_effect_enabled: bool,
+    #[serde(default = "legacy_audio_effects_settings")]
+    pub audio_effects: AudioEffectsSettings,
     #[serde(deserialize_with = "lenient_i32")]
     pub loudness_gain_mb: i32,
     pub equalizer_enabled: bool,
@@ -169,6 +173,10 @@ pub struct AppSettings {
 
 const MAX_DESKTOP_LYRICS_STYLE_BYTES: usize = 16 * 1024;
 const MAX_SHORTCUT_BINDINGS_BYTES: usize = 8 * 1024;
+
+fn legacy_audio_effects_settings() -> AudioEffectsSettings {
+    AudioEffectsSettings { version: 0, ..AudioEffectsSettings::default() }
+}
 
 /// 前端数字输入可能带小数：整数字段四舍五入接收，单个字段不能让整份设置被拒绝
 fn lenient_i32<'de, D>(deserializer: D) -> Result<i32, D::Error>
@@ -293,6 +301,8 @@ impl Default for AppSettings {
             audio_output_device: String::new(),
             playback_speed: 1.0,
             playback_pitch: 1.0,
+            vinyl_effect_enabled: false,
+            audio_effects: AudioEffectsSettings::default(),
             loudness_gain_mb: 0,
             equalizer_enabled: false,
             equalizer_preset_id: "flat".into(),
@@ -488,6 +498,20 @@ impl AppSettings {
             .map(|value| (*value).clamp(-1_500, 1_500))
             .collect();
         self.equalizer_bands.resize(EQUALIZER_BAND_COUNT, 0);
+        if self.audio_effects.version == 0 && self.equalizer_enabled {
+            let headroom = self.equalizer_bands.iter().copied().fold(0, i32::max);
+            self.audio_effects.main.enabled = true;
+            self.audio_effects.main.preset_id = "custom".into();
+            self.audio_effects.main.sound.parametric_enabled = true;
+            self.audio_effects.main.sound.parametric_bands = [60.0, 230.0, 910.0, 3600.0, 14000.0]
+                .into_iter().zip(&self.equalizer_bands).map(|(frequency_hz, level)| ParametricEqBand {
+                    frequency_hz, gain_db: (*level - headroom) as f32 / 100.0, q: 1.0,
+                    ..ParametricEqBand::default()
+                }).collect();
+            self.audio_effects.auto_headroom = false;
+        }
+        self.equalizer_enabled = false;
+        self.audio_effects = self.audio_effects.clone().normalized();
     }
 
     pub fn normalized(mut self) -> Self {
@@ -702,6 +726,43 @@ fn non_empty_or_default(value: &str, fallback: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn audio_effects_defaults_are_exported_as_typed_settings() {
+        let value = serde_json::to_value(super::AppSettings::default()).unwrap();
+        assert_eq!(value["audioEffects"]["version"], 2);
+        assert_eq!(value["audioEffects"]["main"]["sound"]["equalizerBandsDb"].as_array().map(Vec::len), Some(10));
+        assert_eq!(value["vinylEffectEnabled"], false);
+    }
+
+    #[test]
+    fn legacy_five_band_settings_migrate_once_without_double_equalization() {
+        let mut settings: super::AppSettings = serde_json::from_value(serde_json::json!({
+            "equalizerEnabled": true, "equalizerBands": [600, 0, -300, 300, 100],
+        })).unwrap();
+        assert_eq!(settings.audio_effects.version, 0);
+        settings.normalize();
+        assert!(!settings.equalizer_enabled);
+        assert!(settings.audio_effects.main.enabled);
+        assert!(!settings.audio_effects.auto_headroom);
+        let bands = &settings.audio_effects.main.sound.parametric_bands;
+        assert_eq!(bands.iter().map(|band| band.frequency_hz).collect::<Vec<_>>(), vec![60.0, 230.0, 910.0, 3600.0, 14000.0]);
+        assert_eq!(bands.iter().map(|band| band.gain_db).collect::<Vec<_>>(), vec![0.0, -6.0, -9.0, -3.0, -5.0]);
+        settings.audio_effects.main.enabled = false;
+        settings.equalizer_enabled = true;
+        settings.normalize();
+        assert!(!settings.audio_effects.main.enabled, "新版保存后不能因legacy字段重新开启");
+        assert!(!settings.equalizer_enabled, "新版配置必须禁用旧均衡器以避免叠加");
+    }
+
+    #[test]
+    fn legacy_extreme_bands_keep_the_full_thirty_db_attenuation() {
+        let mut settings: super::AppSettings = serde_json::from_value(serde_json::json!({
+            "equalizerEnabled": true, "equalizerBands": [1500, -1500, 0, 1500, -1500],
+        })).unwrap();
+        settings.normalize();
+        assert_eq!(settings.audio_effects.main.sound.parametric_bands.iter().map(|band| band.gain_db).collect::<Vec<_>>(), vec![0.0, -30.0, -15.0, 0.0, -30.0]);
+        assert!(!settings.equalizer_enabled && !settings.audio_effects.auto_headroom);
+    }
     #[test]
     fn audio_ratios_use_android_ranges_steps_and_legacy_defaults() {
         let settings: AppSettings = serde_json::from_str("{}").unwrap();

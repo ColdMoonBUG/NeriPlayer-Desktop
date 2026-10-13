@@ -3,6 +3,9 @@ import { readFile } from 'node:fs/promises'
 import * as vue from 'vue'
 import * as pinia from 'pinia'
 import ts from 'typescript'
+import { loadAudioEffectsModel } from './audio-effects-model-loader.mjs'
+
+const audioEffectsModel = await loadAudioEffectsModel()
 
 let sequence = 0
 async function load(source, dependencies = {}) {
@@ -103,6 +106,7 @@ async function runtime(options = {}) {
   const localInfo = await load(localInfoText, { '@tauri-apps/api/core': core })
   const playbackInfo = await load(metadataText, { '@tauri-apps/api/core': core })
   const settings = vue.reactive({
+    audioEffects: audioEffectsModel.normalizeAudioEffectsSettings(undefined), vinylEffectEnabled: false,
     volume: 0.7, playbackSpeed: 1, playbackPitch: 1, loudnessGainMb: 0, equalizerEnabled: false, equalizerPresetId: 'flat', equalizerBands: [0, 0, 0, 0, 0],
     volumeBalance: 0, maxCacheSize: 1024, fadeIn: false, crossfade: !!options.crossfade, crossfadeNext: !!options.crossfade,
     crossfadeInDuration: 100, crossfadeOutDuration: 100, fadeInDuration: 100, fadeOutDuration: 100,
@@ -111,6 +115,7 @@ async function runtime(options = {}) {
     rememberLongFormProgress: options.rememberLongForm !== false,
   })
   const loaded = await load(source, {
+    '@/modules/audioEffects/model': audioEffectsModel,
     vue, pinia, '@tauri-apps/api/core': core,
     '@tauri-apps/api/event': { listen: async (name, callback) => { events.set(name, callback); return () => events.delete(name) } },
     './history': { useHistoryStore: () => options.history ?? { record: () => {}, rememberedPosition: () => 0, updateResumePosition() {} } },

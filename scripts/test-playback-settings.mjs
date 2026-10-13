@@ -3,6 +3,9 @@ import { readFile } from 'node:fs/promises'
 import ts from 'typescript'
 import * as pinia from 'pinia'
 import * as vue from 'vue'
+import { loadAudioEffectsModel } from './audio-effects-model-loader.mjs'
+
+const audioEffectsModel = await loadAudioEffectsModel()
 
 const storage = new Map()
 globalThis.localStorage = {
@@ -51,6 +54,7 @@ new Function('require', 'exports', compiled)(name => {
   if (name === '@/utils/logger') return { createLogger: () => ({ info() {}, warn() {}, error() {}, debug() {} }) }
   if (name === '@/modules/desktopLyrics/style') return desktopLyricsStyle
   if (name === '@/modules/shortcuts/bindings') return shortcutBindings
+  if (name === '@/modules/audioEffects/model') return audioEffectsModel
   throw new Error(`Unexpected settings dependency: ${name}`)
 }, exports)
 
@@ -209,6 +213,57 @@ await regression('independent speed and pitch persist and survive snapshot impor
   store.applySnapshot(saved.at(-1))
   assert.equal(store.playbackSpeed, 1.5)
   assert.equal(store.playbackPitch, 0.75)
+})
+
+await regression('vinyl effect defaults off and persists independently from manual pitch', async store => {
+  await store.hydrate()
+  assert.equal(store.vinylEffectEnabled, false)
+  store.vinylEffectEnabled = true
+  store.playbackSpeed = 0.95
+  store.playbackPitch = 1.25
+  await vue.nextTick()
+  for (const callback of timers.values()) callback()
+  timers.clear()
+  await Promise.resolve()
+  const snapshot = saved.at(-1)
+  assert.equal(snapshot.vinylEffectEnabled, true)
+  assert.equal(snapshot.playbackSpeed, 0.95)
+  assert.equal(snapshot.playbackPitch, 1.25)
+  store.applySnapshot(snapshot)
+  assert.equal(store.vinylEffectEnabled, true)
+})
+
+await regression('full DSP defaults and imported values remain bounded and independently persisted', async store => {
+  await store.hydrate()
+  assert.equal(store.audioEffects.main.enabled, false)
+  assert.equal(store.audioEffects.main.sound.equalizerBandsDb.length, 10)
+  store.applySnapshot({ audioEffects: { main: { enabled: true, presetId: 'custom', sound: {
+    preampDb: -24, bassDb: 8, parametricEnabled: true,
+    parametricBands: [{ frequencyHz: 50, gainDb: 24, q: 20 }],
+  } }, perOutputEnabled: true, outputProfiles: {
+    Headphones: { enabled: true, sound: { stereoWidth: 1.4 } },
+  }, userPresets: [{ id: 'user-one', name: '耳机配置', sound: { bassDb: 3 } }] } })
+  const snapshot = store.snapshot()
+  assert.equal(snapshot.audioEffects.main.sound.preampDb, -24)
+  assert.equal(snapshot.audioEffects.main.sound.parametricBands[0].q, 20)
+  assert.equal(snapshot.audioEffects.outputProfiles.Headphones.sound.stereoWidth, 1.4)
+  assert.equal(snapshot.audioEffects.userPresets[0].name, '耳机配置')
+  snapshot.audioEffects.main.sound.equalizerBandsDb[0] = 12
+  assert.equal(store.audioEffects.main.sound.equalizerBandsDb[0], 0, 'snapshot cannot mutate live DSP')
+})
+
+await regression('legacy EQ migrates once without stacking native and legacy filters', store => {
+  store.applySnapshot({ equalizerEnabled: true, equalizerPresetId: 'bass_boost', equalizerBands: [700, 500, 200, -100, -300] })
+  assert.equal(store.equalizerEnabled, false)
+  assert.equal(store.audioEffects.main.enabled, true)
+  assert.equal(store.audioEffects.main.sound.parametricEnabled, true)
+  assert.deepEqual(store.audioEffects.main.sound.parametricBands.map(band => band.gainDb), [0, -2, -5, -8, -10])
+  const saved = store.snapshot()
+  saved.audioEffects.main.enabled = false
+  saved.equalizerEnabled = true
+  store.applySnapshot(saved)
+  assert.equal(store.audioEffects.main.enabled, false, 'explicitly disabled new profile stays off')
+  assert.equal(store.equalizerEnabled, false)
 })
 
 console.log(`Playback settings regressions: ${cases} passed`)

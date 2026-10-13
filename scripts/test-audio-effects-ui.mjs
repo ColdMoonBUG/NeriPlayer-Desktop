@@ -5,55 +5,70 @@ import { compileScript, parse } from 'vue/compiler-sfc'
 import ts from 'typescript'
 
 const read = path => readFile(new URL(path, import.meta.url), 'utf8')
+function loadModule(source, dependencies = {}) {
+  const exports = {}
+  new Function('require', 'exports', ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText)(name => { assert.ok(name in dependencies, `unexpected dependency: ${name}`); return dependencies[name] }, exports)
+  return exports
+}
+const model = loadModule(await read('../src/modules/audioEffects/model.ts'))
+const initial = () => model.normalizeAudioEffectsSettings(undefined)
+const calls = []
+let statsCalls = 0
 const player = vue.reactive({
-  playbackSpeed: 1, playbackPitch: 1, loudnessGainMb: 0,
-  equalizerEnabled: true, equalizerBands: [0, 0, 0, 0, 0], equalizerPresetId: 'flat',
+  playbackSpeed: 1, playbackPitch: 1, loudnessGainMb: 0, vinylEffectEnabled: false,
+  audioEffects: initial(), audioEffectsOutputDevice: 'USB DAC',
+  get audioEffectsProfile() { return model.audioEffectsProfileFor(this.audioEffects, this.audioEffectsOutputDevice) },
   setSpeed(value) { this.playbackSpeed = value },
   setPitch(value) { this.playbackPitch = value },
+  setVinylEffect(value) { this.vinylEffectEnabled = value },
+  effectivePlaybackPitch() { return this.vinylEffectEnabled ? this.playbackSpeed : this.playbackPitch },
   setLoudnessGain(value) { this.loudnessGainMb = value },
-  setEqualizer(enabled, bands) { this.equalizerEnabled = enabled; this.equalizerBands = [...bands] },
-  setEqualizerPreset(value) { this.equalizerPresetId = value },
-  resetAudioEffects() {
-    this.playbackSpeed = 1; this.playbackPitch = 1; this.loudnessGainMb = 0
-    this.equalizerEnabled = false; this.equalizerBands = [0, 0, 0, 0, 0]; this.equalizerPresetId = 'flat'
+  updateAudioEffects(patch) { calls.push(['settings', patch]); Object.assign(this.audioEffects, patch) },
+  updateAudioEffectsProfile(patch) { calls.push(['profile', patch]); this.audioEffects = model.replaceAudioEffectsProfile(this.audioEffects, this.audioEffectsOutputDevice, { ...this.audioEffectsProfile, ...patch }) },
+  updateAudioEffectsSound(patch) { calls.push(['sound', patch]); this.updateAudioEffectsProfile({ sound: { ...this.audioEffectsProfile.sound, ...patch }, presetId: 'custom' }) },
+  setAudioEffectsPreset(id) {
+    calls.push(['preset', id]); this.updateAudioEffectsProfile(model.applyAudioEffectPreset(this.audioEffectsProfile, id, this.audioEffects.userPresets))
   },
+  resetAudioEffectsSection(section) {
+    calls.push(['reset-section', section]);
+    if (section === 'speaker') this.audioEffects.speaker = initial().speaker
+    else this.updateAudioEffectsProfile({ sound: model.resetAudioEffectsSoundSection(this.audioEffectsProfile.sound, section) })
+  },
+  saveAudioEffectsPreset(name) { calls.push(['save', name]); this.audioEffects.userPresets.push({ id: 'user_test', name, sound: model.normalizeAudioEffectsSound(this.audioEffectsProfile.sound) }) },
+  deleteAudioEffectsPreset(id) { calls.push(['delete', id]); this.audioEffects.userPresets = this.audioEffects.userPresets.filter(preset => preset.id !== id) },
+  exportAudioEffectsPreset(id) { calls.push(['export', id]); return model.exportAudioEffectsProfile(this.audioEffectsProfile, 'Exported') },
+  importAudioEffectsPreset(text) { calls.push(['import', text]); return model.importAudioEffectsProfile(text) },
+  importAutoEq(text) { calls.push(['autoeq', text]); const result = model.importAutoEq(text); this.updateAudioEffectsSound(result.sound); return result },
+  async refreshAudioEffectsStats() { statsCalls++; return { active: true, cpuLoadPercent: 2.5, limiterReductionDb: 1, compressorReductionDb: 3, sampleRate: 48000, nativeAvailable: true, inactiveReason: null, outputDevice: 'USB DAC' } },
+  resetAudioEffects() { this.playbackSpeed = 1; this.playbackPitch = 1; this.vinylEffectEnabled = false; this.loudnessGainMb = 0; this.audioEffects = initial() },
 })
-const settings = vue.reactive({ equalizerPresetId: 'flat' })
-const presets = { flat: [0, 0, 0, 0, 0], rock: [400, 300, -200, 300, 500], custom: [0, 0, 0, 0, 0] }
-const editable = {
-  props: ['modelValue', 'min', 'max', 'step', 'ariaLabel'], emits: ['update:modelValue'],
-  setup: (props, { emit }) => () => vue.h('editable-value', {
-    ...props, onUpdateValue: value => emit('update:modelValue', value),
-  }),
-}
 const select = {
-  props: ['modelValue', 'options', 'label', 'surface'], emits: ['update:modelValue'],
-  setup: (props, { emit }) => () => vue.h('preset-select', {
-    ...props, onChoose: value => emit('update:modelValue', value),
-  }),
+  props: ['modelValue', 'selectedLabel', 'options', 'label', 'surface'], emits: ['update:modelValue'],
+  setup: (props, { emit }) => () => vue.h('preset-select', { ...props, onChoose: value => emit('update:modelValue', value) }),
 }
+const translate = (key, args) => args?.frequency != null ? `${key}:${args.frequency}` : args?.number != null ? `${key}:${args.number}` : key
+const components = {}
 async function component(path, dependencyOverrides = {}) {
-  const script = compileScript(parse(await read(path)).descriptor, {
-    id: 'audio-effects-ui-test', genDefaultAs: 'component', inlineTemplate: true,
-  })
+  const script = compileScript(parse(await read(path)).descriptor, { id: path, genDefaultAs: 'component', inlineTemplate: true })
   const dependencies = {
-    vue, 'vue-i18n': { useI18n: () => ({ t: (key, args) => args?.frequency ? `${key}:${args.frequency}` : key }) },
-    '@/stores/player': { usePlayerStore: () => player, EQ_PRESETS: presets },
-    '@/stores/settings': { useSettingsStore: () => settings },
-    './ui/CustomSelect.vue': { default: select }, './ui/EditableRangeValue.vue': { default: editable },
-    '@/components/ui/CustomSelect.vue': { default: select }, '@/components/ui/EditableRangeValue.vue': { default: editable },
-    ...dependencyOverrides,
+    vue, 'vue-i18n': { useI18n: () => ({ t: translate }) },
+    '@tauri-apps/api/core': { isTauri: () => true },
+    '@/stores/player': { usePlayerStore: () => player },
+    '@/modules/audioEffects/model': model,
+    '@/utils/editableRange': loadModule(await read('../src/utils/editableRange.ts')),
+    './ui/CustomSelect.vue': { default: select }, '@/components/ui/CustomSelect.vue': { default: select },
+    ...components, ...dependencyOverrides,
   }
   return new Function('require', 'exports', `${ts.transpileModule(script.content, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-  }).outputText}\nreturn component`)(name => {
-    assert.ok(name in dependencies, `unexpected dependency: ${name}`)
-    return dependencies[name]
-  }, {})
+  }).outputText}\nreturn component`)(name => { assert.ok(name in dependencies, `unexpected dependency: ${name}`); return dependencies[name] }, {})
 }
+
 let focusedInput = null
 class TestElement {
-  constructor(type) { this.type = type; this.children = []; this.props = {}; this.listeners = new Map() }
+  constructor(type) { this.type = type; this.tagName = type.toUpperCase(); this.children = []; this.props = {}; this.listeners = new Map() }
   get parentElement() { return this.parent instanceof TestElement ? this.parent : null }
   matches(selector) {
     if (selector.startsWith('.')) return (this.props.class ?? '').split(/\s+/).includes(selector.slice(1))
@@ -61,17 +76,12 @@ class TestElement {
     return this.type === selector
   }
   closest(selector) {
-    for (let node = this; node; node = node.parentElement) {
-      if (selector.split(',').some(part => node.matches(part.trim()))) return node
-    }
+    for (let node = this; node; node = node.parentElement) if (selector.split(',').some(part => node.matches(part.trim()))) return node
     return null
   }
   querySelectorAll(selector) { return findAll(this, node => node instanceof TestElement && node.matches(selector)) }
-  addEventListener(name, callback) {
-    const callbacks = this.listeners.get(name) ?? new Set()
-    callbacks.add(callback)
-    this.listeners.set(name, callbacks)
-  }
+  getRootNode() { return globalThis.document }
+  addEventListener(name, callback) { const callbacks = this.listeners.get(name) ?? new Set(); callbacks.add(callback); this.listeners.set(name, callbacks) }
   removeEventListener(name, callback) { this.listeners.get(name)?.delete(callback) }
   focus() { focusedInput = this }
   select() {}
@@ -79,165 +89,175 @@ class TestElement {
 class TestInputElement extends TestElement {}
 globalThis.Element = TestElement
 globalThis.HTMLInputElement = TestInputElement
+globalThis.Document = class { activeElement = null }
+globalThis.ShadowRoot = class {}
+globalThis.document = new Document()
 const renderer = vue.createRenderer({
   createElement: type => type === 'input' ? new TestInputElement(type) : new TestElement(type),
   createText: text => ({ text }), createComment: text => ({ text }),
-  setText(node, text) { node.text = text },
-  setElementText(node, text) { node.text = text; node.children = [] },
+  setText(node, text) { node.text = text }, setElementText(node, text) { node.text = text; node.children = [] },
   patchProp(node, key, _, value) { node.props[key] = value },
   parentNode: node => node.parent ?? null,
   nextSibling: node => node.parent?.children[node.parent.children.indexOf(node) + 1] ?? null,
   insert(node, parent, anchor = null) {
-    node.parent = parent
-    const index = anchor ? parent.children.indexOf(anchor) : -1
-    if (index < 0) parent.children.push(node)
-    else parent.children.splice(index, 0, node)
+    if (node.parent) node.parent.children.splice(node.parent.children.indexOf(node), 1)
+    node.parent = parent; const index = anchor ? parent.children.indexOf(anchor) : -1
+    if (index < 0) parent.children.push(node); else parent.children.splice(index, 0, node)
   },
   remove(node) { node.parent.children.splice(node.parent.children.indexOf(node), 1) },
 })
-function findAll(tree, predicate) {
-  return [...(predicate(tree) ? [tree] : []), ...(tree.children ?? []).flatMap(child => findAll(child, predicate))]
-}
+function findAll(tree, predicate) { return [...(predicate(tree) ? [tree] : []), ...(tree.children ?? []).flatMap(child => findAll(child, predicate))] }
 const ranges = tree => findAll(tree, node => node.type === 'input' && node.props.type === 'range')
+const byLabel = (tree, label) => findAll(tree, node => node.props?.['aria-label'] === label)[0]
 const rangeByLabel = (tree, label) => ranges(tree).find(node => node.props['aria-label'] === label)
-const valueByLabel = (tree, label) => findAll(tree, node => node.type === 'editable-value' && node.props.ariaLabel === label)[0]
+const button = (tree, text) => findAll(tree, node => node.type === 'button' && node.text === text)[0]
+const click = target => {
+  const event = { target, preventDefault() {}, stopPropagation() {} }
+  for (let node = target; node; node = node.parentElement) for (const listener of node.listeners.get('click') ?? []) listener(event)
+}
+const intervals = new Map()
+const originalSetInterval = globalThis.setInterval
+const originalClearInterval = globalThis.clearInterval
+globalThis.setInterval = (callback, milliseconds) => { const id = Symbol(); intervals.set(id, { callback, milliseconds }); return id }
+globalThis.clearInterval = id => intervals.delete(id)
+const editable = await component('../src/components/ui/EditableRangeValue.vue')
+components['./ui/EditableRangeValue.vue'] = { default: editable }
+components['@/components/ui/EditableRangeValue.vue'] = { default: editable }
+components['./DspNumberControl.vue'] = { default: await component('../src/components/settings/DspNumberControl.vue') }
+components['./DspFrequencyGraph.vue'] = { default: await component('../src/components/settings/DspFrequencyGraph.vue') }
 
 let details = 0
 const panelTree = { children: [] }
 const panelApp = renderer.createApp(await component('../src/components/AudioEffectsPanel.vue'), { onDetails: () => details++ })
 panelApp.mount(panelTree)
 try {
-  assert.equal(ranges(panelTree).length, 2, 'playback panel contains only speed and pitch sliders')
-  assert.equal(rangeByLabel(panelTree, 'player.playback_speed').props.min, '0.1')
-  assert.equal(rangeByLabel(panelTree, 'player.playback_speed').props.max, '4')
-  assert.equal(rangeByLabel(panelTree, 'player.pitch').props.min, '0.25')
-  assert.equal(rangeByLabel(panelTree, 'player.pitch').props.max, '2')
-  rangeByLabel(panelTree, 'player.playback_speed').props.onInput({ target: { value: '1.5' } })
-  assert.equal(player.playbackSpeed, 1.5)
-  assert.equal(player.playbackPitch, 1, 'speed adjustment preserves pitch')
+  assert.equal(ranges(panelTree).length, 2)
+  const quickSpeeds = findAll(panelTree, node => node.type === 'button' && node.closest('.audiofx-speed-grid'))
+  assert.deepEqual(quickSpeeds.map(node => Number(node.text.slice(0, -1))), [0.5, 0.75, 0.95, 1, 1.05, 1.25, 1.5, 2])
+  assert.ok(byLabel(panelTree, 'player.vinyl_effect'))
+  const quickPreset = findAll(panelTree, node => node.type === 'preset-select')[0]
+  assert.equal(quickPreset.props.options.length, 29)
+  assert.ok(quickPreset.props.options.every(option => option.value !== 'custom'))
   rangeByLabel(panelTree, 'player.pitch').props.onInput({ target: { value: '0.85' } })
-  assert.equal(player.playbackPitch, 0.85)
-  assert.equal(player.playbackSpeed, 1.5, 'pitch adjustment preserves speed')
-  const detailsButton = findAll(panelTree, node => node.type === 'button' && node.text === 'player.audio_effects_details')[0]
-  assert.ok(detailsButton, 'playback panel exposes detailed settings')
-  detailsButton.props.onClick()
-  assert.equal(details, 1)
-  findAll(panelTree, node => node.type === 'button' && node.text === 'player.reset_effects')[0].props.onClick()
-  assert.equal(player.playbackSpeed, 1)
-  assert.equal(player.playbackPitch, 1)
-  console.log('PASS basic playback controls, independent speed/pitch, details event and reset')
+  rangeByLabel(panelTree, 'player.playback_speed').props.onInput({ target: { value: '1.05' } })
+  byLabel(panelTree, 'player.vinyl_effect').props.onChange({ target: { checked: true } })
+  await vue.nextTick()
+  assert.equal(ranges(panelTree).length, 1, 'manual pitch is hidden while vinyl follows speed')
+  assert.equal(player.effectivePlaybackPitch(), 1.05)
+  assert.equal(player.playbackPitch, 0.85, 'vinyl keeps the independent pitch value')
+  byLabel(panelTree, 'player.vinyl_effect').props.onChange({ target: { checked: false } })
+  await vue.nextTick()
+  assert.equal(rangeByLabel(panelTree, 'player.pitch').props.value, 0.85)
+  quickPreset.props.onChoose('rock')
+  await vue.nextTick()
+  assert.equal(player.audioEffectsProfile.enabled, true)
+  assert.equal(player.audioEffectsProfile.presetId, 'rock')
+  player.updateAudioEffectsSound({ bassDb: 4 })
+  await vue.nextTick()
+  assert.equal(quickPreset.props.selectedLabel, 'dsp.manual')
+  player.updateAudioEffectsProfile({ presetId: 'user_deleted_on_another_output' })
+  await vue.nextTick()
+  assert.equal(quickPreset.props.selectedLabel, 'dsp.manual', 'missing or deleted preset IDs display the saved sound as manual')
+  button(panelTree, 'player.audio_effects_details').props.onClick(); assert.equal(details, 1)
+  button(panelTree, 'player.reset_effects').props.onClick(); assert.equal(player.playbackSpeed, 1)
+  console.log('PASS quick speed steps, vinyl pitch restore, preset activation and manual label')
 } finally { panelApp.unmount() }
 
-player.equalizerEnabled = true
 const detailTree = { children: [] }
 const detailApp = renderer.createApp(await component('../src/components/settings/AudioEffectsSettings.vue'))
 detailApp.mount(detailTree)
 try {
-  assert.equal(ranges(detailTree).length, 8, 'detailed settings expose speed, pitch, gain and all five EQ bands')
-  for (const range of ranges(detailTree)) assert.ok(range.props['aria-label'], 'every slider has a label')
-  valueByLabel(detailTree, 'player.pitch').props.onUpdateValue(1.25)
-  assert.equal(player.playbackPitch, 1.25)
-  assert.equal(player.playbackSpeed, 1)
-  valueByLabel(detailTree, 'player.playback_speed').props.onUpdateValue(4)
-  assert.equal(player.playbackSpeed, 4)
-  assert.equal(player.playbackPitch, 1.25)
-  valueByLabel(detailTree, 'player.loudness_gain').props.onUpdateValue(650)
-  assert.equal(player.loudnessGainMb, 650)
-  const band = ranges(detailTree).find(node => node.props['aria-label'].includes(':910'))
-  band.props.onInput({ target: { value: '-350' } })
-  assert.deepEqual([...player.equalizerBands], [0, 0, -350, 0, 0])
-  assert.equal(player.equalizerPresetId, 'custom')
-  assert.equal(settings.equalizerPresetId, 'custom')
+  await Promise.resolve(); await vue.nextTick()
+  assert.equal(ranges(detailTree).length, 47, 'all 29 DSP controls, 10 graphic EQ bands, 5 speaker controls and 3 playback controls are wired')
+  for (const range of ranges(detailTree)) assert.ok(range.props['aria-label'])
+  assert.equal(intervals.size, 1); assert.equal([...intervals.values()][0].milliseconds, 1000); assert.equal(statsCalls, 1)
+  rangeByLabel(detailTree, 'settings.audio_effects_band:125').props.onInput({ target: { value: '-3.5' } })
+  assert.deepEqual([...player.audioEffectsProfile.sound.equalizerBandsDb], [0, 0, -3.5, 0, 0, 0, 0, 0, 0, 0])
+  byLabel(detailTree, 'dsp.graphic_eq').props.onChange({ target: { checked: false } })
+  assert.equal(player.audioEffectsProfile.sound.equalizerBandsDb[2], -3.5, 'graphic EQ disable preserves saved gains')
+  byLabel(detailTree, 'dsp.graphic_eq').props.onChange({ target: { checked: true } })
+  rangeByLabel(detailTree, 'dsp.controls.preampDb').props.onInput({ target: { value: '-24' } })
+  assert.equal(player.audioEffectsProfile.sound.preampDb, -24)
+  rangeByLabel(detailTree, 'dsp.controls.virtualBass').props.onInput({ target: { value: '0.35' } })
+  assert.equal(player.audioEffectsProfile.sound.virtualBass, 0.35)
+  byLabel(detailTree, 'dsp.tone_section').props.onChange({ target: { checked: false } })
+  assert.equal(player.audioEffectsProfile.sound.virtualBass, 0.35, 'turning a section off preserves its parameters')
+  byLabel(detailTree, 'dsp.tone_section').props.onChange({ target: { checked: true } })
+  assert.equal(player.audioEffectsProfile.enabled, true)
   await vue.nextTick()
-  const presetSelect = findAll(detailTree, node => node.type === 'preset-select')[0]
-  presetSelect.props.onChoose('rock')
-  assert.equal(player.equalizerPresetId, 'rock')
-  findAll(detailTree, node => node.type === 'button' && node.text === 'player.reset_effects')[0].props.onClick()
-  assert.equal(player.playbackSpeed, 1)
-  assert.equal(player.playbackPitch, 1)
-  assert.equal(player.loudnessGainMb, 0)
-  assert.deepEqual([...player.equalizerBands], [0, 0, 0, 0, 0])
-  console.log('PASS detailed numeric input wiring, EQ customization, presets and reset')
-} finally { detailApp.unmount() }
-
-const rangeUtilities = {}
-new Function('exports', ts.transpileModule(await read('../src/utils/editableRange.ts'), {
-  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-}).outputText)(rangeUtilities)
-const realEditable = await component('../src/components/ui/EditableRangeValue.vue', {
-  '@/utils/editableRange': rangeUtilities,
-})
-const actualTree = { children: [] }
-const actualApp = renderer.createApp(await component('../src/components/settings/AudioEffectsSettings.vue', {
-  '@/components/ui/EditableRangeValue.vue': { default: realEditable },
-}))
-actualApp.mount(actualTree)
-try {
-  const eqBands = findAll(actualTree, node => node instanceof TestElement && node.matches('.effects-band'))
-  assert.equal(eqBands.length, 5)
-  const click = target => {
-    const event = { target, preventDefault() {}, stopPropagation() {} }
-    for (let node = target; node; node = node.parentElement) {
-      for (const listener of node.listeners.get('click') ?? []) listener(event)
-    }
+  button(detailTree, 'dsp.compare_original').props.onClick()
+  assert.equal(player.audioEffectsProfile.enabled, false, 'A/B comparison changes the master bypass')
+  assert.equal(player.audioEffectsProfile.sound.virtualBass, 0.35)
+  const addFilter = findAll(detailTree, node => node.type === 'button' && node.matches('.effects-add'))[0]
+  assert.ok(addFilter)
+  addFilter.props.onClick(); await vue.nextTick()
+  assert.equal(player.audioEffectsProfile.enabled, true, 'adding a PEQ filter activates the DSP master')
+  byLabel(detailTree, 'dsp.graphic_eq').props.onChange({ target: { checked: false } })
+  byLabel(detailTree, 'dsp.parametric_eq').props.onChange({ target: { checked: true } })
+  assert.equal(player.audioEffectsProfile.sound.equalizerEnabled, true, 'enabling PEQ also enables its containing EQ section')
+  rangeByLabel(detailTree, 'dsp.filter_frequency:1').props.onInput({ target: { value: '60' } })
+  rangeByLabel(detailTree, 'dsp.filter_gain:1').props.onInput({ target: { value: '4.5' } })
+  rangeByLabel(detailTree, 'dsp.filter_q:1').props.onInput({ target: { value: '0.8' } })
+  assert.deepEqual(vue.toRaw(player.audioEffectsProfile.sound.parametricBands[0]), { enabled: true, type: 'peak', frequencyHz: 60, gainDb: 4.5, q: 0.8 })
+  const filterType = findAll(detailTree, node => node.type === 'preset-select' && node.props.label === 'dsp.filter_type')[0]
+  assert.equal(filterType.props.options.length, 7)
+  filterType.props.onChoose('high_pass'); await vue.nextTick()
+  assert.equal(rangeByLabel(detailTree, 'dsp.filter_gain:1'), undefined, 'gain-free filter types hide irrelevant gain')
+  assert.equal(player.audioEffectsProfile.sound.parametricBands[0].gainDb, 4.5, 'filter changes preserve stored gain')
+  byLabel(detailTree, 'dsp.remove_filter:1').props.onClick(); await vue.nextTick()
+  assert.equal(player.audioEffectsProfile.sound.parametricBands.length, 0)
+  byLabel(detailTree, 'dsp.autoeq_text').props['onUpdate:modelValue']('Preamp: -4 dB\nFilter 1: ON PK Fc 100 Hz Gain 3 dB Q 1')
+  await vue.nextTick(); button(detailTree, 'dsp.apply_autoeq').props.onClick(); await vue.nextTick()
+  assert.equal(player.audioEffectsProfile.sound.preampDb, -4)
+  assert.equal(player.audioEffectsProfile.sound.parametricBands[0].frequencyHz, 100)
+  byLabel(detailTree, 'dsp.preset_name').props['onUpdate:modelValue'](' My headphones ')
+  await vue.nextTick(); button(detailTree, 'dsp.save_preset').props.onClick(); await vue.nextTick()
+  assert.equal(player.audioEffects.userPresets[0].name, 'My headphones')
+  const presets = findAll(detailTree, node => node.type === 'preset-select' && node.props.label === 'player.eq_preset')[0]
+  assert.equal(presets.props.options.length, 30)
+  presets.props.onChoose('user_test'); await vue.nextTick()
+  button(detailTree, 'dsp.export_preset').props.onClick(); await vue.nextTick()
+  assert.equal(JSON.parse(byLabel(detailTree, 'dsp.preset_json').value).name, 'Exported')
+  button(detailTree, 'dsp.import_preset').props.onClick(); assert.ok(calls.some(call => call[0] === 'import'))
+  button(detailTree, 'dsp.delete_preset').props.onClick(); await vue.nextTick(); assert.equal(player.audioEffects.userPresets.length, 0)
+  byLabel(detailTree, 'dsp.per_output').props.onChange({ target: { checked: true } }); assert.equal(player.audioEffects.perOutputEnabled, true)
+  byLabel(detailTree, 'dsp.auto_headroom').props.onChange({ target: { checked: false } }); assert.equal(player.audioEffects.autoHeadroom, false)
+  rangeByLabel(detailTree, 'dsp.speaker_controls.protectionHz').props.onInput({ target: { value: '140' } }); assert.equal(player.audioEffects.speaker.protectionHz, 140)
+  player.updateAudioEffectsProfile({ enabled: false })
+  byLabel(detailTree, 'dsp.speaker_section').props.onChange({ target: { checked: true } })
+  assert.equal(player.audioEffects.speaker.enabled, true)
+  assert.equal(player.audioEffectsProfile.enabled, true, 'speaker enable activates the DSP master')
+  const eqBands = findAll(detailTree, node => node instanceof TestElement && node.matches('.effects-band'))
+  assert.equal(eqBands.length, 10)
+  for (const card of findAll(detailTree, node => node instanceof TestElement && node.matches('.setting-card'))) {
+    assert.ok(findAll(card, node => node instanceof TestElement && node.matches('.editable-range-value')).length <= 1,
+      'every clickable setting card has at most one numeric editor')
   }
-  for (const [index, band] of eqBands.entries()) {
-    const frequencyLabel = findAll(band, node => node.type === 'span' && node.text?.includes('Hz'))[0]
-    click(frequencyLabel)
-    await vue.nextTick()
-    const editors = findAll(actualTree, node => node instanceof TestElement && node.matches('.editable-range-input'))
-    assert.equal(editors.length, 1, 'clicking an EQ frequency label opens exactly one real number editor')
-    assert.ok(band === editors[0].closest('.effects-band'), `band ${index} owns its editor`)
-    assert.equal(vue.toRaw(focusedInput), editors[0], 'the selected band keeps input focus')
-    editors[0].props.onKeydown({ key: 'Escape', preventDefault() {}, stopPropagation() {} })
-    await vue.nextTick()
-    assert.equal(findAll(actualTree, node => node instanceof TestElement && node.matches('.editable-range-input')).length, 0)
-    click(band)
-    await vue.nextTick()
-    assert.equal(findAll(actualTree, node => node instanceof TestElement && node.matches('.editable-range-input')).length, 1,
-      'clicking band whitespace opens only that band editor')
-    focusedInput.props.onKeydown({ key: 'Escape', preventDefault() {}, stopPropagation() {} })
-    await vue.nextTick()
+  for (const band of eqBands) {
+    click(findAll(band, node => node.props?.class === 'setting-title')[0]); await vue.nextTick()
+    const editors = findAll(detailTree, node => node instanceof TestElement && node.matches('.editable-range-input'))
+    assert.equal(editors.length, 1, 'a label opens only its own number editor')
+    assert.equal(editors[0].closest('.setting-card'), band)
+    assert.equal(vue.toRaw(focusedInput), editors[0])
+    editors[0].props.onKeydown({ key: 'Escape', preventDefault() {}, stopPropagation() {} }); await vue.nextTick()
   }
-  const presetTitle = findAll(actualTree, node => node.text === 'player.eq_preset')[0]
-  click(presetTitle)
-  await vue.nextTick()
-  assert.equal(findAll(actualTree, node => node instanceof TestElement && node.matches('.editable-range-input')).length, 0,
-    'clicking the EQ preset card does not open frequency editors')
-  console.log('PASS real EQ number editors have independent card click and focus scopes')
-} finally { actualApp.unmount() }
+  console.log('PASS full DSP parameter wiring, A/B, PEQ, AutoEQ, named presets, per-output settings and independent real editors')
+} finally { detailApp.unmount(); assert.equal(intervals.size, 0, 'detail unmount clears stats polling'); globalThis.setInterval = originalSetInterval; globalThis.clearInterval = originalClearInterval }
 
 const nowPlaying = await read('../src/components/NowPlaying.vue')
-assert.equal([...nowPlaying.matchAll(/<AudioEffectsPanel[^>]+@details="openAudioEffectsSettings"/g)].length, 2,
-  'toolbar and more panel share the detailed settings action')
 const functionSource = nowPlaying.match(/function openAudioEffectsSettings\(\)[^{]*\{([\s\S]*?)\n\}/)?.[1]
-assert.ok(functionSource, 'detailed settings navigation is defined')
-const pushed = []
-const emitted = []
-const popover = { value: true }
-const sheet = { value: true }
-await new Function('showAudioFxPanel', 'showMoreSheet', 'router', 'emit', functionSource)(
-  popover, sheet, { push: path => { pushed.push(path); return Promise.resolve() } }, event => emitted.push(event),
-)
+const pushed = [], emitted = [], popover = { value: true }, sheet = { value: true }
+await new Function('showAudioFxPanel', 'showMoreSheet', 'router', 'emit', functionSource)(popover, sheet, { push: path => { pushed.push(path); return Promise.resolve() } }, event => emitted.push(event))
 await Promise.resolve()
-assert.equal(popover.value, false)
-assert.equal(sheet.value, false)
-assert.deepEqual(pushed, ['/settings?section=audio_effects'])
-assert.deepEqual(emitted, ['collapse'])
-const view = await read('../src/views/SettingsView.vue')
-assert.match(view, /\| 'audio_effects'/)
-assert.match(view, /id: 'audio_effects'/)
-assert.match(view, /audio_effects: \[\]/)
-assert.match(view, /data-section="audio_effects"[\s\S]*?<AudioEffectsSettings/)
+assert.equal(popover.value, false); assert.equal(sheet.value, false); assert.deepEqual(pushed, ['/settings?section=audio_effects']); assert.deepEqual(emitted, ['collapse'])
 const index = await read('../src/modules/settings/searchIndex.ts')
-for (const key of ['player.playback_speed', 'player.pitch', 'player.loudness_gain', 'player.equalizer', 'player.eq_preset', 'player.reset_effects']) {
-  assert.ok(index.includes(`section: 'audio_effects', title: '${key}'`), `${key} is searchable in the audio effects section`)
-}
+for (const key of ['player.playback_speed', 'player.pitch', 'player.vinyl_effect', 'dsp.autoeq', 'dsp.per_output', ...model.SOUND_CONTROLS.map(control => `dsp.controls.${control.key}`)]) assert.ok(index.includes(`title: '${key}'`), `${key} is searchable`)
 for (const locale of ['zh-CN', 'zh-TW', 'en', 'ja']) {
   const messages = JSON.parse(await read(`../src/i18n/${locale}.json`))
-  for (const key of ['audio_effects_details', 'eq_club', 'eq_folk']) assert.ok(messages.player[key], `${locale} player.${key}`)
-  for (const key of ['audio_effects_section', 'audio_effects_desc', 'audio_effects_speed_desc', 'audio_effects_pitch_desc', 'audio_effects_gain_desc', 'audio_effects_eq_desc', 'audio_effects_band']) {
-    assert.ok(messages.settings[key], `${locale} settings.${key}`)
-  }
+  assert.ok(messages.player.vinyl_effect)
+  assert.ok(messages.dsp.preset_limit)
+  for (const preset of model.AUDIO_EFFECT_PRESETS) assert.ok(messages.dsp.presets[preset.id], `${locale} preset ${preset.id}`)
+  for (const control of model.SOUND_CONTROLS) { assert.ok(messages.dsp.controls[control.key]); assert.ok(messages.dsp.help[control.key]) }
+  for (const type of ['peak', 'low_shelf', 'high_shelf', 'low_pass', 'high_pass', 'notch', 'band_pass']) assert.ok(messages.dsp.filters[type])
 }
-console.log('PASS detailed settings navigation, searchable controls and four-language coverage')
+console.log('PASS settings navigation, full parameter search and four-language DSP coverage')

@@ -12,3 +12,5 @@ pub mod player;
 pub mod queue;
 pub mod remote;
 pub mod stretch;
+pub mod dsp;
+pub mod dsp_settings;

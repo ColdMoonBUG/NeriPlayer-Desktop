@@ -33,7 +33,24 @@ fn main() {
     println!("cargo:warning=NeriPlayer build metadata: uuid={uuid} version={build_version}");
 
     build_ffmpeg_shim();
+    build_native_dsp();
     tauri_build::try_build(tauri_attributes()).expect("tauri-build failed");
+}
+
+fn build_native_dsp() {
+    println!("cargo:rerun-if-changed=native/dsp");
+    let mut build = cc::Build::new();
+    build.cpp(true).include("native");
+    for source in ["engine", "primitives", "filter_stages", "space_stages", "dynamics_stages", "bridge"] {
+        build.file(format!("native/dsp/neri_dsp_{source}.cpp"));
+    }
+    build.file("native/dsp/tests/host_test_bridge.cpp");
+    if build.get_compiler().is_like_msvc() {
+        build.flag("/std:c++17").flag("/utf-8").flag("/EHsc");
+    } else {
+        build.flag("-std=c++17");
+    }
+    build.compile("neri_dsp");
 }
 
 /// 托盘与菜单引入了只有 Common Controls v6 才导出的函数。tauri-build 只给应用本体嵌清单，

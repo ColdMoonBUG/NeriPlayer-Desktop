@@ -57,6 +57,7 @@ const DENORMAL_FLOOR: f64 = 1e-30;
 pub struct EffectsSettings {
     /// 独立音调比例，25～200 表示 0.25～2.0
     pub pitch_centi: i32,
+    pub vinyl_effect_enabled: bool,
     /// 响度增益，0～1500 mB（0～+15 dB）
     pub loudness_gain_mb: i32,
     pub eq_enabled: bool,
@@ -72,6 +73,7 @@ impl Default for EffectsSettings {
     fn default() -> Self {
         Self {
             pitch_centi: 100,
+            vinyl_effect_enabled: false,
             loudness_gain_mb: 0,
             eq_enabled: false,
             eq_band_levels_mb: [0; EQ_BANDS],
@@ -82,6 +84,9 @@ impl Default for EffectsSettings {
 }
 
 impl EffectsSettings {
+    pub fn effective_pitch(&self, speed: f32) -> f32 {
+        if self.vinyl_effect_enabled { speed } else { self.pitch_centi as f32 / 100.0 }
+    }
     /// 「重置音效」之后的设置：清掉响度增益和均衡器
     ///
     /// 音量均衡和声道平衡是设置页里的独立设置，前端重置音效时不会重新下发它们，
@@ -126,6 +131,8 @@ pub struct EffectsControl {
     writer: Mutex<()>,
     version: AtomicU64,
     pitch_centi: AtomicI32,
+    vinyl_effect_enabled: AtomicBool,
+    pub dsp: Arc<crate::audio::dsp::DspControl>,
     loudness_gain_mb: AtomicI32,
     eq_enabled: AtomicBool,
     eq_band_levels_mb: [AtomicI32; EQ_BANDS],
@@ -139,6 +146,8 @@ impl EffectsControl {
             writer: Mutex::new(()),
             version: AtomicU64::new(0),
             pitch_centi: AtomicI32::new(100),
+            vinyl_effect_enabled: AtomicBool::new(false),
+            dsp: crate::audio::dsp::DspControl::new_shared(),
             loudness_gain_mb: AtomicI32::new(0),
             eq_enabled: AtomicBool::new(false),
             eq_band_levels_mb: std::array::from_fn(|_| AtomicI32::new(0)),
@@ -150,6 +159,7 @@ impl EffectsControl {
     pub fn snapshot(&self) -> EffectsSettings {
         EffectsSettings {
             pitch_centi: self.pitch_centi.load(Ordering::Relaxed),
+            vinyl_effect_enabled: self.vinyl_effect_enabled.load(Ordering::Relaxed),
             loudness_gain_mb: self.loudness_gain_mb.load(Ordering::Relaxed),
             eq_enabled: self.eq_enabled.load(Ordering::Relaxed),
             eq_band_levels_mb: std::array::from_fn(|band| {
@@ -169,6 +179,7 @@ impl EffectsControl {
         change(&mut settings);
         let settings = settings.clamped();
         self.pitch_centi.store(settings.pitch_centi, Ordering::Relaxed);
+        self.vinyl_effect_enabled.store(settings.vinyl_effect_enabled, Ordering::Relaxed);
         self.loudness_gain_mb
             .store(settings.loudness_gain_mb, Ordering::Relaxed);
         self.eq_enabled.store(settings.eq_enabled, Ordering::Relaxed);
@@ -954,6 +965,16 @@ pub fn gain_to_millibels(gain: f64) -> i64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn vinyl_follows_speed_without_overwriting_independent_pitch() {
+        let control = super::EffectsControl::new_shared();
+        control.update(|settings| settings.pitch_centi = 85);
+        control.update(|settings| settings.vinyl_effect_enabled = true);
+        for speed in [0.1, 0.95, 1.05, 4.0] { assert_eq!(control.snapshot().effective_pitch(speed), speed); }
+        assert_eq!(control.snapshot().pitch_centi, 85);
+        control.update(|settings| settings.vinyl_effect_enabled = false);
+        assert_eq!(control.snapshot().effective_pitch(1.05), 0.85);
+    }
     use super::*;
 
     const RATE: u32 = 48_000;

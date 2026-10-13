@@ -1,14 +1,20 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { EQ_PRESETS, usePlayerStore } from '@/stores/player'
+import { usePlayerStore } from '@/stores/player'
+import { AUDIO_EFFECT_PRESETS } from '@/modules/audioEffects/model'
 import CustomSelect from './ui/CustomSelect.vue'
 import EditableRangeValue from './ui/EditableRangeValue.vue'
 
 const emit = defineEmits<{ details: [] }>()
 const player = usePlayerStore()
 const { t } = useI18n()
-const SPEED_PRESETS = [0.5, 0.75, 1, 1.25, 1.5, 2]
-const eqPresetIds = Object.keys(EQ_PRESETS)
+const SPEED_PRESETS = [0.5, 0.75, 0.95, 1, 1.05, 1.25, 1.5, 2]
+const presetOptions = computed(() => [
+  ...AUDIO_EFFECT_PRESETS.filter(preset => preset.id !== 'custom').map(preset => ({ value: preset.id, label: t(`dsp.presets.${preset.id}`) })),
+  ...player.audioEffects.userPresets.map(preset => ({ value: preset.id, label: preset.name })),
+])
+const presetLabel = computed(() => presetOptions.value.some(option => option.value === player.audioEffectsProfile.presetId) ? undefined : t('dsp.manual'))
 </script>
 
 <template>
@@ -32,7 +38,7 @@ const eqPresetIds = Object.keys(EQ_PRESETS)
       </div>
     </div>
 
-    <div class="audiofx-section">
+    <div v-if="!player.vinylEffectEnabled" class="audiofx-section">
       <div class="audiofx-section-header">{{ t('player.pitch') }}</div>
       <div class="audiofx-slider-row">
         <span class="audiofx-slider-label">0.25x</span>
@@ -48,16 +54,16 @@ const eqPresetIds = Object.keys(EQ_PRESETS)
 
     <div class="audiofx-section">
       <div class="audiofx-section-header">
-        {{ t('player.equalizer') }}
+        {{ t('player.vinyl_effect') }}
         <label class="audiofx-toggle">
-          <input type="checkbox" :checked="player.equalizerEnabled" :aria-label="t('player.equalizer')"
-            @change="player.setEqualizer(($event.target as HTMLInputElement).checked, player.equalizerBands)" />
+          <input type="checkbox" :checked="player.vinylEffectEnabled" :aria-label="t('player.vinyl_effect')"
+            @change="player.setVinylEffect(($event.target as HTMLInputElement).checked)" />
           <span class="audiofx-toggle-slider"></span>
         </label>
       </div>
-      <CustomSelect surface="dark" :model-value="player.equalizerPresetId" :label="t('player.eq_preset')"
-        :options="eqPresetIds.map(id => ({ value: id, label: t('player.eq_' + id) }))"
-        @update:model-value="player.setEqualizerPreset($event)" />
+      <p v-if="player.vinylEffectEnabled" class="audiofx-help">{{ t('dsp.vinyl_following', { value: player.effectivePlaybackPitch().toFixed(2) }) }}</p>
+      <CustomSelect surface="dark" :model-value="player.audioEffectsProfile.presetId" :selected-label="presetLabel" :label="t('player.eq_preset')"
+        :options="presetOptions" @update:model-value="player.setAudioEffectsPreset($event)" />
     </div>
 
     <button class="speed-option audiofx-details" @click="emit('details')">{{ t('player.audio_effects_details') }}</button>
@@ -77,7 +83,8 @@ const eqPresetIds = Object.keys(EQ_PRESETS)
   font-size: 12px;
   font-weight: 600;
 }
-.audiofx-speed-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+.audiofx-speed-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+.audiofx-help { margin: 0; color: rgba(255, 255, 255, 0.6); font-size: 11px; line-height: 1.5; }
 .speed-option {
   padding: 7px 10px;
   border: none;

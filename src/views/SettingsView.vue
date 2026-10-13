@@ -1894,7 +1894,7 @@ useEscapeClose(
 
     <!-- 详细音效 -->
         <div v-show="activeSettingsSection === 'audio_effects'" class="settings-section-panel" data-section="audio_effects">
-          <AudioEffectsSettings />
+          <AudioEffectsSettings v-if="activeSettingsSection === 'audio_effects'" />
         </div>
 
     <!-- 播放 -->

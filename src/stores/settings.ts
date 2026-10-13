@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { createLogger } from '@/utils/logger'
 import { normalizeDesktopLyricsStyle, sanitizeFontFamily, type DesktopLyricsStyle } from '@/modules/desktopLyrics/style'
 import { normalizeShortcutBindings, type ShortcutBindings } from '@/modules/shortcuts/bindings'
+import { migrateLegacyAudioEffects, normalizeAudioEffectsSettings, type AudioEffectsSettings } from '@/modules/audioEffects/model'
 
 const log = createLogger('settings')
 
@@ -122,6 +123,8 @@ export interface AppSettings {
   audioOutputDevice: string
   playbackSpeed: number
   playbackPitch: number
+  vinylEffectEnabled: boolean
+  audioEffects: AudioEffectsSettings
   loudnessGainMb: number
   equalizerEnabled: boolean
   equalizerPresetId: string
@@ -265,6 +268,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   audioOutputDevice: '',
   playbackSpeed: 1,
   playbackPitch: 1,
+  vinylEffectEnabled: false,
+  audioEffects: normalizeAudioEffectsSettings(undefined),
   loudnessGainMb: 0,
   equalizerEnabled: false,
   equalizerPresetId: 'flat',
@@ -350,6 +355,8 @@ const LEGACY_KEYS: Partial<Record<SettingKey, string>> = {
   ltShareAudioLinks: 'lt_share_audio_links',
   playbackSpeed: 'playback_speed',
   playbackPitch: 'playback_pitch',
+  vinylEffectEnabled: 'vinyl_effect_enabled',
+  audioEffects: 'audio_effects',
   loudnessGainMb: 'loudness_gain_mb',
   equalizerEnabled: 'equalizer_enabled',
   equalizerPresetId: 'equalizer_preset_id',
@@ -513,6 +520,12 @@ function normalizeSnapshot(input: unknown): AppSettings {
   result.volumeBalance = normalizeVolumeBalance(result.volumeBalance)
   result.equalizerBands = result.equalizerBands.slice(0, 5).map(value => clamp(Math.round(value), -1500, 1500))
   while (result.equalizerBands.length < 5) result.equalizerBands.push(0)
+  const effects = source.audioEffects as { version?: unknown } | undefined
+  result.audioEffects = !Object.prototype.hasOwnProperty.call(source, 'audioEffects') || effects?.version === 0
+    ? migrateLegacyAudioEffects(result)
+    : normalizeAudioEffectsSettings(source.audioEffects)
+  // 旧 EQ 已转入 native DSP，关闭旧开关避免两套滤波器叠加
+  result.equalizerEnabled = false
   result.desktopLyrics = normalizeDesktopLyricsStyle(result.desktopLyrics)
   result.shortcutBindings = normalizeShortcutBindings(result.shortcutBindings)
   return result
@@ -688,6 +701,8 @@ export const useSettingsStore = defineStore('settings', () => {
   const audioOutputDevice = ref(initial.audioOutputDevice)
   const playbackSpeed = ref(initial.playbackSpeed)
   const playbackPitch = ref(initial.playbackPitch)
+  const vinylEffectEnabled = ref(initial.vinylEffectEnabled)
+  const audioEffects = ref(initial.audioEffects)
   const loudnessGainMb = ref(initial.loudnessGainMb)
   const equalizerEnabled = ref(initial.equalizerEnabled)
   const equalizerPresetId = ref(initial.equalizerPresetId)
@@ -718,7 +733,7 @@ export const useSettingsStore = defineStore('settings', () => {
     downloadFollowPlaybackQuality, downloadNeteaseQuality, downloadQqMusicQuality,
     downloadYoutubeQuality, downloadBiliQuality,
     ltAllowMemberControl, ltAutoPauseOnMemberChange, ltShareAudioLinks, volume, audioOutputDevice,
-    playbackSpeed, playbackPitch, loudnessGainMb, equalizerEnabled, equalizerPresetId,
+    playbackSpeed, playbackPitch, vinylEffectEnabled, audioEffects, loudnessGainMb, equalizerEnabled, equalizerPresetId,
     equalizerBands, desktopLyrics, showMenuBarLyrics, shortcutBindings, globalShortcutsEnabled,
   }
 
@@ -815,7 +830,7 @@ export const useSettingsStore = defineStore('settings', () => {
     downloadParallelism, downloadAutoFillMetadata, downloadEmbedLyrics,
     downloadFollowPlaybackQuality, downloadNeteaseQuality, downloadQqMusicQuality,
     downloadYoutubeQuality, downloadBiliQuality,
-    ltAutoPauseOnMemberChange, ltShareAudioLinks, volume, audioOutputDevice, playbackSpeed, playbackPitch,
+    ltAutoPauseOnMemberChange, ltShareAudioLinks, volume, audioOutputDevice, playbackSpeed, playbackPitch, vinylEffectEnabled, audioEffects,
     loudnessGainMb, equalizerEnabled, equalizerPresetId, equalizerBands, desktopLyrics, showMenuBarLyrics,
     shortcutBindings, globalShortcutsEnabled,
   }

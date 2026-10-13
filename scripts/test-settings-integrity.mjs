@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises'
 import ts from 'typescript'
 import * as pinia from 'pinia'
 import * as vue from 'vue'
+import { loadAudioEffectsModel } from './audio-effects-model-loader.mjs'
 
 const read = path => readFile(new URL(path, import.meta.url), 'utf8')
 const storage = new Map()
@@ -43,6 +44,7 @@ function load(source, dependencies = {}) {
 }
 
 const settingsModule = load(await read('../src/stores/settings.ts'), {
+  '@/modules/audioEffects/model': await loadAudioEffectsModel(),
   pinia,
   vue,
   '@tauri-apps/api/core': bridge,
