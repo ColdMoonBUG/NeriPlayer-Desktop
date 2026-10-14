@@ -385,11 +385,11 @@ onUnmounted(() => {
 }
 
 .tb-title {
-  font-family: var(--font-display);
+  font-family: var(--font-family);
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 700;
   color: inherit;
-  letter-spacing: 0.3px;
+  letter-spacing: 0.2px;
   pointer-events: none;
   opacity: 0.85;
 }
