@@ -54,6 +54,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
   { section: 'audio_effects', title: 'dsp.parametric_eq', keywords: ["PEQ","参数均衡","滤波器","frequency","Q","filter"] },
   { section: 'audio_effects', title: 'dsp.graphic_eq', desc: 'settings.audio_effects_eq_desc', keywords: ['前级', '均衡器分区', 'EQ', 'preamp', 'PEQ'] },
   { section: 'audio_effects', title: 'dsp.autoeq', keywords: ["AutoEQ","Equalizer APO","耳机","headphone","校正","correction"] },
+  { section: 'audio_effects', title: 'dsp.transfer.title', desc: 'dsp.transfer.help', keywords: ["Android","导入","导出","分享码","备份","import","export","share"] },
   { section: 'audio_effects', title: 'dsp.preset_section', keywords: ["预设","preset","导入","import","export","导出"] },
   { section: 'audio_effects', title: 'dsp.tone_section', keywords: ["tone","音色"] },
   { section: 'audio_effects', title: 'dsp.space_section', keywords: ["声场","空间","space","stereo"] },

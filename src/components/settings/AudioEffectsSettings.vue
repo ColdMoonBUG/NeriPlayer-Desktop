@@ -24,8 +24,8 @@ const commonPresets = ['flat', 'pop', 'vocal_boost', 'bass_boost', 'warm', 'live
 const presetOptions = computed(() => [
   ...AUDIO_EFFECT_PRESETS.filter(preset => preset.id !== 'custom' && (category.value === 'all'
     || (category.value === 'common' ? commonPresets.includes(preset.id) : preset.category === category.value)))
-    .map(preset => ({ value: preset.id, label: t(`dsp.presets.${preset.id}`), description: t(`dsp.preset_notes.${preset.id}`) })),
-  ...(category.value === 'all' || category.value === 'user' ? player.audioEffects.userPresets.map(preset => ({ value: preset.id, label: preset.name, description: t('dsp.user_preset_note') })) : []),
+    .map(preset => ({ value: preset.id, label: t(`dsp.presets.${preset.id}`), description: t(`dsp.preset_notes.${preset.id}`), user: false })),
+  ...(category.value === 'all' || category.value === 'user' ? player.audioEffects.userPresets.map(preset => ({ value: preset.id, label: preset.name, description: '', user: true })) : []),
 ])
 const presetLabel = computed(() => {
   const id = player.audioEffectsProfile.presetId
@@ -52,10 +52,14 @@ async function revealSetting(title: string) {
 }
 defineExpose({ revealSetting })
 const presetName = ref('')
-const presetText = ref('')
+const pasteOpen = ref(false)
+const pasteText = ref('')
+const copied = ref(false)
 const autoEqText = ref('')
-const feedback = ref('')
-const feedbackError = ref(false)
+const presetStatus = ref<{ text: string, error: boolean } | null>(null)
+const autoEqStatus = ref<{ text: string, error: boolean } | null>(null)
+let presetStatusTimer: ReturnType<typeof setTimeout> | undefined
+let copiedTimer: ReturnType<typeof setTimeout> | undefined
 const peqTypes = ['peak', 'low_shelf', 'high_shelf', 'low_pass', 'high_pass', 'notch', 'band_pass']
 const sections = ['tone', 'space', 'dynamics'] as const
 const soundSwitches = { space: ['mono', 'swapChannels'], dynamics: ['compressorEnabled', 'limiterEnabled'], tone: [] } as const
@@ -93,7 +97,7 @@ async function refreshStats() {
   } finally { statsPending = false }
 }
 onMounted(() => { mounted = true; void refreshStats(); statsTimer = setInterval(() => void refreshStats(), 1000) })
-onUnmounted(() => { mounted = false; clearInterval(statsTimer) })
+onUnmounted(() => { mounted = false; clearInterval(statsTimer); clearTimeout(presetStatusTimer); clearTimeout(copiedTimer) })
 
 function changeSound(key: keyof AudioEffectsSound, value: number | boolean) {
   player.updateAudioEffectsSound({ [key]: value })
@@ -132,36 +136,56 @@ function setRate(key: 'speed' | 'pitch', value: number) {
   if (key === 'speed') player.setSpeed(value)
   else player.setPitch(value)
 }
-function report(message: string, error = false) { feedback.value = message; feedbackError.value = error }
+const errorText = (error: unknown) => error instanceof Error ? error.message : String(error)
+function showPresetStatus(text: string, error = false) {
+  presetStatus.value = { text, error }
+  clearTimeout(presetStatusTimer)
+  if (!error) presetStatusTimer = setTimeout(() => { presetStatus.value = null }, 4000)
+}
 function savePreset() {
-  try { player.saveAudioEffectsPreset(presetName.value.trim()); presetName.value = ''; category.value = 'user'; report(t('dsp.saved')) }
-  catch (error) { report(String(error), true) }
+  try { player.saveAudioEffectsPreset(presetName.value.trim()); presetName.value = ''; category.value = 'user'; presetStatus.value = null }
+  catch (error) { showPresetStatus(errorText(error), true) }
 }
-function importPreset() {
-  try { player.importAudioEffectsPreset(presetText.value); report(t('dsp.imported')) }
-  catch (error) { report(String(error), true) }
+function runImport(text: string) {
+  try {
+    const result = player.importAudioEffectsPreset(text)
+    pasteOpen.value = false
+    pasteText.value = ''
+    if (result.addedPresets > 0) category.value = 'user'
+    showPresetStatus(result.kind === 'settings'
+      ? t('dsp.transfer.imported_settings', { count: result.addedPresets })
+      : t('dsp.transfer.imported_profile', { name: result.name || t('dsp.manual') }))
+  } catch (error) { showPresetStatus(errorText(error), true) }
 }
-function exportPreset() {
-  try { presetText.value = player.exportAudioEffectsPreset(currentUserPreset.value?.id); report(t('dsp.exported')) }
-  catch (error) { report(String(error), true) }
+async function readFileText(event: Event): Promise<string | null> {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return null
+  if (file.size > 1024 * 1024) throw new Error(t('dsp.file_too_large'))
+  return file.text()
+}
+async function importPresetFile(event: Event) {
+  try { const text = await readFileText(event); if (text !== null) runImport(text) }
+  catch (error) { showPresetStatus(errorText(error), true) }
+}
+async function copyShareCode() {
+  try {
+    await navigator.clipboard.writeText(player.exportAudioEffectsPreset(currentUserPreset.value?.id))
+    copied.value = true
+    clearTimeout(copiedTimer)
+    copiedTimer = setTimeout(() => { copied.value = false }, 2000)
+  } catch (error) { showPresetStatus(errorText(error), true) }
 }
 function importAutoEq() {
   try {
     const result = player.importAutoEq(autoEqText.value)
-    report([t('dsp.autoeq_result', { imported: result.imported, skipped: result.skipped }), ...result.warnings].join(' '))
-  } catch (error) { report(String(error), true) }
+    autoEqStatus.value = { text: [t('dsp.autoeq_result', { imported: result.imported, skipped: result.skipped }), ...result.warnings].join(' '), error: false }
+  } catch (error) { autoEqStatus.value = { text: errorText(error), error: true } }
 }
-async function readImportFile(event: Event, target: 'preset' | 'autoeq') {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  if (!file) return
-  try {
-    if (file.size > 1024 * 1024) throw new Error(t('dsp.file_too_large'))
-    const text = await file.text()
-    if (target === 'preset') presetText.value = text
-    else autoEqText.value = text
-  } catch (error) { report(String(error), true) }
-  finally { input.value = '' }
+async function readAutoEqFile(event: Event) {
+  try { const text = await readFileText(event); if (text !== null) autoEqText.value = text }
+  catch (error) { autoEqStatus.value = { text: errorText(error), error: true } }
 }
 </script>
 
@@ -185,21 +209,38 @@ async function readImportFile(event: Event, target: 'preset' | 'autoeq') {
       <div class="effects-content">
         <div class="effects-presets"><button v-for="item in categories" :key="item" :class="{ active: category === item }" :aria-pressed="category === item" @click="category = item">{{ t(`dsp.categories.${item}`) }}</button></div>
         <div class="effects-preset-grid" role="group" :aria-label="t('player.eq_preset')">
-          <button v-for="preset in presetOptions" :key="preset.value" class="effects-preset-card"
-            :class="{ active: player.audioEffectsProfile.presetId === preset.value }"
-            :aria-label="preset.label" :aria-pressed="player.audioEffectsProfile.presetId === preset.value"
-            @click="player.setAudioEffectsPreset(preset.value)"><strong>{{ preset.label }}</strong><span>{{ preset.description }}</span></button>
+          <div v-for="preset in presetOptions" :key="preset.value" class="effects-preset-item">
+            <button class="effects-preset-card"
+              :class="{ active: player.audioEffectsProfile.presetId === preset.value }"
+              :aria-label="preset.label" :aria-pressed="player.audioEffectsProfile.presetId === preset.value"
+              @click="player.setAudioEffectsPreset(preset.value)"><strong>{{ preset.label }}</strong><span v-if="preset.description">{{ preset.description }}</span></button>
+            <button v-if="preset.user" class="effects-preset-delete danger" :aria-label="`${t('dsp.delete_preset')} ${preset.label}`"
+              @click="player.deleteAudioEffectsPreset(preset.value)"><span class="material-symbols-rounded" aria-hidden="true">delete</span>{{ t('dsp.remove') }}</button>
+          </div>
         </div>
         <p v-if="!presetOptions.length" class="setting-desc">{{ t('dsp.no_user_presets') }}</p>
         <p class="setting-desc">{{ t('dsp.preset_help') }}</p>
         <div class="effects-toolbar"><input v-model="presetName" class="effects-text-input" maxlength="24" :placeholder="t('dsp.preset_name')" :aria-label="t('dsp.preset_name')" />
-          <button :disabled="!presetName.trim() || player.audioEffects.userPresets.length >= 50" @click="savePreset">{{ t('dsp.save_preset') }}</button>
-          <button v-if="currentUserPreset" class="danger" @click="player.deleteAudioEffectsPreset(currentUserPreset.id)">{{ t('dsp.delete_preset') }}</button></div>
-        <details class="effects-import"><summary>{{ t('dsp.preset_transfer') }}</summary>
-          <textarea v-model="presetText" :aria-label="t('dsp.preset_json')" :placeholder="t('dsp.preset_json')" spellcheck="false"></textarea>
-          <div class="effects-toolbar"><label class="file-button">{{ t('dsp.choose_file') }}<input type="file" accept=".json,application/json" @change="readImportFile($event, 'preset')" /></label>
-            <button :disabled="!presetText.trim()" @click="importPreset">{{ t('dsp.import_preset') }}</button><button @click="exportPreset">{{ t('dsp.export_preset') }}</button></div>
-        </details>
+          <button :disabled="!presetName.trim() || player.audioEffects.userPresets.length >= 50" @click="savePreset">{{ t('dsp.save_preset') }}</button></div>
+        <div class="effects-transfer">
+          <div class="effects-transfer-heading">
+            <div class="setting-title">{{ t('dsp.transfer.title') }}</div>
+            <div class="setting-desc">{{ t('dsp.transfer.help') }}</div>
+          </div>
+          <div class="effects-transfer-actions">
+            <label class="file-button"><span class="material-symbols-rounded" aria-hidden="true">upload_file</span>{{ t('dsp.transfer.from_file') }}
+              <input type="file" accept=".json,.txt,application/json,text/plain" :aria-label="t('dsp.transfer.from_file')" @change="importPresetFile" /></label>
+            <button :class="{ active: pasteOpen }" :aria-expanded="pasteOpen" @click="pasteOpen = !pasteOpen">
+              <span class="material-symbols-rounded" aria-hidden="true">content_paste</span>{{ t('dsp.transfer.paste') }}</button>
+            <button @click="copyShareCode"><span class="material-symbols-rounded" aria-hidden="true">{{ copied ? 'check' : 'content_copy' }}</span>{{ t(copied ? 'dsp.transfer.copied' : 'dsp.transfer.copy') }}</button>
+          </div>
+          <div v-if="pasteOpen" class="effects-paste">
+            <textarea v-model="pasteText" :aria-label="t('dsp.transfer.paste_placeholder')" :placeholder="t('dsp.transfer.paste_placeholder')" spellcheck="false"></textarea>
+            <div class="effects-toolbar"><button class="active" :disabled="!pasteText.trim()" @click="runImport(pasteText)">{{ t('dsp.transfer.import') }}</button>
+              <button @click="pasteOpen = false; pasteText = ''">{{ t('common.cancel') }}</button></div>
+          </div>
+          <p v-if="presetStatus" class="effects-status" :class="{ error: presetStatus.error }" role="status" aria-live="polite">{{ presetStatus.text }}</p>
+        </div>
       </div>
     </section>
 
@@ -249,7 +290,8 @@ async function readImportFile(event: Event, target: 'preset' | 'autoeq') {
         <button :disabled="sound.parametricBands.length >= 10" class="effects-add" @click="addPeq">{{ t('dsp.add_filter') }} ({{ sound.parametricBands.length }}/10)</button>
         <details class="effects-import"><summary class="setting-title">{{ t('dsp.autoeq') }}</summary><p class="setting-desc">{{ t('dsp.autoeq_help') }}</p>
           <textarea v-model="autoEqText" :aria-label="t('dsp.autoeq_text')" :placeholder="t('dsp.autoeq_text')" spellcheck="false"></textarea>
-          <div class="effects-toolbar"><label class="file-button">{{ t('dsp.choose_file') }}<input type="file" accept=".txt,.csv,text/plain,text/csv" @change="readImportFile($event, 'autoeq')" /></label><button :disabled="!autoEqText.trim()" @click="importAutoEq">{{ t('dsp.apply_autoeq') }}</button></div>
+          <div class="effects-toolbar"><label class="file-button">{{ t('dsp.choose_file') }}<input type="file" accept=".txt,.csv,text/plain,text/csv" @change="readAutoEqFile" /></label><button :disabled="!autoEqText.trim()" @click="importAutoEq">{{ t('dsp.apply_autoeq') }}</button></div>
+          <p v-if="autoEqStatus" class="effects-status" :class="{ error: autoEqStatus.error }" role="status" aria-live="polite">{{ autoEqStatus.text }}</p>
         </details>
       </div>
     </details>
@@ -312,7 +354,6 @@ async function readImportFile(event: Event, target: 'preset' | 'autoeq') {
         <div class="setting-card"><div class="setting-title">{{ t('player.reset_effects') }}</div><p class="setting-desc">{{ t('settings.audio_effects_reset_desc') }}</p><button class="danger" @click="player.resetAudioEffects()">{{ t('player.reset_effects') }}</button></div>
       </div>
     </details>
-    <p v-if="feedback" class="effects-feedback" :class="{ error: feedbackError }" role="status" aria-live="polite">{{ feedback }}</p>
   </div>
 </template>
 
@@ -375,7 +416,18 @@ textarea { display: block; box-sizing: border-box; width: 100%; min-height: 130p
 .effects-stats > span { display: inline-block; margin: 8px 10px 0 0; }
 .effects-stats-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
 .effects-stats-grid b { color: var(--md-on-surface); font-weight: 500; font-variant-numeric: tabular-nums; }
-.effects-feedback { position: sticky; bottom: 12px; margin: 12px 0 0; padding: 12px; border-radius: var(--radius-md); color: var(--md-on-primary-container); background: var(--md-primary-container); font-size: 12px; line-height: 1.5; }
-.effects-feedback.error { color: var(--md-on-error-container); background: var(--md-error-container); }
+.effects-preset-item { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.effects-preset-item .effects-preset-card { flex: 1; }
+.effects-preset-delete { display: inline-flex; align-items: center; justify-content: center; gap: 4px; padding: 5px 10px; }
+.effects-preset-delete .material-symbols-rounded { font-size: 16px; }
+.effects-transfer { display: flex; flex-direction: column; gap: 12px; padding: 14px; border-radius: var(--radius-md); background: var(--md-surface-container); }
+.effects-transfer-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.effects-transfer-actions > button, .effects-transfer-actions > .file-button { display: inline-flex; align-items: center; gap: 6px; }
+.effects-transfer-actions .material-symbols-rounded { font-size: 18px; }
+.effects-paste { display: flex; flex-direction: column; gap: 8px; animation: effects-reveal .2s ease-out; }
+.effects-paste textarea { min-height: 96px; margin: 0; }
+@keyframes effects-reveal { from { opacity: 0; transform: translateY(-4px); } }
+.effects-status { margin: 0; color: var(--md-primary); font-size: 12px; line-height: 1.5; animation: effects-reveal .2s ease-out; }
+.effects-status.error { color: var(--md-error); }
 @media (max-width: 680px) { .effects-grid, .effects-stats-grid { grid-template-columns: minmax(0, 1fr); } .effects-preset-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .effects-content { padding: 12px; } .effects-section-heading { flex-wrap: wrap; } }
 </style>

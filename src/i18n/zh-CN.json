@@ -664,6 +664,18 @@
     "eq_editor": {
       "graph": "均衡器频响曲线，可拖动调节",
       "hint": "在曲线上按住拖动即可调整，横向划过可连续修改多个频段；按住 Shift 精调 0.1 dB，双击归零"
+    },
+    "transfer": {
+      "title": "导入 / 导出",
+      "help": "可导入 Android 的配置备份文件（设置 → 备份与恢复）或预设分享码；复制的分享码在 Android 和其他电脑上都能直接导入",
+      "from_file": "从文件导入",
+      "paste": "粘贴分享码",
+      "paste_placeholder": "在这里粘贴分享码",
+      "import": "导入",
+      "copy": "复制分享码",
+      "copied": "已复制",
+      "imported_settings": "已导入 Android 音效，新增 {count} 个预设",
+      "imported_profile": "已导入：{name}"
     }
   },
   "player": {

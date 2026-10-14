@@ -664,6 +664,18 @@
     "eq_editor": {
       "graph": "等化器頻響曲線，可拖曳調整",
       "hint": "在曲線上按住拖曳即可調整，橫向劃過可連續修改多個頻段；按住 Shift 精調 0.1 dB，雙擊歸零"
+    },
+    "transfer": {
+      "title": "匯入 / 匯出",
+      "help": "可匯入 Android 的設定備份檔（設定 → 備份與還原）或預設分享碼；複製的分享碼在 Android 和其他電腦上都能直接匯入",
+      "from_file": "從檔案匯入",
+      "paste": "貼上分享碼",
+      "paste_placeholder": "在這裡貼上分享碼",
+      "import": "匯入",
+      "copy": "複製分享碼",
+      "copied": "已複製",
+      "imported_settings": "已匯入 Android 音效，新增 {count} 個預設",
+      "imported_profile": "已匯入：{name}"
     }
   },
   "player": {

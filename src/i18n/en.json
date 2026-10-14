@@ -664,6 +664,18 @@
     "eq_editor": {
       "graph": "Equalizer response curve, drag to adjust",
       "hint": "Press and drag on the curve to adjust; sweep sideways to shape several bands at once. Hold Shift for 0.1 dB steps, double-click to reset"
+    },
+    "transfer": {
+      "title": "Import / export",
+      "help": "Import an Android config backup (Settings → Backup & restore) or a preset share code. Copied share codes can be imported directly on Android and other computers",
+      "from_file": "Import from file",
+      "paste": "Paste share code",
+      "paste_placeholder": "Paste a share code here",
+      "import": "Import",
+      "copy": "Copy share code",
+      "copied": "Copied",
+      "imported_settings": "Android sound imported, {count} presets added",
+      "imported_profile": "Imported: {name}"
     }
   },
   "player": {
