@@ -173,7 +173,7 @@ const detailApp = renderer.createApp(await component('../src/components/settings
 detailApp.mount(detailTree)
 try {
   await Promise.resolve(); await vue.nextTick()
-  assert.equal(ranges(detailTree).length, 52, 'five listening controls and all 47 professional controls are wired')
+  assert.equal(ranges(detailTree).length, 53, 'five listening controls and all 48 professional controls are wired')
   const professional = findAll(detailTree, node => node instanceof TestElement && node.matches('.effects-professional'))[0]
   assert.equal(professional.style.display, 'none', 'technical controls start hidden in simple mode')
   assert.equal(findAll(detailTree, node => node.type === 'preset-select' && node.props.label === 'player.eq_preset').length, 0,

@@ -120,6 +120,7 @@ void Engine::rebuildStages() {
     graphicEq_.configure(context_, kGraphicBandCount);
     parametricEq_.configure(context_, kParametricBandCount);
     tone_.configure(context_, 2);
+    loudness_.configure(context_, 2);
     vocalClarity_.configure(context_, 3);
     virtualBass_.configure(context_);
     warmth_.configure(context_);
@@ -197,6 +198,15 @@ void Engine::applyParams() {
     tone_.setBand(1, FilterBandTarget{
         trebleDb != 0.0f, FilterType::HighShelf, clampf(p(kTrebleFrequencyHz), 1000.0f, 16000.0f), trebleDb, 0.707f
     });
+    // 增益随音量变化，由滤波器组逐块平滑过渡，拖动音量条不会产生咔哒声
+    const float loudnessBassDb = clampf(p(kLoudnessBassDb), 0.0f, 12.0f);
+    const float loudnessTrebleDb = clampf(p(kLoudnessTrebleDb), 0.0f, 6.0f);
+    loudness_.setBand(0, FilterBandTarget{
+        loudnessBassDb > 0.0f, FilterType::LowShelf, kLoudnessBassHz, loudnessBassDb, 0.707f
+    });
+    loudness_.setBand(1, FilterBandTarget{
+        loudnessTrebleDb > 0.0f, FilterType::HighShelf, kLoudnessTrebleHz, loudnessTrebleDb, 0.707f
+    });
     virtualBass_.setTargets(p(kVirtualBassAmount), p(kVirtualBassFrequencyHz));
     warmth_.setTargets(p(kWarmthAmount));
     exciter_.setTargets(p(kExciterAmount), p(kExciterFrequencyHz));
@@ -246,6 +256,7 @@ void Engine::resetStages() {
     graphicEq_.reset();
     parametricEq_.reset();
     tone_.reset();
+    loudness_.reset();
     vocalClarity_.reset();
     virtualBass_.reset();
     warmth_.reset();
@@ -265,6 +276,7 @@ void Engine::snapStages() {
     graphicEq_.snapToTargets();
     parametricEq_.snapToTargets();
     tone_.snapToTargets();
+    loudness_.snapToTargets();
     vocalClarity_.snapToTargets();
     virtualBass_.snapToTargets();
     warmth_.snapToTargets();
@@ -317,6 +329,7 @@ void Engine::runChain(int frames) {
     graphicEq_.process(left, right, frames);
     parametricEq_.process(left, right, frames);
     tone_.process(left, right, frames);
+    loudness_.process(left, right, frames);
     virtualBass_.process(left, right, frames);
     warmth_.process(left, right, frames);
     exciter_.process(left, right, frames);
@@ -498,7 +511,7 @@ int Engine::process(const uint8_t* input, uint8_t* output, size_t bytes) {
 int Engine::computeActiveMask() const {
     int mask = 0;
     if (graphicEq_.active() || parametricEq_.active()) mask |= kStageEqualizer;
-    if (tone_.active()) mask |= kStageTone;
+    if (tone_.active() || loudness_.active()) mask |= kStageTone;
     if (virtualBass_.active()) mask |= kStageBass;
     if (warmth_.active() || exciter_.active() || vocalClarity_.active()) mask |= kStageColor;
     if (stereo_.active() || crossfeed_.active()) mask |= kStageStereo;

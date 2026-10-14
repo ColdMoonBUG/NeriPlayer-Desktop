@@ -97,7 +97,7 @@ void neri_desktop_dsp_stats(void* pointer, NeriDesktopDspStats* output) noexcept
 }
 
 float neri_desktop_dsp_headroom(const float* p) noexcept {
-    std::array<BiquadCoefficients, 22> filters;
+    std::array<BiquadCoefficients, 24> filters;
     size_t count = 0;
     if (p[kGraphicEqEnabled] > 0.5f) {
         for (int band = 0; band < kGraphicBandCount; ++band) {
@@ -116,6 +116,8 @@ float neri_desktop_dsp_headroom(const float* p) noexcept {
     }
     if (p[kBassGainDb] != 0.0f) filters[count++] = designBiquad(FilterType::LowShelf, 48000.0, p[kBassFrequencyHz], p[kBassGainDb], 0.707);
     if (p[kTrebleGainDb] != 0.0f) filters[count++] = designBiquad(FilterType::HighShelf, 48000.0, p[kTrebleFrequencyHz], p[kTrebleGainDb], 0.707);
+    if (p[kLoudnessBassDb] > 0.0f) filters[count++] = designBiquad(FilterType::LowShelf, 48000.0, kLoudnessBassHz, p[kLoudnessBassDb], 0.707);
+    if (p[kLoudnessTrebleDb] > 0.0f) filters[count++] = designBiquad(FilterType::HighShelf, 48000.0, kLoudnessTrebleHz, p[kLoudnessTrebleDb], 0.707);
     double maxBoost = 0.0;
     for (int index = 0; index < 160; ++index) {
         const double frequency = std::exp(std::log(20.0) + (std::log(20000.0) - std::log(20.0)) * index / 159.0);

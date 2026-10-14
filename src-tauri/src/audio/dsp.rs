@@ -7,9 +7,9 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-// 固定对齐 Android c54884d 的 NeriDspParams 和 C++ neri_dsp_params.h
+// 前 104 项对齐 Android c54884d 的 NeriDspParams，之后是桌面扩展；与 C++ neri_dsp_params.h 一致
 pub(crate) mod params {
-    pub const COUNT: usize = 104;
+    pub const COUNT: usize = 106;
     pub const GRAPHIC_BAND_COUNT: usize = 10;
     pub const PARAMETRIC_BAND_COUNT: usize = 10;
     pub const PARAMETRIC_BAND_STRIDE: usize = 5;
@@ -64,6 +64,8 @@ pub(crate) mod params {
     pub const SPEAKER_LOUDNESS: usize = 101;
     pub const SPEAKER_CLARITY: usize = 102;
     pub const SPEAKER_STEREO_EXPAND: usize = 103;
+    pub const LOUDNESS_BASS_DB: usize = 104;
+    pub const LOUDNESS_TREBLE_DB: usize = 105;
 }
 
 use params::*;
@@ -125,7 +127,7 @@ extern "C" {
 }
 
 pub fn headroom(params: &[f32; PARAM_COUNT]) -> f32 {
-    // 参数经过 Rust 规整，C++ 只读取固定 104 项，计算发生在控制端
+    // 参数经过 Rust 规整，C++ 只读取固定 PARAM_COUNT 项，计算发生在控制端
     unsafe { neri_desktop_dsp_headroom(params.as_ptr()) }
 }
 
@@ -145,6 +147,8 @@ pub struct AudioEffectsStats {
 pub struct DspControl {
     settings: Mutex<AudioEffectsSettings>,
     output_device: Mutex<String>,
+    /// 播放器音量（线性），响度补偿据此计算
+    volume: AtomicU32,
     version: AtomicU64,
     params: [AtomicU32; PARAM_COUNT],
     requested_reason: AtomicU8,
@@ -165,6 +169,7 @@ impl DspControl {
         Arc::new(Self {
             settings: Mutex::new(AudioEffectsSettings::default()),
             output_device: Mutex::new(String::new()),
+            volume: AtomicU32::new(1.0f32.to_bits()),
             version: AtomicU64::new(0),
             params: std::array::from_fn(|index| AtomicU32::new(p[index].to_bits())),
             requested_reason: AtomicU8::new(1),
@@ -196,7 +201,7 @@ impl DspControl {
         } else {
             actual_output.as_str()
         };
-        let resolution = normalized.resolve(selected);
+        let resolution = normalized.resolve_with_volume(selected, self.volume());
         self.publish(resolution);
         *stored = normalized.clone();
         normalized
@@ -208,7 +213,29 @@ impl DspControl {
             .output_device
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = output_device.into();
-        self.publish(stored.resolve(output_device));
+        self.publish(stored.resolve_with_volume(output_device, self.volume()));
+    }
+
+    fn volume(&self) -> f32 {
+        f32::from_bits(self.volume.load(Ordering::Relaxed))
+    }
+
+    /// 只有当前配置用到响度补偿时才重新下发参数，拖动音量条不会白白打断其它模块的平滑
+    pub fn set_volume(&self, volume: f32) {
+        let volume = if volume.is_finite() { volume.clamp(0.0, 1.0) } else { 1.0 };
+        let previous = self.volume.swap(volume.to_bits(), Ordering::Relaxed);
+        if previous == volume.to_bits() {
+            return;
+        }
+        let stored = self.settings.lock().unwrap_or_else(PoisonError::into_inner);
+        let output = self
+            .output_device
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if stored.uses_loudness_compensation(&output) {
+            self.publish(stored.resolve_with_volume(&output, volume));
+        }
     }
 
     pub fn reset_preserving_user_presets(&self) {
@@ -528,17 +555,17 @@ mod tests {
         let engine = unsafe { neri_desktop_dsp_create(48_000, 2, params.as_ptr()) };
         assert!(!engine.is_null());
         assert_eq!(
-            unsafe { neri_desktop_dsp_set_params(engine, params.as_ptr(), 103) },
+            unsafe { neri_desktop_dsp_set_params(engine, params.as_ptr(), PARAM_COUNT as i32 - 1) },
             0
         );
         params[PREAMP_DB] = f32::NAN;
         assert_eq!(
-            unsafe { neri_desktop_dsp_set_params(engine, params.as_ptr(), 104) },
+            unsafe { neri_desktop_dsp_set_params(engine, params.as_ptr(), PARAM_COUNT as i32) },
             0
         );
         params[PREAMP_DB] = 0.0;
         assert_eq!(
-            unsafe { neri_desktop_dsp_set_params(engine, params.as_ptr(), 104) },
+            unsafe { neri_desktop_dsp_set_params(engine, params.as_ptr(), PARAM_COUNT as i32) },
             1
         );
         unsafe { neri_desktop_dsp_destroy(engine) };

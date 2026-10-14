@@ -17,12 +17,16 @@ export interface AudioEffectsSound {
   preampDb: number
   equalizerEnabled: boolean
   equalizerBandsDb: number[]
+  /** 补偿相邻频段的叠加，让实际频响经过每个滑块的数值；Android 没有这个字段，缺省按原样叠加 */
+  equalizerAccurate: boolean
   parametricEnabled: boolean
   parametricBands: ParametricEqBand[]
   bassDb: number
   bassFrequencyHz: number
   trebleDb: number
   trebleFrequencyHz: number
+  /** 播放器音量调低时按等响曲线补回低频和高频，0 为关闭 */
+  loudnessCompensation: number
   virtualBass: number
   virtualBassFrequencyHz: number
   warmth: number
@@ -95,12 +99,14 @@ export const DEFAULT_AUDIO_EFFECTS_SOUND: AudioEffectsSound = {
   preampDb: 0,
   equalizerEnabled: true,
   equalizerBandsDb: Array(10).fill(0),
+  equalizerAccurate: false,
   parametricEnabled: false,
   parametricBands: [],
   bassDb: 0,
   bassFrequencyHz: 100,
   trebleDb: 0,
   trebleFrequencyHz: 8000,
+  loudnessCompensation: 0,
   virtualBass: 0,
   virtualBassFrequencyHz: 100,
   warmth: 0,
@@ -159,6 +165,7 @@ export const SOUND_CONTROLS: SoundControl[] = [
   control('bassFrequencyHz', 'tone', 40, 250, 5, 'Hz'),
   control('trebleDb', 'tone', -12, 12, 0.5, 'dB'),
   control('trebleFrequencyHz', 'tone', 2000, 14000, 250, 'Hz'),
+  control('loudnessCompensation', 'tone', 0, 1, 0.05, 'percent'),
   control('virtualBass', 'tone', 0, 1, 0.05, 'percent'),
   control('virtualBassFrequencyHz', 'tone', 50, 200, 5, 'Hz'),
   control('warmth', 'tone', 0, 1, 0.05, 'percent'),
@@ -185,7 +192,7 @@ export const SOUND_CONTROLS: SoundControl[] = [
   control('limiterReleaseMs', 'dynamics', 20, 500, 10, 'ms'),
 ]
 
-const BOOLEAN_SOUND_KEYS = ['equalizerEnabled', 'parametricEnabled', 'mono', 'swapChannels',
+const BOOLEAN_SOUND_KEYS = ['equalizerEnabled', 'equalizerAccurate', 'parametricEnabled', 'mono', 'swapChannels',
   'compressorEnabled', 'limiterEnabled', 'toneEnabled', 'spaceEnabled', 'dynamicsEnabled'] as const
 const PARAMETRIC_TYPES: ParametricEqBandType[] = ['peak', 'low_shelf', 'high_shelf', 'low_pass', 'high_pass', 'notch', 'band_pass']
 const OUTPUT_PROFILE_LIMIT = 64
@@ -422,6 +429,7 @@ export function resetAudioEffectsSoundSection(sound: AudioEffectsSound, section:
     case 'equalizer':
       next.equalizerEnabled = true
       next.equalizerBandsDb = Array(10).fill(0)
+      next.equalizerAccurate = false
       next.parametricEnabled = false
       next.parametricBands = []
       break
@@ -465,10 +473,10 @@ const APO_TYPES: Record<string, ParametricEqBandType> = {
 }
 const NUMBER_TOKEN = '[-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][-+]?\\d+)?'
 
-function importText(text: string): string {
+function importText(text: string, limit = IMPORT_TEXT_LIMIT): string {
   if (typeof text !== 'string' || !text.trim()) throw new Error('导入内容为空')
-  if (text.length > IMPORT_TEXT_LIMIT || new TextEncoder().encode(text).length > IMPORT_TEXT_LIMIT) {
-    throw new Error('导入内容超过 128 KiB 限制')
+  if (text.length > limit || new TextEncoder().encode(text).length > limit) {
+    throw new Error(`导入内容超过 ${limit / 1024} KiB 限制`)
   }
   return text.trim().replace(/^\uFEFF/, '')
 }
@@ -608,17 +616,33 @@ function validateImportedSound(value: Record<string, unknown>): void {
   }
 }
 
+const DEFAULT_EXPORT_NAME = 'NeriPlayer PC'
+
 export function exportAudioEffectsProfile(profile: AudioEffectsProfile, name = ''): string {
-  return JSON.stringify({ format: PROFILE_FORMAT, version: 2, name: textValue(name, PRESET_NAME_LIMIT),
-    profile: normalizeAudioEffectsProfile(profile) }, null, 2)
+  const normalized = normalizeAudioEffectsProfile(profile)
+  const exportName = textValue(name, PRESET_NAME_LIMIT)
+  // 顶层 id/name/sound 是 Android 预设分享码的必填字段，Android 会忽略其余键
+  return JSON.stringify({ format: PROFILE_FORMAT, version: 2,
+    id: normalized.presetId === 'custom' ? 'pc_custom' : normalized.presetId,
+    name: exportName || DEFAULT_EXPORT_NAME, displayName: exportName,
+    sound: normalized.sound, profile: normalized }, null, 2)
+}
+
+function parseImportedJson(text: string, limit = IMPORT_TEXT_LIMIT): unknown {
+  let parsed: unknown
+  try { parsed = JSON.parse(importText(text, limit)) } catch (error) {
+    throw new Error(error instanceof SyntaxError ? '音效 JSON 格式无效' : error instanceof Error ? error.message : '音效导入失败')
+  }
+  return parsed
 }
 
 export function importAudioEffectsProfile(text: string): { name: string, profile: AudioEffectsProfile } {
-  let parsed: unknown
-  try { parsed = JSON.parse(importText(text)) } catch (error) {
-    throw new Error(error instanceof SyntaxError ? '音效 JSON 格式无效' : error instanceof Error ? error.message : '音效导入失败')
-  }
+  const parsed = parseImportedJson(text)
   validateImportedJson(parsed)
+  return importProfileObject(parsed)
+}
+
+function importProfileObject(parsed: unknown): { name: string, profile: AudioEffectsProfile } {
   const input = record(parsed)
   if (own(input, 'format') !== undefined && own(input, 'format') !== PROFILE_FORMAT) throw new Error('不是 NeriPlayer 音效配置')
   const version = own(input, 'version')
@@ -632,7 +656,81 @@ export function importAudioEffectsProfile(text: string): { name: string, profile
     enabled: own(candidate, 'enabled') ?? true,
     presetId: own(candidate, 'presetId') ?? (userId || 'custom'),
   })
-  return { name: textValue(own(input, 'name'), PRESET_NAME_LIMIT), profile: normalized }
+  const displayName = own(input, 'displayName')
+  return { name: textValue(typeof displayName === 'string' ? displayName : own(input, 'name'), PRESET_NAME_LIMIT),
+    profile: normalized }
+}
+
+export const ANDROID_CONFIG_KIND = 'moe.ouom.neriplayer.config'
+const ANDROID_BACKUP_TEXT_LIMIT = 1024 * 1024
+const ANDROID_AUDIO_EFFECTS_KEY = 'audio_effects_settings'
+export const ANDROID_OUTPUT_ROUTES = ['speaker', 'wired', 'bluetooth', 'usb', 'other'] as const
+
+export interface AudioEffectsRouteProfile {
+  route: string
+  profile: AudioEffectsProfile
+}
+
+export type AudioEffectsImport =
+  | { kind: 'profile', source: 'profile', name: string, profile: AudioEffectsProfile }
+  | { kind: 'settings', source: 'android_backup' | 'settings', settings: AudioEffectsSettings,
+    routeProfiles: AudioEffectsRouteProfile[] }
+
+function looksLikeFullSettings(input: Record<string, unknown>): boolean {
+  if (own(input, 'format') !== undefined || own(input, 'sound') !== undefined) return false
+  return own(input, 'main') !== undefined && ['userPresets', 'outputProfiles', 'speaker', 'powerMode',
+    'perOutputEnabled', 'autoHeadroom', 'speedPitchLinked'].some(key => own(input, key) !== undefined)
+}
+
+function importSettingsObject(input: Record<string, unknown>,
+  source: 'android_backup' | 'settings'): AudioEffectsImport {
+  const version = own(input, 'version')
+  if (version !== undefined && (typeof version !== 'number' || version < 0 || version > 2)) throw new Error('不支持的音效配置版本')
+  const main = own(input, 'main')
+  if (main !== undefined) {
+    if (main === null || typeof main !== 'object' || Array.isArray(main)) throw new Error('音效配置的 main 格式无效')
+    const sound = own(record(main), 'sound')
+    if (sound !== undefined) validateImportedSound(record(sound))
+  }
+  const routeProfiles: AudioEffectsRouteProfile[] = []
+  const sourceProfiles = record(own(input, 'outputProfiles'))
+  for (const route of Object.keys(sourceProfiles)) {
+    if (!(ANDROID_OUTPUT_ROUTES as readonly string[]).includes(route)) continue
+    const sound = own(record(sourceProfiles[route]), 'sound')
+    if (sound !== undefined) validateImportedSound(record(sound))
+    routeProfiles.push({ route: outputKey(route), profile: normalizeAudioEffectsProfile(sourceProfiles[route]) })
+  }
+  const userPresets = own(input, 'userPresets')
+  if (Array.isArray(userPresets)) {
+    for (const preset of userPresets) {
+      const sound = own(record(preset), 'sound')
+      if (sound !== undefined) validateImportedSound(record(sound))
+    }
+  }
+  // 手机的输出路由（扬声器/耳机/蓝牙）和电脑的声卡名不是一回事，路由配置单独交给调用方处理
+  const settings = normalizeAudioEffectsSettings({ ...input, outputProfiles: {}, perOutputEnabled: false })
+  return { kind: 'settings', source, settings, routeProfiles: own(input, 'perOutputEnabled') === true ? routeProfiles : [] }
+}
+
+/**
+ * 识别所有能拿到的音效来源：Android 配置备份、完整音效设置、Android 预设分享码和 PC 导出的单个配置
+ */
+export function importAudioEffects(text: string): AudioEffectsImport {
+  const parsed = parseImportedJson(text, ANDROID_BACKUP_TEXT_LIMIT)
+  const input = record(parsed)
+  if (own(input, 'kind') === ANDROID_CONFIG_KIND) {
+    // 备份里其余设置（账号、同步……）一概不读，只取音效这一项再按普通导入校验
+    const raw = own(record(own(record(own(input, 'settings')), 'strings')), ANDROID_AUDIO_EFFECTS_KEY)
+    if (typeof raw !== 'string' || !raw.trim()) throw new Error('这份 Android 备份里没有音效设置，请先在手机上调过音效再导出')
+    const inner = parseImportedJson(raw)
+    validateImportedJson(inner)
+    return importSettingsObject(record(inner), 'android_backup')
+  }
+  importText(text)
+  validateImportedJson(parsed)
+  if (looksLikeFullSettings(input)) return importSettingsObject(input, 'settings')
+  const profile = importProfileObject(parsed)
+  return { kind: 'profile', source: 'profile', name: profile.name, profile: profile.profile }
 }
 
 interface BiquadCoefficients {
@@ -678,24 +776,97 @@ function magnitudeDb(filter: BiquadCoefficients, frequency: number): number {
   return numerator <= 0 || denominator <= 0 ? -120 : 10 * Math.log10(numerator / denominator)
 }
 
-function responseFilters(sound: AudioEffectsSound): BiquadCoefficients[] {
+const GRAPHIC_EQ_Q = 1.41
+const GRAPHIC_EQ_NATIVE_LIMIT_DB = 15
+const GRAPHIC_EQ_PROBE_DB = 6
+const GRAPHIC_EQ_REGULARIZATION = 0.01
+const GRAPHIC_EQ_REFINEMENTS = 3
+let graphicInteraction: number[][] | null = null
+
+// interaction[j][i]：第 i 段每 dB 增益在第 j 段中心频率处产生的 dB 数
+function graphicEqInteraction(): number[][] {
+  graphicInteraction ??= GRAPHIC_EQ_FREQUENCIES.map(center => GRAPHIC_EQ_FREQUENCIES.map(frequency =>
+    magnitudeDb(designBiquad('peak', frequency, GRAPHIC_EQ_PROBE_DB, GRAPHIC_EQ_Q), center) / GRAPHIC_EQ_PROBE_DB))
+  return graphicInteraction
+}
+
+function graphicCenterResponse(gains: number[]): number[] {
+  const filters = gains.map((gain, index) => designBiquad('peak', GRAPHIC_EQ_FREQUENCIES[index], gain, GRAPHIC_EQ_Q))
+  return GRAPHIC_EQ_FREQUENCIES.map(center => filters.reduce((total, filter) => total + magnitudeDb(filter, center), 0))
+}
+
+// 正则化最小二乘：(BᵀB + λI)x = Bᵀr，λ 防止相邻段为凑精度互相拉出极端的正负增益
+function solveGraphicCorrection(residual: number[]): number[] {
+  const interaction = graphicEqInteraction()
+  const size = residual.length
+  const matrix = Array.from({ length: size }, (_, row) => Array.from({ length: size + 1 }, (_, column) => {
+    if (column === size) return interaction.reduce((total, line, k) => total + line[row] * residual[k], 0)
+    const value = interaction.reduce((total, line) => total + line[row] * line[column], 0)
+    return row === column ? value + GRAPHIC_EQ_REGULARIZATION : value
+  }))
+  for (let pivot = 0; pivot < size; pivot++) {
+    let best = pivot
+    for (let row = pivot + 1; row < size; row++) if (Math.abs(matrix[row][pivot]) > Math.abs(matrix[best][pivot])) best = row
+    ;[matrix[pivot], matrix[best]] = [matrix[best], matrix[pivot]]
+    for (let row = 0; row < size; row++) {
+      if (row === pivot) continue
+      const factor = matrix[row][pivot] / matrix[pivot][pivot]
+      for (let column = pivot; column <= size; column++) matrix[row][column] -= factor * matrix[pivot][column]
+    }
+  }
+  return matrix.map((row, index) => row[size] / row[index])
+}
+
+/** 送进原生图形均衡的实际增益；精确模式下让各中心频率的合成频响等于滑块值 */
+export function graphicEqDesignGains(targets: readonly number[], accurate: boolean): number[] {
+  const gains = GRAPHIC_EQ_FREQUENCIES.map((_, index) => Number.isFinite(targets[index]) ? targets[index] : 0)
+  if (!accurate || gains.every(gain => gain === 0)) return gains
+  const clamp = (value: number) => Math.max(-GRAPHIC_EQ_NATIVE_LIMIT_DB, Math.min(GRAPHIC_EQ_NATIVE_LIMIT_DB, value))
+  let design = solveGraphicCorrection(gains).map(clamp)
+  // 峰值滤波器的 dB 响应只是近似线性，用真实频响再修正几轮
+  for (let step = 0; step < GRAPHIC_EQ_REFINEMENTS; step++) {
+    const response = graphicCenterResponse(design)
+    const correction = solveGraphicCorrection(gains.map((target, index) => target - response[index]))
+    design = design.map((gain, index) => clamp(gain + correction[index]))
+  }
+  return design
+}
+
+/** 响度补偿：音量每降 1 dB，低频补约 0.3 dB、高频补约 0.1 dB，分别封顶 10 dB / 4 dB */
+export function loudnessCompensationDb(amount: number, volume: number): { bassDb: number, trebleDb: number } {
+  const strength = Number.isFinite(amount) ? Math.max(0, Math.min(1, amount)) : 0
+  if (strength <= 0) return { bassDb: 0, trebleDb: 0 }
+  const linear = Number.isFinite(volume) ? Math.max(0.001, Math.min(1, volume)) : 1
+  const attenuation = Math.min(40, Math.max(0, -20 * Math.log10(linear)))
+  return { bassDb: strength * Math.min(10, attenuation * 0.3), trebleDb: strength * Math.min(4, attenuation * 0.1) }
+}
+
+export const LOUDNESS_BASS_HZ = 120
+export const LOUDNESS_TREBLE_HZ = 10000
+
+function responseFilters(sound: AudioEffectsSound, volume: number): BiquadCoefficients[] {
   const filters: BiquadCoefficients[] = []
-  if (sound.equalizerEnabled) sound.equalizerBandsDb.forEach((gain, index) => {
-    if (gain !== 0) filters.push(designBiquad('peak', GRAPHIC_EQ_FREQUENCIES[index], gain, 1.41))
+  if (sound.equalizerEnabled) graphicEqDesignGains(sound.equalizerBandsDb, sound.equalizerAccurate).forEach((gain, index) => {
+    if (gain !== 0) filters.push(designBiquad('peak', GRAPHIC_EQ_FREQUENCIES[index], gain, GRAPHIC_EQ_Q))
   })
   if (sound.parametricEnabled) for (const band of sound.parametricBands) {
     if (band.enabled) filters.push(designBiquad(band.type, band.frequencyHz, band.gainDb, band.q))
   }
   if (sound.bassDb !== 0) filters.push(designBiquad('low_shelf', sound.bassFrequencyHz, sound.bassDb, 0.707))
   if (sound.trebleDb !== 0) filters.push(designBiquad('high_shelf', sound.trebleFrequencyHz, sound.trebleDb, 0.707))
+  const loudness = loudnessCompensationDb(sound.loudnessCompensation, volume)
+  if (loudness.bassDb !== 0) filters.push(designBiquad('low_shelf', LOUDNESS_BASS_HZ, loudness.bassDb, 0.707))
+  if (loudness.trebleDb !== 0) filters.push(designBiquad('high_shelf', LOUDNESS_TREBLE_HZ, loudness.trebleDb, 0.707))
   return filters
 }
 
-export function audioEffectsFrequencyResponse(value: AudioEffectsSound): Array<{ frequencyHz: number, gainDb: number }> {
+export function audioEffectsFrequencyResponse(value: AudioEffectsSound, volume = 1,
+  points = 96): Array<{ frequencyHz: number, gainDb: number }> {
   const sound = effectiveSound(value)
-  const filters = responseFilters(sound)
-  return Array.from({ length: 96 }, (_, index) => {
-    const frequencyHz = 20 * (1000 ** (index / 95))
+  const filters = responseFilters(sound, volume)
+  const count = Math.max(2, Math.round(points))
+  return Array.from({ length: count }, (_, index) => {
+    const frequencyHz = 20 * (1000 ** (index / (count - 1)))
     const gainDb = filters.reduce((total, filter) => total + magnitudeDb(filter, frequencyHz), sound.preampDb)
     return { frequencyHz, gainDb }
   })

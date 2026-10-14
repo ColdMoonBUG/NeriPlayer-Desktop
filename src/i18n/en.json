@@ -565,7 +565,9 @@
       "outputGainDb": "DSP output gain",
       "limiterEnabled": "Enable limiter",
       "limiterCeilingDb": "Limiter ceiling",
-      "limiterReleaseMs": "Limiter release"
+      "limiterReleaseMs": "Limiter release",
+      "loudnessCompensation": "Loudness compensation",
+      "equalizerAccurate": "Precise response"
     },
     "help": {
       "preampDb": "Level before EQ; negative gain creates headroom for boosts",
@@ -600,7 +602,9 @@
       "compressorEnabled": "Reduce peaks above the threshold; disabled compressor settings are kept",
       "compressorMakeupDb": "Recover level lost to compression; excessive makeup may trigger limiting",
       "limiterEnabled": "Protect output peaks while retaining ceiling and release settings when disabled",
-      "limiterReleaseMs": "Time for the limiter to restore gain after a peak"
+      "limiterReleaseMs": "Time for the limiter to restore gain after a peak",
+      "loudnessCompensation": "Bass and treble sound weaker at low volume. When on, the lower the player volume, the more low and high frequencies are restored; it does nothing at full volume",
+      "equalizerAccurate": "Neighbouring bands normally add up, so the real boost exceeds the slider. When on, this is compensated so the curve passes exactly through every slider value; sounds imported from Android keep their original response by default"
     },
     "speaker_controls": {
       "protectionHz": "Bass protection cutoff",
@@ -646,6 +650,20 @@
       "studio": "Studio",
       "car": "Car",
       "small_speaker": "Small speaker"
+    },
+    "import": {
+      "route_preset": "Android · {route}",
+      "routes": {
+        "speaker": "Speaker",
+        "wired": "Wired headphones",
+        "bluetooth": "Bluetooth",
+        "usb": "USB audio",
+        "other": "Other output"
+      }
+    },
+    "eq_editor": {
+      "graph": "Equalizer response curve, drag to adjust",
+      "hint": "Press and drag on the curve to adjust; sweep sideways to shape several bands at once. Hold Shift for 0.1 dB steps, double-click to reset"
     }
   },
   "player": {

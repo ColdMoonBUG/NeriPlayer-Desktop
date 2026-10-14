@@ -30,12 +30,16 @@ pub struct AudioEffectsSound {
     pub preamp_db: f32,
     pub equalizer_enabled: bool,
     pub equalizer_bands_db: Vec<f32>,
+    /// 桌面扩展：补偿相邻频段叠加，让各中心频率的实际频响等于滑块值
+    pub equalizer_accurate: bool,
     pub parametric_enabled: bool,
     pub parametric_bands: Vec<ParametricEqBand>,
     pub bass_db: f32,
     pub bass_frequency_hz: f32,
     pub treble_db: f32,
     pub treble_frequency_hz: f32,
+    /// 桌面扩展：随播放器音量变化的等响补偿强度，0–1
+    pub loudness_compensation: f32,
     pub virtual_bass: f32,
     pub virtual_bass_frequency_hz: f32,
     pub warmth: f32,
@@ -74,12 +78,14 @@ impl Default for AudioEffectsSound {
             preamp_db: 0.0,
             equalizer_enabled: true,
             equalizer_bands_db: vec![0.0; GRAPHIC_BAND_COUNT],
+            equalizer_accurate: false,
             parametric_enabled: false,
             parametric_bands: Vec::new(),
             bass_db: 0.0,
             bass_frequency_hz: 100.0,
             treble_db: 0.0,
             treble_frequency_hz: 8_000.0,
+            loudness_compensation: 0.0,
             virtual_bass: 0.0,
             virtual_bass_frequency_hz: 100.0,
             warmth: 0.0,
@@ -220,6 +226,7 @@ impl AudioEffectsSound {
         self.bass_frequency_hz = finite(self.bass_frequency_hz, 40.0, 250.0, 100.0);
         self.treble_db = finite(self.treble_db, -12.0, 12.0, 0.0);
         self.treble_frequency_hz = finite(self.treble_frequency_hz, 2000.0, 14000.0, 8000.0);
+        self.loudness_compensation = finite(self.loudness_compensation, 0.0, 1.0, 0.0);
         self.virtual_bass = finite(self.virtual_bass, 0.0, 1.0, 0.0);
         self.virtual_bass_frequency_hz = finite(self.virtual_bass_frequency_hz, 50.0, 200.0, 100.0);
         self.warmth = finite(self.warmth, 0.0, 1.0, 0.0);
@@ -320,15 +327,28 @@ impl AudioEffectsSettings {
         self
     }
 
-    pub fn resolve(&self, output_device: &str) -> DspResolution {
-        let profile = if self.per_output_enabled {
+    fn profile_for(&self, output_device: &str) -> &AudioEffectsProfile {
+        if self.per_output_enabled {
             self.output_profiles
                 .get(&output_key(output_device))
                 .or_else(|| self.output_profiles.get("system_default"))
                 .unwrap_or(&self.main)
         } else {
             &self.main
-        };
+        }
+    }
+
+    pub fn uses_loudness_compensation(&self, output_device: &str) -> bool {
+        let profile = self.profile_for(output_device);
+        profile.enabled && profile.sound.effective().loudness_compensation > 0.0
+    }
+
+    pub fn resolve(&self, output_device: &str) -> DspResolution {
+        self.resolve_with_volume(output_device, 1.0)
+    }
+
+    pub fn resolve_with_volume(&self, output_device: &str, volume: f32) -> DspResolution {
+        let profile = self.profile_for(output_device);
         let effective = profile.sound.effective();
         let sound_active = profile.enabled && !effective.is_neutral();
         let speaker_active = profile.enabled && self.speaker.enabled;
@@ -352,6 +372,10 @@ impl AudioEffectsSettings {
             AudioEffectsSound::default()
         };
         sound.write_params(&mut params);
+        let (loudness_bass, loudness_treble) =
+            loudness_compensation_db(sound.loudness_compensation, volume);
+        params[LOUDNESS_BASS_DB] = loudness_bass;
+        params[LOUDNESS_TREBLE_DB] = loudness_treble;
         if self.auto_headroom {
             params[PREAMP_DB] -= super::dsp::headroom(&params);
         }
@@ -405,6 +429,7 @@ impl AudioEffectsSound {
             sound.preamp_db = defaults.preamp_db;
             sound.equalizer_enabled = defaults.equalizer_enabled;
             sound.equalizer_bands_db = defaults.equalizer_bands_db;
+            sound.equalizer_accurate = defaults.equalizer_accurate;
             sound.parametric_enabled = defaults.parametric_enabled;
             sound.parametric_bands = defaults.parametric_bands;
         }
@@ -414,6 +439,7 @@ impl AudioEffectsSound {
             sound.bass_frequency_hz = defaults.bass_frequency_hz;
             sound.treble_db = defaults.treble_db;
             sound.treble_frequency_hz = defaults.treble_frequency_hz;
+            sound.loudness_compensation = defaults.loudness_compensation;
             sound.virtual_bass = defaults.virtual_bass;
             sound.virtual_bass_frequency_hz = defaults.virtual_bass_frequency_hz;
             sound.warmth = defaults.warmth;
@@ -465,6 +491,7 @@ impl AudioEffectsSound {
                 self.preamp_db,
                 self.bass_db,
                 self.treble_db,
+                self.loudness_compensation,
                 self.virtual_bass,
                 self.warmth,
                 self.clarity,
@@ -493,13 +520,11 @@ impl AudioEffectsSound {
         p[LIMITER_CEILING_DB] = self.limiter_ceiling_db;
         p[LIMITER_RELEASE_MS] = self.limiter_release_ms;
         p[GRAPHIC_EQ_ENABLED] = u8::from(self.equalizer_enabled) as f32;
-        for (index, gain) in self
-            .equalizer_bands_db
-            .iter()
-            .take(GRAPHIC_BAND_COUNT)
+        for (index, gain) in graphic_eq_design_gains(&self.equalizer_bands_db, self.equalizer_accurate)
+            .into_iter()
             .enumerate()
         {
-            p[GRAPHIC_EQ_GAIN_0 + index] = *gain;
+            p[GRAPHIC_EQ_GAIN_0 + index] = gain;
         }
         p[PARAMETRIC_EQ_ENABLED] = u8::from(self.parametric_enabled) as f32;
         for (index, band) in self
@@ -552,6 +577,144 @@ impl AudioEffectsSound {
         p[COMPRESSOR_KNEE_DB] = self.compressor_knee_db;
         p[COMPRESSOR_MAKEUP_DB] = self.compressor_makeup_db;
     }
+}
+
+// 以下与前端 src/modules/audioEffects/model.ts 的同名算法逐项一致，频响图与实际处理才对得上
+const GRAPHIC_EQ_FREQUENCIES_HZ: [f64; GRAPHIC_BAND_COUNT] = [
+    31.25, 62.5, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0,
+];
+const GRAPHIC_EQ_Q: f64 = 1.41;
+const GRAPHIC_EQ_NATIVE_LIMIT_DB: f64 = 15.0;
+const GRAPHIC_EQ_PROBE_DB: f64 = 6.0;
+const GRAPHIC_EQ_REGULARIZATION: f64 = 0.01;
+const GRAPHIC_EQ_REFINEMENTS: usize = 3;
+const RESPONSE_SAMPLE_RATE: f64 = 48_000.0;
+
+type Matrix = [[f64; GRAPHIC_BAND_COUNT]; GRAPHIC_BAND_COUNT];
+
+fn peak_magnitude_db(center_hz: f64, gain_db: f64, q: f64, frequency_hz: f64) -> f64 {
+    let center = center_hz.clamp(5.0, RESPONSE_SAMPLE_RATE * 0.45);
+    let omega = std::f64::consts::TAU * center / RESPONSE_SAMPLE_RATE;
+    let (sin, cos) = omega.sin_cos();
+    let alpha = sin / (2.0 * q.clamp(0.1, 24.0));
+    let a = 10f64.powf(gain_db / 40.0);
+    let a0 = 1.0 + alpha / a;
+    let (b0, b1, b2) = ((1.0 + alpha * a) / a0, -2.0 * cos / a0, (1.0 - alpha * a) / a0);
+    let (a1, a2) = (-2.0 * cos / a0, (1.0 - alpha / a) / a0);
+    let w = std::f64::consts::TAU * frequency_hz / RESPONSE_SAMPLE_RATE;
+    let (w1s, w1c, w2s, w2c) = (w.sin(), w.cos(), (2.0 * w).sin(), (2.0 * w).cos());
+    let numerator = (b0 + b1 * w1c + b2 * w2c).powi(2) + (b1 * w1s + b2 * w2s).powi(2);
+    let denominator = (1.0 + a1 * w1c + a2 * w2c).powi(2) + (a1 * w1s + a2 * w2s).powi(2);
+    if numerator <= 0.0 || denominator <= 0.0 {
+        -120.0
+    } else {
+        10.0 * (numerator / denominator).log10()
+    }
+}
+
+fn graphic_eq_interaction() -> &'static Matrix {
+    static INTERACTION: std::sync::OnceLock<Matrix> = std::sync::OnceLock::new();
+    INTERACTION.get_or_init(|| {
+        std::array::from_fn(|center| {
+            std::array::from_fn(|band| {
+                peak_magnitude_db(
+                    GRAPHIC_EQ_FREQUENCIES_HZ[band],
+                    GRAPHIC_EQ_PROBE_DB,
+                    GRAPHIC_EQ_Q,
+                    GRAPHIC_EQ_FREQUENCIES_HZ[center],
+                ) / GRAPHIC_EQ_PROBE_DB
+            })
+        })
+    })
+}
+
+fn graphic_center_response(gains: &[f64; GRAPHIC_BAND_COUNT]) -> [f64; GRAPHIC_BAND_COUNT] {
+    std::array::from_fn(|center| {
+        gains
+            .iter()
+            .enumerate()
+            .map(|(band, gain)| {
+                peak_magnitude_db(
+                    GRAPHIC_EQ_FREQUENCIES_HZ[band],
+                    *gain,
+                    GRAPHIC_EQ_Q,
+                    GRAPHIC_EQ_FREQUENCIES_HZ[center],
+                )
+            })
+            .sum()
+    })
+}
+
+// 正则化最小二乘：(BᵀB + λI)x = Bᵀr，λ 防止相邻段为凑精度互相拉出极端的正负增益
+fn solve_graphic_correction(residual: &[f64; GRAPHIC_BAND_COUNT]) -> [f64; GRAPHIC_BAND_COUNT] {
+    const N: usize = GRAPHIC_BAND_COUNT;
+    let interaction = graphic_eq_interaction();
+    let mut matrix = [[0.0f64; N + 1]; N];
+    for row in 0..N {
+        for column in 0..N {
+            let value: f64 = (0..N).map(|k| interaction[k][row] * interaction[k][column]).sum();
+            matrix[row][column] = if row == column {
+                value + GRAPHIC_EQ_REGULARIZATION
+            } else {
+                value
+            };
+        }
+        matrix[row][N] = (0..N).map(|k| interaction[k][row] * residual[k]).sum();
+    }
+    for pivot in 0..N {
+        let best = (pivot..N)
+            .max_by(|a, b| matrix[*a][pivot].abs().total_cmp(&matrix[*b][pivot].abs()))
+            .unwrap_or(pivot);
+        matrix.swap(pivot, best);
+        for row in 0..N {
+            if row == pivot {
+                continue;
+            }
+            let factor = matrix[row][pivot] / matrix[pivot][pivot];
+            for column in pivot..=N {
+                matrix[row][column] -= factor * matrix[pivot][column];
+            }
+        }
+    }
+    std::array::from_fn(|index| matrix[index][N] / matrix[index][index])
+}
+
+/// 送进原生图形均衡的实际增益；精确模式下让各中心频率的合成频响等于滑块值
+pub fn graphic_eq_design_gains(targets: &[f32], accurate: bool) -> [f32; GRAPHIC_BAND_COUNT] {
+    let gains: [f64; GRAPHIC_BAND_COUNT] = std::array::from_fn(|index| {
+        targets
+            .get(index)
+            .copied()
+            .filter(|gain| gain.is_finite())
+            .map_or(0.0, f64::from)
+    });
+    if !accurate || gains.iter().all(|gain| *gain == 0.0) {
+        return gains.map(|gain| gain as f32);
+    }
+    let clamp = |value: f64| value.clamp(-GRAPHIC_EQ_NATIVE_LIMIT_DB, GRAPHIC_EQ_NATIVE_LIMIT_DB);
+    let mut design = solve_graphic_correction(&gains).map(clamp);
+    // 峰值滤波器的 dB 响应只是近似线性，用真实频响再修正几轮
+    for _ in 0..GRAPHIC_EQ_REFINEMENTS {
+        let response = graphic_center_response(&design);
+        let residual = std::array::from_fn(|index| gains[index] - response[index]);
+        let correction = solve_graphic_correction(&residual);
+        design = std::array::from_fn(|index| clamp(design[index] + correction[index]));
+    }
+    design.map(|gain| gain as f32)
+}
+
+/// 响度补偿：音量每降 1 dB，低频补约 0.3 dB、高频补约 0.1 dB，分别封顶 10 dB / 4 dB
+pub fn loudness_compensation_db(amount: f32, volume: f32) -> (f32, f32) {
+    let strength = if amount.is_finite() { amount.clamp(0.0, 1.0) } else { 0.0 };
+    if strength <= 0.0 {
+        return (0.0, 0.0);
+    }
+    let linear = if volume.is_finite() { volume.clamp(0.001, 1.0) } else { 1.0 };
+    let attenuation = (-20.0 * linear.log10()).clamp(0.0, 40.0);
+    (
+        strength * (attenuation * 0.3).min(10.0),
+        strength * (attenuation * 0.1).min(4.0),
+    )
 }
 
 #[cfg(test)]
@@ -655,7 +818,7 @@ mod tests {
         settings.main.enabled = true;
         settings.main.sound.equalizer_bands_db[5] = 6.0;
         let resolved = settings.resolve("");
-        assert_eq!(resolved.params.len(), 104);
+        assert_eq!(resolved.params.len(), PARAM_COUNT);
         assert!(resolved.params.iter().all(|value| value.is_finite()));
         assert!(
             (resolved.params[PREAMP_DB] + 5.1).abs() < 0.2,
@@ -689,6 +852,58 @@ mod tests {
             0.0
         );
         assert!(settings.speaker.enabled);
+    }
+
+    #[test]
+    fn accurate_graphic_eq_hits_every_band_center_and_stays_off_by_default() {
+        let targets = [4.5, 4.0, 2.5, 1.0, -0.5, -0.5, 1.0, 1.0, 1.5, 1.0];
+        assert_eq!(graphic_eq_design_gains(&targets, false), targets);
+        let design = graphic_eq_design_gains(&targets, true);
+        let response = graphic_center_response(&design.map(f64::from));
+        for (actual, target) in response.iter().zip(targets) {
+            assert!((actual - f64::from(target)).abs() < 0.05, "{response:?}");
+        }
+        let flat = graphic_eq_design_gains(&[12.0; 10], true);
+        let summed = graphic_center_response(&[12.0; 10]);
+        assert!(summed[5] > 18.0, "overlapping bands add up without correction");
+        let corrected = graphic_center_response(&flat.map(f64::from));
+        assert!(corrected.iter().all(|gain| (gain - 12.0).abs() < 0.1), "{corrected:?}");
+        let extreme = graphic_eq_design_gains(&[12.0, -12.0, 12.0, -12.0, 12.0, -12.0, 12.0, -12.0, 12.0, -12.0], true);
+        assert!(extreme.iter().all(|gain| gain.abs() <= 15.0));
+
+        let mut settings = AudioEffectsSettings::default();
+        settings.main.enabled = true;
+        settings.main.sound.equalizer_bands_db = vec![12.0; 10];
+        assert_eq!(settings.resolve("").params[GRAPHIC_EQ_GAIN_0 + 5], 12.0);
+        settings.main.sound.equalizer_accurate = true;
+        let accurate = settings.resolve("").params;
+        assert!(accurate[GRAPHIC_EQ_GAIN_0 + 5] < 9.0);
+        assert!(accurate[PREAMP_DB] > -11.0, "headroom follows the corrected response");
+        let json: AudioEffectsSound = serde_json::from_str(r#"{"bassDb":2}"#).unwrap();
+        assert!(!json.equalizer_accurate, "Android sounds keep their summed response");
+    }
+
+    #[test]
+    fn loudness_compensation_follows_player_volume_only_when_enabled() {
+        assert_eq!(loudness_compensation_db(1.0, 1.0), (0.0, 0.0));
+        let (bass, treble) = loudness_compensation_db(1.0, 0.1);
+        assert!((bass - 6.0).abs() < 1e-4 && (treble - 2.0).abs() < 1e-4);
+        assert_eq!(loudness_compensation_db(1.0, 0.0), (10.0, 4.0));
+        assert_eq!(loudness_compensation_db(0.0, 0.0), (0.0, 0.0));
+
+        let mut settings = AudioEffectsSettings::default();
+        settings.main.enabled = true;
+        settings.main.sound.loudness_compensation = 0.5;
+        assert!(settings.uses_loudness_compensation(""));
+        let quiet = settings.resolve_with_volume("", 0.1).params;
+        assert_eq!(quiet[MASTER_ENABLED], 1.0, "a loudness-only profile still runs the DSP");
+        assert!((quiet[LOUDNESS_BASS_DB] - 3.0).abs() < 1e-4);
+        assert!((quiet[LOUDNESS_TREBLE_DB] - 1.0).abs() < 1e-4);
+        assert!(quiet[PREAMP_DB] < 0.0, "automatic headroom covers the low-frequency lift");
+        assert_eq!(settings.resolve_with_volume("", 1.0).params[LOUDNESS_BASS_DB], 0.0);
+        settings.main.sound.tone_enabled = false;
+        assert!(!settings.uses_loudness_compensation(""));
+        assert_eq!(settings.resolve_with_volume("", 0.1).params[LOUDNESS_BASS_DB], 0.0);
     }
 
     #[test]

@@ -565,7 +565,9 @@
       "outputGainDb": "DSP 輸出增益",
       "limiterEnabled": "啟用限幅器",
       "limiterCeilingDb": "限幅上限",
-      "limiterReleaseMs": "限幅釋放時間"
+      "limiterReleaseMs": "限幅釋放時間",
+      "loudnessCompensation": "響度補償",
+      "equalizerAccurate": "精確頻響"
     },
     "help": {
       "preampDb": "DSP 前級電平，負值可為均衡器提升預留空間",
@@ -600,7 +602,9 @@
       "compressorEnabled": "削弱超過閾值的峰值，關閉時保留完整壓縮參數",
       "compressorMakeupDb": "補償壓縮降低的平均電平，過大時可能觸發限幅",
       "limiterEnabled": "保護輸出峰值，關閉時保留限幅上限和釋放時間",
-      "limiterReleaseMs": "峰值回落後，限幅器還原增益的時間"
+      "limiterReleaseMs": "峰值回落後，限幅器還原增益的時間",
+      "loudnessCompensation": "人耳在小音量下會覺得低音和高音變弱。開啟後，播放器音量越低，自動補回越多低頻和高頻；音量開滿時不起作用",
+      "equalizerAccurate": "預設相鄰頻段會互相疊加，實際提升比滑桿更多。開啟後自動補償，讓曲線精確經過每個滑桿的數值；從 Android 匯入的音效預設保持原聽感"
     },
     "speaker_controls": {
       "protectionHz": "低頻保護截止",
@@ -646,6 +650,20 @@
       "studio": "錄音室",
       "car": "車用",
       "small_speaker": "小揚聲器"
+    },
+    "import": {
+      "route_preset": "Android · {route}",
+      "routes": {
+        "speaker": "揚聲器",
+        "wired": "有線耳機",
+        "bluetooth": "藍牙",
+        "usb": "USB 音訊",
+        "other": "其他輸出"
+      }
+    },
+    "eq_editor": {
+      "graph": "等化器頻響曲線，可拖曳調整",
+      "hint": "在曲線上按住拖曳即可調整，橫向劃過可連續修改多個頻段；按住 Shift 精調 0.1 dB，雙擊歸零"
     }
   },
   "player": {

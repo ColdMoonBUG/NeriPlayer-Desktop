@@ -565,7 +565,9 @@
       "outputGainDb": "DSP 出力ゲイン",
       "limiterEnabled": "リミッターを有効にする",
       "limiterCeilingDb": "リミッター上限",
-      "limiterReleaseMs": "リミッターのリリース"
+      "limiterReleaseMs": "リミッターのリリース",
+      "loudnessCompensation": "ラウドネス補正",
+      "equalizerAccurate": "精密な周波数特性"
     },
     "help": {
       "preampDb": "EQ 前のレベルです。負の値でブースト用の余裕を確保します",
@@ -600,7 +602,9 @@
       "compressorEnabled": "しきい値を超えるピークを抑えます。無効時も設定を保持します",
       "compressorMakeupDb": "圧縮で下がった平均レベルを補います。大きすぎるとリミッターが動作します",
       "limiterEnabled": "出力ピークを保護します。無効時も上限とリリース設定を保持します",
-      "limiterReleaseMs": "ピーク後にリミッターがゲインを戻す時間です"
+      "limiterReleaseMs": "ピーク後にリミッターがゲインを戻す時間です",
+      "loudnessCompensation": "小音量では低音と高音が弱く聞こえます。オンにするとプレーヤーの音量が低いほど低域と高域を自動で補い、最大音量では何もしません",
+      "equalizerAccurate": "通常は隣り合うバンドが重なり、実際の増幅がスライダーより大きくなります。オンにすると補正され、カーブが各スライダーの値を正確に通ります。Android から取り込んだ音響は既定で元の聴感のままです"
     },
     "speaker_controls": {
       "protectionHz": "低域保護のカットオフ",
@@ -646,6 +650,20 @@
       "studio": "スタジオ",
       "car": "車内",
       "small_speaker": "小型スピーカー"
+    },
+    "import": {
+      "route_preset": "Android · {route}",
+      "routes": {
+        "speaker": "スピーカー",
+        "wired": "有線ヘッドホン",
+        "bluetooth": "Bluetooth",
+        "usb": "USB オーディオ",
+        "other": "その他の出力"
+      }
+    },
+    "eq_editor": {
+      "graph": "イコライザーの周波数特性カーブ（ドラッグで調整）",
+      "hint": "カーブ上を押したままドラッグして調整し、横になぞると複数バンドを続けて変更できます。Shift で 0.1 dB 単位、ダブルクリックでリセット"
     }
   },
   "player": {

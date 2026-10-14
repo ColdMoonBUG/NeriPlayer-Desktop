@@ -68,6 +68,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
   { section: 'audio_effects', title: 'dsp.controls.bassFrequencyHz', desc: 'dsp.help.bassFrequencyHz', keywords: ['bassFrequencyHz'] },
   { section: 'audio_effects', title: 'dsp.controls.trebleDb', desc: 'dsp.help.trebleDb', keywords: ['trebleDb'] },
   { section: 'audio_effects', title: 'dsp.controls.trebleFrequencyHz', desc: 'dsp.help.trebleFrequencyHz', keywords: ['trebleFrequencyHz'] },
+  { section: 'audio_effects', title: 'dsp.controls.loudnessCompensation', desc: 'dsp.help.loudnessCompensation', keywords: ['loudness', 'loudnessCompensation', '响度', '等响'] },
   { section: 'audio_effects', title: 'dsp.controls.virtualBass', desc: 'dsp.help.virtualBass', keywords: ['virtualBass'] },
   { section: 'audio_effects', title: 'dsp.controls.virtualBassFrequencyHz', desc: 'dsp.help.virtualBassFrequencyHz', keywords: ['virtualBassFrequencyHz'] },
   { section: 'audio_effects', title: 'dsp.controls.warmth', desc: 'dsp.help.warmth', keywords: ['warmth'] },

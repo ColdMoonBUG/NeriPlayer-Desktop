@@ -74,12 +74,15 @@ import {
 import { createLogger } from '@/utils/logger'
 import {
   applyAudioEffectPreset,
+  AUDIO_EFFECT_PRESETS,
+  ANDROID_OUTPUT_ROUTES,
   audioEffectsProfileFor,
   DEFAULT_AUDIO_EFFECTS_SETTINGS,
   exportAudioEffectsProfile,
-  importAudioEffectsProfile,
+  importAudioEffects,
   importAutoEq as parseAutoEq,
   normalizeAudioEffectsSettings,
+  normalizeAudioEffectsSound,
   replaceAudioEffectsProfile,
   resetAudioEffectsSoundSection,
   type AudioEffectsProfile,
@@ -2992,11 +2995,62 @@ export const usePlayerStore = defineStore('player', () => {
       : audioEffectsProfile.value, preset?.name)
   }
 
+  interface ImportedPresetEntry { name: string, sound: AudioEffectsSound, sourceId?: string }
+
+  // 同名同音色的预设视为已有，重复导入同一份备份不会堆出一串副本
+  function mergeImportedPresets(entries: ImportedPresetEntry[]) {
+    const presets = [...settings.audioEffects.userPresets]
+    const fingerprint = (sound: AudioEffectsSound) => JSON.stringify(normalizeAudioEffectsSound(sound))
+    const idMap = new Map<string, string>()
+    let added = 0
+    let skipped = 0
+    for (const entry of entries) {
+      const name = Array.from(entry.name.trim()).slice(0, 24).join('')
+      if (!name) { skipped++; continue }
+      const existing = presets.find(preset => preset.name === name && fingerprint(preset.sound) === fingerprint(entry.sound))
+      if (existing) {
+        if (entry.sourceId) idMap.set(entry.sourceId, existing.id)
+        continue
+      }
+      if (presets.length >= 50) { skipped++; continue }
+      const id = `user_${crypto.randomUUID()}`
+      presets.push({ id, name, sound: normalizeAudioEffectsSound(entry.sound) })
+      if (entry.sourceId) idMap.set(entry.sourceId, id)
+      added++
+    }
+    if (added) updateAudioEffects({ userPresets: presets })
+    return { added, skipped, idMap }
+  }
+
+  function importedPresetId(id: string, idMap: Map<string, string>) {
+    return idMap.get(id) ?? (AUDIO_EFFECT_PRESETS.some(preset => preset.id === id) ? id : 'custom')
+  }
+
+  function androidRouteLabel(route: string) {
+    const known = (ANDROID_OUTPUT_ROUTES as readonly string[]).includes(route)
+    return i18n.global.t('dsp.import.route_preset', { route: known ? i18n.global.t(`dsp.import.routes.${route}`) : route })
+  }
+
+  /** 导入 Android 配置备份、完整音效设置、Android 预设分享码或 PC 导出的配置 */
   function importAudioEffectsPreset(text: string) {
-    const imported = importAudioEffectsProfile(text)
-    // 外部预设标识可能来自另一台设备，导入后按当前手动配置显示
-    updateAudioEffectsProfile({ ...imported.profile, presetId: 'custom' })
-    return imported
+    const imported = importAudioEffects(text)
+    if (imported.kind === 'profile') {
+      const merged = imported.name
+        ? mergeImportedPresets([{ name: imported.name, sound: imported.profile.sound, sourceId: imported.profile.presetId }])
+        : { added: 0, skipped: 0, idMap: new Map<string, string>() }
+      updateAudioEffectsProfile({ ...imported.profile, presetId: merged.idMap.get(imported.profile.presetId) ?? 'custom' })
+      return { kind: imported.kind, source: imported.source, name: imported.name,
+        addedPresets: merged.added, skippedPresets: merged.skipped, routes: 0 }
+    }
+    const { settings: incoming, routeProfiles } = imported
+    const merged = mergeImportedPresets([
+      ...incoming.userPresets.map(preset => ({ name: preset.name, sound: preset.sound, sourceId: preset.id })),
+      ...routeProfiles.map(item => ({ name: androidRouteLabel(item.route), sound: item.profile.sound })),
+    ])
+    updateAudioEffects({ speaker: incoming.speaker, powerMode: incoming.powerMode, autoHeadroom: incoming.autoHeadroom })
+    updateAudioEffectsProfile({ ...incoming.main, presetId: importedPresetId(incoming.main.presetId, merged.idMap) })
+    return { kind: imported.kind, source: imported.source, name: '',
+      addedPresets: merged.added, skippedPresets: merged.skipped, routes: routeProfiles.length }
   }
 
   function importAutoEq(text: string) {

@@ -446,10 +446,32 @@ bool testDisableFadesOutToIdle() {
     return true;
 }
 
+double gainDbAt(Engine& engine, float frequencyHz) {
+    const auto input = stereoSine(frequencyHz, 0.02f, kSampleRate);
+    const auto output = processFloat(engine, input);
+    return 20.0 * std::log10(rms(output, kSampleRate / 2) / rms(input, kSampleRate / 2));
+}
+
+bool testLoudnessShelvesLiftBassAndTrebleButKeepMids() {
+    Params params = neutralParams();
+    params[kLoudnessBassDb] = 6.0f;
+    params[kLoudnessTrebleDb] = 2.0f;
+    Engine engine;
+    CHECK(configured(engine, params));
+    CHECK(std::fabs(gainDbAt(engine, 40.0f) - 6.0) < 0.8);
+    CHECK(std::fabs(gainDbAt(engine, 1000.0f)) < 0.6);
+    CHECK(gainDbAt(engine, 16000.0f) > 1.2);
+    params[kLoudnessBassDb] = 0.0f;
+    params[kLoudnessTrebleDb] = 0.0f;
+    CHECK(engine.setParams(params.data(), kParamCount));
+    CHECK(std::fabs(gainDbAt(engine, 40.0f)) < 0.2);
+    return true;
+}
+
 } // namespace
 
 int main() {
-    const std::array<std::pair<const char*, std::function<bool()>>, 15> tests = {{
+    const std::array<std::pair<const char*, std::function<bool()>>, 16> tests = {{
         {"disabled_passthrough", testDisabledEngineIsBitExactPassthrough},
         {"neutral_transparent", testNeutralEnabledChainIsTransparentForFloat},
         {"graphic_band_gain", testGraphicBandBoostMatchesRequestedGain},
@@ -465,6 +487,7 @@ int main() {
         {"extremes_bounded", testEverythingAtExtremesStaysFiniteAndBounded},
         {"invalid_params", testInvalidParamsAreRejected},
         {"disable_fades_to_idle", testDisableFadesOutToIdle},
+        {"loudness_shelves", testLoudnessShelvesLiftBassAndTrebleButKeepMids},
     }};
     int failures = 0;
     for (const auto& [name, test] : tests) {

@@ -16,7 +16,8 @@ const names = new Set(['setSpeed', 'setPitch', 'effectivePlaybackSpeed', 'setLis
   'setVinylEffect', 'effectivePlaybackPitch', 'resetAudioEffects', 'setLoudnessGain', 'setEqualizer', 'setEqualizerPreset', 'applyPersistedSettings',
   'applyNativeAudioEffects', 'scheduleNativeAudioEffects', 'applyPlaybackParameter', 'updateAudioEffects', 'updateAudioEffectsProfile', 'updateAudioEffectsSound',
   'setAudioEffectsPreset', 'setListeningTuning', 'resetListeningTuning', 'resetAudioEffectsSection', 'saveAudioEffectsPreset', 'deleteAudioEffectsPreset',
-  'exportAudioEffectsPreset', 'importAudioEffectsPreset', 'importAutoEq', 'refreshAudioEffectsStats'])
+  'exportAudioEffectsPreset', 'importAudioEffectsPreset', 'mergeImportedPresets', 'importedPresetId', 'androidRouteLabel',
+  'importAutoEq', 'refreshAudioEffectsStats'])
 const fragments = []
 function collect(node) {
   if (ts.isFunctionDeclaration(node) && names.has(node.name?.text)) fragments.push(node.getText(playerTree))
@@ -240,12 +241,44 @@ await regression('AutoEQ enables full correction and saved presets survive globa
   await r.flush()
   assert.equal(r.settings.audioEffects.userPresets[0].id, id)
   assert.equal(r.audioEffectsProfile.value.enabled, false)
-  r.importAudioEffectsPreset(text)
+  const summary = r.importAudioEffectsPreset(text)
   assert.equal(r.audioEffectsProfile.value.sound.preampDb, -20)
-  assert.equal(r.audioEffectsProfile.value.presetId, 'custom')
+  assert.equal(r.audioEffectsProfile.value.presetId, id, 'an identical saved preset is reselected instead of duplicated')
+  assert.equal(summary.addedPresets, 0)
+  assert.equal(r.settings.audioEffects.userPresets.length, 1)
   const before = JSON.stringify(r.settings.audioEffects)
   assert.throws(() => r.importAutoEq('not a filter'))
   assert.equal(JSON.stringify(r.settings.audioEffects), before)
+})
+
+await regression('Android config backup imports the main sound, user presets, route profiles and speaker settings', async r => {
+  const android = {
+    version: 2, perOutputEnabled: true, powerMode: 'high', autoHeadroom: false,
+    main: { enabled: true, presetId: 'user_phone', sound: { bassDb: 3, vocal: 0.4 } },
+    outputProfiles: { wired: { enabled: true, presetId: 'flat', sound: { trebleDb: -2 } }, bogus: { sound: {} } },
+    userPresets: [{ id: 'user_phone', name: '手机预设', sound: { bassDb: 3, vocal: 0.4 } }],
+    speaker: { enabled: true, size: 'tablet' }, speedPitchLinked: true, storedSpeed: 1.25,
+  }
+  const backup = JSON.stringify({ kind: 'moe.ouom.neriplayer.config', formatVersion: 1,
+    settings: { strings: { audio_effects_settings: JSON.stringify(android), cookie_token: 'secret' } },
+    neteaseAuth: { cookies: { MUSIC_U: 'secret' } } })
+  const summary = r.importAudioEffectsPreset(backup)
+  assert.equal(summary.source, 'android_backup')
+  assert.equal(summary.routes, 1, 'unknown route keys are dropped like Android does')
+  assert.equal(summary.addedPresets, 2)
+  const presets = r.settings.audioEffects.userPresets
+  assert.deepEqual(presets.map(preset => preset.name), ['手机预设', 'dsp.import.route_preset'])
+  assert.equal(presets[1].sound.trebleDb, -2)
+  assert.equal(r.audioEffectsProfile.value.enabled, true)
+  assert.equal(r.audioEffectsProfile.value.presetId, presets[0].id)
+  assert.equal(r.audioEffectsProfile.value.sound.vocal, 0.4)
+  assert.equal(r.settings.audioEffects.speaker.size, 'tablet')
+  assert.equal(r.settings.audioEffects.powerMode, 'high')
+  assert.equal(r.settings.audioEffects.perOutputEnabled, false, 'phone routes never become desktop device profiles')
+  assert.equal(JSON.stringify(r.settings.audioEffects).includes('secret'), false)
+  r.importAudioEffectsPreset(backup)
+  assert.equal(r.settings.audioEffects.userPresets.length, 2, 'importing the same backup twice adds nothing')
+  assert.throws(() => r.importAudioEffectsPreset(JSON.stringify({ kind: 'moe.ouom.neriplayer.config', settings: { strings: {} } })), /没有音效设置/)
 })
 
 await regression('runtime statistics reflect physical output identity', async r => {

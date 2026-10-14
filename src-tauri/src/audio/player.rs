@@ -1235,6 +1235,7 @@ impl PlayerEngine {
     pub fn set_volume(&mut self, volume: f32) {
         self.volume = volume.clamp(0.0, 1.0);
         let _ = self.cmd_tx.send(AudioCmd::SetVolume(self.volume));
+        self.effects.dsp.set_volume(self.volume);
     }
 
     pub fn request_output_device(

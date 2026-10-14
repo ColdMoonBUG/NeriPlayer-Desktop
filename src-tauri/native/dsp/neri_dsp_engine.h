@@ -98,6 +98,7 @@ private:
     FilterBankStage graphicEq_;
     FilterBankStage parametricEq_;
     FilterBankStage tone_;
+    FilterBankStage loudness_;
     FilterBankStage vocalClarity_;
     HarmonicBassStage virtualBass_;
     WarmthStage warmth_;
