@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { isTauri } from '@tauri-apps/api/core'
 import { usePlayerStore } from '@/stores/player'
@@ -7,6 +7,7 @@ import {
   AUDIO_EFFECT_PRESETS, GRAPHIC_EQ_FREQUENCIES, SOUND_CONTROLS,
   type AudioEffectsSound, type ParametricEqBand, type SpeakerOptimizerSettings,
 } from '@/modules/audioEffects/model'
+import { LISTENING_CONTROLS, protectListeningSound, type ListeningControlKey } from '@/modules/audioEffects/listening'
 import CustomSelect from '@/components/ui/CustomSelect.vue'
 import DspNumberControl from './DspNumberControl.vue'
 import DspFrequencyGraph from './DspFrequencyGraph.vue'
@@ -15,12 +16,16 @@ const player = usePlayerStore()
 const { t } = useI18n()
 const sound = computed(() => player.audioEffectsProfile.sound)
 const currentOutput = computed(() => player.audioEffectsOutputDevice === 'system_default' ? t('dsp.system_default') : player.audioEffectsOutputDevice)
-const category = ref('all')
-const categories = ['all', 'style', 'tone', 'scene', 'device', 'user']
+const root = ref<HTMLElement | null>(null)
+const mode = ref<'simple' | 'advanced'>('simple')
+const category = ref('common')
+const categories = ['common', 'all', 'style', 'tone', 'scene', 'device', 'user']
+const commonPresets = ['flat', 'pop', 'vocal_boost', 'bass_boost', 'warm', 'live', 'night', 'headphone_hifi']
 const presetOptions = computed(() => [
-  ...AUDIO_EFFECT_PRESETS.filter(preset => preset.id !== 'custom' && (category.value === 'all' || preset.category === category.value))
-    .map(preset => ({ value: preset.id, label: t(`dsp.presets.${preset.id}`) })),
-  ...(category.value === 'all' || category.value === 'user' ? player.audioEffects.userPresets.map(preset => ({ value: preset.id, label: preset.name })) : []),
+  ...AUDIO_EFFECT_PRESETS.filter(preset => preset.id !== 'custom' && (category.value === 'all'
+    || (category.value === 'common' ? commonPresets.includes(preset.id) : preset.category === category.value)))
+    .map(preset => ({ value: preset.id, label: t(`dsp.presets.${preset.id}`), description: t(`dsp.preset_notes.${preset.id}`) })),
+  ...(category.value === 'all' || category.value === 'user' ? player.audioEffects.userPresets.map(preset => ({ value: preset.id, label: preset.name, description: t('dsp.user_preset_note') })) : []),
 ])
 const presetLabel = computed(() => {
   const id = player.audioEffectsProfile.presetId
@@ -29,6 +34,23 @@ const presetLabel = computed(() => {
     ?? (AUDIO_EFFECT_PRESETS.some(preset => preset.id === id) ? t(`dsp.presets.${id}`) : t('dsp.manual'))
 })
 const currentUserPreset = computed(() => player.audioEffects.userPresets.find(preset => preset.id === player.audioEffectsProfile.presetId))
+function listeningLabel(key: ListeningControlKey) {
+  const value = Math.round(player.listeningTuning[key])
+  return value === 0 ? t('dsp.listening.neutral') : `${t(`dsp.listening.${key}.${value < 0 ? 'left' : 'right'}`)} ${Math.abs(value)}%`
+}
+async function revealSetting(title: string) {
+  const target = title === t('player.eq_preset') ? t('dsp.preset_section') : title
+  const element = [...(root.value?.querySelectorAll<HTMLElement>('.setting-title') ?? [])]
+    .find(item => item.textContent?.trim() === target)
+  if (title === t('dsp.expert_mode') || element?.closest('.effects-professional, .effects-professional-control')) mode.value = 'advanced'
+  else if (title === t('dsp.simple_mode') || element?.closest('.effects-listening')) mode.value = 'simple'
+  await nextTick()
+  for (let parent = element?.parentElement; parent; parent = parent.parentElement) {
+    if (parent instanceof HTMLDetailsElement) parent.open = true
+    if (parent === root.value) break
+  }
+}
+defineExpose({ revealSetting })
 const presetName = ref('')
 const presetText = ref('')
 const autoEqText = ref('')
@@ -97,8 +119,14 @@ function removePeq(index: number) {
   player.updateAudioEffectsSound({ parametricBands: sound.value.parametricBands.filter((_, position) => position !== index) })
 }
 function changeSpeaker(key: keyof SpeakerOptimizerSettings, value: number | string | boolean) {
-  if (key === 'enabled' && value === true && !player.audioEffectsProfile.enabled) player.updateAudioEffectsProfile({ enabled: true })
-  player.updateAudioEffects({ speaker: { ...player.audioEffects.speaker, [key]: value } })
+  if (key === 'enabled' && value === true) {
+    if (mode.value === 'simple') {
+      player.updateAudioEffects({ autoHeadroom: true })
+      player.updateAudioEffectsProfile({ enabled: true, sound: protectListeningSound(sound.value) })
+    } else if (!player.audioEffectsProfile.enabled) player.updateAudioEffectsProfile({ enabled: true })
+  }
+  player.updateAudioEffects({ speaker: { ...player.audioEffects.speaker, [key]: value,
+    ...(key === 'size' && mode.value === 'simple' ? { protectionHz: 0 } : {}) } })
 }
 function setRate(key: 'speed' | 'pitch', value: number) {
   if (key === 'speed') player.setSpeed(value)
@@ -106,7 +134,7 @@ function setRate(key: 'speed' | 'pitch', value: number) {
 }
 function report(message: string, error = false) { feedback.value = message; feedbackError.value = error }
 function savePreset() {
-  try { player.saveAudioEffectsPreset(presetName.value.trim()); presetName.value = ''; report(t('dsp.saved')) }
+  try { player.saveAudioEffectsPreset(presetName.value.trim()); presetName.value = ''; category.value = 'user'; report(t('dsp.saved')) }
   catch (error) { report(String(error), true) }
 }
 function importPreset() {
@@ -138,7 +166,7 @@ async function readImportFile(event: Event, target: 'preset' | 'autoeq') {
 </script>
 
 <template>
-  <div class="audio-effects-settings">
+  <div ref="root" class="audio-effects-settings">
     <p class="effects-intro">{{ t('settings.audio_effects_desc') }}</p>
     <div class="setting-card effects-master">
       <div class="effects-heading">
@@ -152,11 +180,17 @@ async function readImportFile(event: Event, target: 'preset' | 'autoeq') {
       </div>
     </div>
 
-    <details class="effects-section" open>
-      <summary>{{ t('dsp.preset_section') }}</summary>
+    <section class="effects-section effects-preset-section" :aria-label="t('dsp.preset_section')">
+      <div class="effects-section-heading"><h3 class="setting-title">{{ t('dsp.preset_section') }}</h3><span>{{ t('dsp.current_preset', { name: presetLabel }) }}</span></div>
       <div class="effects-content">
         <div class="effects-presets"><button v-for="item in categories" :key="item" :class="{ active: category === item }" :aria-pressed="category === item" @click="category = item">{{ t(`dsp.categories.${item}`) }}</button></div>
-        <CustomSelect :model-value="player.audioEffectsProfile.presetId" :selected-label="presetLabel" :options="presetOptions" :label="t('player.eq_preset')" @update:model-value="player.setAudioEffectsPreset($event)" />
+        <div class="effects-preset-grid" role="group" :aria-label="t('player.eq_preset')">
+          <button v-for="preset in presetOptions" :key="preset.value" class="effects-preset-card"
+            :class="{ active: player.audioEffectsProfile.presetId === preset.value }"
+            :aria-label="preset.label" :aria-pressed="player.audioEffectsProfile.presetId === preset.value"
+            @click="player.setAudioEffectsPreset(preset.value)"><strong>{{ preset.label }}</strong><span>{{ preset.description }}</span></button>
+        </div>
+        <p v-if="!presetOptions.length" class="setting-desc">{{ t('dsp.no_user_presets') }}</p>
         <p class="setting-desc">{{ t('dsp.preset_help') }}</p>
         <div class="effects-toolbar"><input v-model="presetName" class="effects-text-input" maxlength="24" :placeholder="t('dsp.preset_name')" :aria-label="t('dsp.preset_name')" />
           <button :disabled="!presetName.trim() || player.audioEffects.userPresets.length >= 50" @click="savePreset">{{ t('dsp.save_preset') }}</button>
@@ -167,7 +201,27 @@ async function readImportFile(event: Event, target: 'preset' | 'autoeq') {
             <button :disabled="!presetText.trim()" @click="importPreset">{{ t('dsp.import_preset') }}</button><button @click="exportPreset">{{ t('dsp.export_preset') }}</button></div>
         </details>
       </div>
-    </details>
+    </section>
+
+    <div class="effects-mode-switch setting-card" role="group" :aria-label="t('dsp.adjustment_mode')">
+      <button class="setting-title" :class="{ active: mode === 'simple' }" :aria-pressed="mode === 'simple'" @click="mode = 'simple'">{{ t('dsp.simple_mode') }}</button>
+      <button class="setting-title" :class="{ active: mode === 'advanced' }" :aria-pressed="mode === 'advanced'" @click="mode = 'advanced'">{{ t('dsp.expert_mode') }}</button>
+    </div>
+
+    <section v-show="mode === 'simple'" class="effects-section effects-listening" :aria-label="t('dsp.listening.title')">
+      <div class="effects-section-heading"><h3>{{ t('dsp.listening.title') }}</h3><button @click="player.resetListeningTuning()">{{ t('dsp.listening.reset') }}</button></div>
+      <div class="effects-content"><p class="setting-desc">{{ t('dsp.listening.help') }}</p>
+        <div class="effects-grid"><DspNumberControl v-for="control in LISTENING_CONTROLS" :key="control.key"
+          :class="{ 'listening-space': control.key === 'space' }" :label="t(`dsp.listening.${control.key}.title`)"
+          :help="t(`dsp.listening.${control.key}.help`)" :model-value="player.listeningTuning[control.key]"
+          :min="control.min" :max="100" :step="1" unit="%" :value-label="listeningLabel(control.key)"
+          :min-label="t(`dsp.listening.${control.key}.left`)" :max-label="t(`dsp.listening.${control.key}.right`)"
+          @update:model-value="player.setListeningTuning(control.key, $event)" /></div>
+        <p class="effects-listening-note">{{ t('dsp.listening.protection') }}</p>
+      </div>
+    </section>
+
+    <div v-show="mode === 'advanced'" class="effects-professional">
 
     <details class="effects-section" open>
       <summary>{{ t('dsp.equalizer_section') }}<button @click.prevent="player.resetAudioEffectsSection('equalizer')">{{ t('dsp.reset_section') }}</button></summary>
@@ -193,7 +247,7 @@ async function readImportFile(event: Event, target: 'preset' | 'autoeq') {
           </div>
         </div>
         <button :disabled="sound.parametricBands.length >= 10" class="effects-add" @click="addPeq">{{ t('dsp.add_filter') }} ({{ sound.parametricBands.length }}/10)</button>
-        <details class="effects-import"><summary>{{ t('dsp.autoeq') }}</summary><p class="setting-desc">{{ t('dsp.autoeq_help') }}</p>
+        <details class="effects-import"><summary class="setting-title">{{ t('dsp.autoeq') }}</summary><p class="setting-desc">{{ t('dsp.autoeq_help') }}</p>
           <textarea v-model="autoEqText" :aria-label="t('dsp.autoeq_text')" :placeholder="t('dsp.autoeq_text')" spellcheck="false"></textarea>
           <div class="effects-toolbar"><label class="file-button">{{ t('dsp.choose_file') }}<input type="file" accept=".txt,.csv,text/plain,text/csv" @change="readImportFile($event, 'autoeq')" /></label><button :disabled="!autoEqText.trim()" @click="importAutoEq">{{ t('dsp.apply_autoeq') }}</button></div>
         </details>
@@ -215,12 +269,20 @@ async function readImportFile(event: Event, target: 'preset' | 'autoeq') {
       </div>
     </details>
 
+    </div>
+
     <details class="effects-section">
       <summary>{{ t('dsp.speaker_section') }}<button @click.prevent="player.resetAudioEffectsSection('speaker')">{{ t('dsp.reset_section') }}</button></summary>
       <div class="effects-content"><div class="effects-heading"><div class="setting-info"><div class="setting-title">{{ t('dsp.speaker_section') }}</div><div class="setting-desc">{{ t('dsp.speaker_help') }}</div></div>
         <label class="m3-switch"><input type="checkbox" :checked="player.audioEffects.speaker.enabled" :aria-label="t('dsp.speaker_section')" @change="changeSpeaker('enabled', ($event.target as HTMLInputElement).checked)" /><span class="track"><span class="thumb"></span></span></label></div>
-        <CustomSelect :model-value="player.audioEffects.speaker.size" :options="['phone', 'tablet', 'large'].map(size => ({ value: size, label: t(`dsp.speaker_sizes.${size}`) }))" :label="t('dsp.speaker_size')" @update:model-value="changeSpeaker('size', $event)" />
-        <div class="effects-grid"><DspNumberControl v-for="control in speakerControls" :key="control.key" :label="t(`dsp.speaker_controls.${control.key}`)" :help="t(`dsp.speaker_help_controls.${control.key}`)" :model-value="Number(player.audioEffects.speaker[control.key])" :min="control.min" :max="control.max" :step="control.step" :unit="control.unit" :scale="control.scale" @update:model-value="changeSpeaker(control.key, $event)" /></div>
+        <div class="setting-card"><div class="setting-title">{{ t('dsp.speaker_size') }}</div>
+          <div class="effects-size-options" role="group" :aria-label="t('dsp.speaker_size')">
+            <button v-for="size in ['phone', 'tablet', 'large']" :key="size" :class="{ active: player.audioEffects.speaker.size === size }"
+              :aria-pressed="player.audioEffects.speaker.size === size" @click="changeSpeaker('size', size)">{{ t(`dsp.speaker_sizes.${size}`) }}</button>
+          </div>
+        </div>
+        <p v-if="mode === 'simple'" class="setting-desc">{{ t('dsp.speaker_simple_help') }}</p>
+        <div v-show="mode === 'advanced'" class="effects-grid effects-professional-control"><DspNumberControl v-for="control in speakerControls" :key="control.key" :label="t(`dsp.speaker_controls.${control.key}`)" :help="t(`dsp.speaker_help_controls.${control.key}`)" :model-value="Number(player.audioEffects.speaker[control.key])" :min="control.min" :max="control.max" :step="control.step" :unit="control.unit" :scale="control.scale" @update:model-value="changeSpeaker(control.key, $event)" /></div>
       </div>
     </details>
 
@@ -231,7 +293,7 @@ async function readImportFile(event: Event, target: 'preset' | 'autoeq') {
         <p v-if="player.vinylEffectEnabled" class="setting-desc">{{ t('dsp.vinyl_following', { value: player.effectivePlaybackPitch().toFixed(2) }) }}</p>
         <template v-for="control in rateControls" :key="control.key"><DspNumberControl v-if="control.key === 'speed' || !player.vinylEffectEnabled" :label="t(control.title)" :help="t(control.desc)" :model-value="control.key === 'speed' ? player.playbackSpeed : player.playbackPitch" :min="control.min" :max="control.max" :step="0.05" unit="x" @update:model-value="setRate(control.key, $event)" /></template>
         <div class="effects-presets"><button v-for="value in speedPresets" :key="value" :aria-label="`${t('player.playback_speed')} ${value}x`" :aria-pressed="player.playbackSpeed === value" :class="{ active: player.playbackSpeed === value }" @click="player.setSpeed(value)">{{ value }}x</button></div>
-        <DspNumberControl :label="t('player.loudness_gain')" :help="t('settings.audio_effects_gain_desc')" :model-value="player.loudnessGainMb" :min="0" :max="1500" :step="50" :scale="0.01" unit="dB" @update:model-value="player.setLoudnessGain($event)" />
+        <DspNumberControl v-show="mode === 'advanced'" class="effects-professional-control" :label="t('player.loudness_gain')" :help="t('settings.audio_effects_gain_desc')" :model-value="player.loudnessGainMb" :min="0" :max="1500" :step="50" :scale="0.01" unit="dB" @update:model-value="player.setLoudnessGain($event)" />
       </div>
     </details>
 
@@ -265,6 +327,20 @@ async function readImportFile(event: Event, target: 'preset' | 'autoeq') {
 .effects-toolbar { flex-wrap: wrap; }
 .effects-master { margin-bottom: 10px; }
 .effects-master .effects-toolbar { margin-top: 12px; }
+.effects-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; background: var(--md-surface-container-low); }
+.effects-section-heading h3 { margin: 0; font-size: 14px; }
+.effects-section-heading > span { font-size: 12px; color: var(--md-on-surface-variant); overflow-wrap: anywhere; }
+.effects-preset-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.effects-preset-card { display: flex; flex-direction: column; gap: 6px; padding: 12px; min-width: 0; min-height: 74px; text-align: left; }
+.effects-preset-card strong { font-size: 13px; font-weight: 600; }
+.effects-preset-card span { font-size: 11px; line-height: 1.45; color: var(--md-on-surface-variant); overflow-wrap: anywhere; }
+.effects-preset-card.active span { color: inherit; }
+.effects-mode-switch { display: flex; gap: 8px; margin: 20px 0 10px; }
+.effects-mode-switch button { flex: 1; padding: 11px; font-weight: 500; }
+.effects-size-options { display: flex; gap: 8px; margin-top: 12px; }
+.effects-size-options button { flex: 1; }
+.listening-space { grid-column: 1 / -1; }
+.effects-listening-note { margin: 0; font-size: 11px; line-height: 1.6; color: var(--md-on-surface-variant); }
 .setting-info { flex: 1; min-width: 0; }
 .output-label { font-size: 11px; color: var(--md-on-surface-variant); overflow-wrap: anywhere; }
 .effects-section { margin: 10px 0; border: 1px solid var(--md-outline-variant); border-radius: var(--radius-lg); overflow: hidden; }
@@ -301,5 +377,5 @@ textarea { display: block; box-sizing: border-box; width: 100%; min-height: 130p
 .effects-stats-grid b { color: var(--md-on-surface); font-weight: 500; font-variant-numeric: tabular-nums; }
 .effects-feedback { position: sticky; bottom: 12px; margin: 12px 0 0; padding: 12px; border-radius: var(--radius-md); color: var(--md-on-primary-container); background: var(--md-primary-container); font-size: 12px; line-height: 1.5; }
 .effects-feedback.error { color: var(--md-on-error-container); background: var(--md-error-container); }
-@media (max-width: 680px) { .effects-grid, .effects-stats-grid { grid-template-columns: minmax(0, 1fr); } .effects-content { padding: 12px; } }
+@media (max-width: 680px) { .effects-grid, .effects-stats-grid { grid-template-columns: minmax(0, 1fr); } .effects-preset-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .effects-content { padding: 12px; } .effects-section-heading { flex-wrap: wrap; } }
 </style>

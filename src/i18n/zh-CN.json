@@ -352,16 +352,91 @@
     "dir_fallback": "所选下载目录不可用，已保存到默认位置"
   },
   "dsp": {
+    "speaker_simple_help": "选择尺寸会自动适配低频保护；更细的扬声器调整在专业调节里",
+    "adjustment_mode": "调节方式",
+    "simple_mode": "简单调节",
+    "expert_mode": "专业调节",
+    "current_preset": "当前音色：{name}",
+    "no_user_presets": "调好听感后保存，就能在这里一键恢复",
+    "user_preset_note": "恢复你保存的音色",
+    "listening": {
+      "title": "按听感微调",
+      "help": "先选喜欢的音色，再调整下面五项。小幅拖动即可细调，0 是自然状态。已关闭的分区会从自然音色重新起步",
+      "reset": "五项归零",
+      "neutral": "自然",
+      "protection": "调节时自动预留增益余量并开启峰值保护；保留耳机校正。试听原声可随时比较，五项归零仅还原这里的调节",
+      "bass": {
+        "title": "低音",
+        "help": "让鼓点和低频更轻盈，或更饱满有力",
+        "left": "轻盈",
+        "right": "饱满"
+      },
+      "vocal": {
+        "title": "人声",
+        "help": "让歌声和对白更靠前；自然位置保留原始人声",
+        "left": "自然",
+        "right": "突出"
+      },
+      "brightness": {
+        "title": "明亮度",
+        "help": "高音刺耳时向左调，想听更多高频细节时向右调",
+        "left": "柔和",
+        "right": "明亮"
+      },
+      "warmth": {
+        "title": "温暖感",
+        "help": "少量增加柔和厚实的音色，越靠右效果越明显",
+        "left": "自然",
+        "right": "温暖"
+      },
+      "space": {
+        "title": "空间感",
+        "help": "调整立体声的集中与开阔程度，单声道音乐的变化可能不明显",
+        "left": "集中",
+        "right": "开阔"
+      }
+    },
+    "preset_notes": {
+      "flat": "自然音色，适合从头细调",
+      "pop": "人声与节奏更清楚",
+      "rock": "强化鼓点和吉他质感",
+      "classical": "柔和高音，宽阔空间",
+      "jazz": "温暖柔顺，突出乐器",
+      "electronic": "有力低音，明亮细节",
+      "hip_hop": "突出低音与节拍",
+      "rnb": "饱满低音，温暖人声",
+      "folk": "自然温暖，突出弦乐",
+      "metal": "强劲低音，清晰高频",
+      "acg": "清晰人声与明亮旋律",
+      "piano": "钢琴轮廓，少量空间感",
+      "vocal_boost": "让歌声和对白靠前",
+      "bass_boost": "让低音更饱满有力",
+      "deep_bass": "更深的低音与谐波",
+      "treble_boost": "增加高频细节和亮度",
+      "warm": "柔和高音，温暖厚实",
+      "live": "宽阔声场，现场氛围",
+      "concert_hall": "较长混响，音乐厅氛围",
+      "cinema": "低音、环绕与动态控制",
+      "surround_3d": "加强立体声与包围感",
+      "karaoke": "减弱中央人声，增加混响",
+      "night": "压低动态，夜间轻松听",
+      "spoken": "突出对白，减少低频",
+      "loudness_max": "较强压缩，响度更均匀",
+      "headphone_hifi": "适度细节，缓和声道分离",
+      "studio": "轻度交叉馈送与空间感",
+      "car": "突出低音、高音和人声",
+      "small_speaker": "增加可听低音和清晰度"
+    },
     "preset_limit": "最多保存 50 个用户预设，请先删除不需要的预设",
     "manual": "手动调整",
-    "enabled": "DSP 音效总开关",
-    "enabled_help": "关闭后直接旁路 DSP，所有调节仍保留。A/B 对比可随时切回原声",
-    "compare_original": "A/B：聆听原声",
-    "compare_effect": "A/B：聆听音效",
+    "enabled": "音效总开关",
+    "enabled_help": "关闭时保留你的调节。用“试听原声”随时比较效果，找到更喜欢的听感",
+    "compare_original": "试听原声",
+    "compare_effect": "试听音效",
     "current_output": "当前输出：{name}",
     "system_default": "系统默认设备",
     "preset_section": "音效预设",
-    "preset_help": "选择预设会启用 DSP。内置风格保留参数均衡校正；用户预设恢复完整音色。手动调整不会出现在预设列表中",
+    "preset_help": "点选卡片即可试听音色，再按听感微调，满意后保存。内置音色保留已有耳机校正，个人预设恢复保存的全部调节",
     "preset_name": "预设名称（最多 24 字）",
     "save_preset": "保存当前音色",
     "delete_preset": "删除此用户预设",
@@ -424,6 +499,7 @@
     "compressor_reduction": "压缩衰减",
     "limiter_reduction": "限幅衰减",
     "categories": {
+      "common": "常用",
       "all": "全部",
       "style": "音乐风格",
       "tone": "音色",
@@ -441,9 +517,9 @@
       "band_pass": "带通"
     },
     "speaker_sizes": {
-      "phone": "小型 / 手机",
-      "tablet": "中型 / 平板",
-      "large": "大型扬声器"
+      "phone": "小型",
+      "tablet": "中型",
+      "large": "大型"
     },
     "quality_modes": {
       "eco": "节能",
@@ -1413,7 +1489,7 @@
     "audio_processing": "音频处理",
     "nav_audio_desc": "输出设备、响度均衡与声道",
     "audio_effects_section": "音效与倍速",
-    "audio_effects_desc": "播放速度、唱片效果和完整 DSP 音色处理，按分区调整并记住输出设备偏好",
+    "audio_effects_desc": "先选喜欢的音色，再按听感微调；倍速、唱片效果和专业调节也在这里",
     "audio_effects_speed_desc": "0.1x 至 4x，改变播放速度并保持音调；1x 为原速",
     "audio_effects_pitch_desc": "0.25x 至 2x，改变音高并保持播放速度；1x 为原调",
     "audio_effects_gain_desc": "播放响度增益 0 至 15 dB，独立于 DSP 输出增益；若失真，请降低增益",

@@ -271,6 +271,8 @@ private:
     float reductionDb_ = 0.0f;
     float appliedGain_ = 1.0f;
     float makeupGain_ = 1.0f;
+    float targetMakeupGain_ = 1.0f;
+    float makeupSmoothing_ = 1.0f;
     int detectorStride_ = 1;
     int strideCounter_ = 0;
 };
@@ -318,6 +320,7 @@ private:
     SpeakerSettings settings_;
     float designedHighPassHz_ = -1.0f;
     float designedLoudness_ = -1.0f;
+    SmoothedValue highPassFrequency_;
     SmoothedValue expand_;
     StereoBiquad highPassA_;
     StereoBiquad highPassB_;

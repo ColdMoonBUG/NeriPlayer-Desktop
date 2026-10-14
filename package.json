@@ -35,6 +35,7 @@
     "test:playback-settings": "node scripts/test-playback-settings.mjs",
     "test:audio-effects-store": "node scripts/test-audio-effects-store.mjs",
     "test:audio-effects-model": "node scripts/test-audio-effects-model.mjs",
+    "test:listening-tuning": "node scripts/test-listening-tuning.mjs",
     "test:audio-effects-ui": "node scripts/test-audio-effects-ui.mjs",
     "test:playback-cache": "node scripts/test-playback-cache.mjs",
     "test:player-state": "node scripts/test-player-state.mjs",

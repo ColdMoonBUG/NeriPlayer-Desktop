@@ -87,6 +87,13 @@ import {
   type AudioEffectsSound,
   type SoundSection,
 } from '@/modules/audioEffects/model'
+import {
+  applyListeningTuning,
+  LISTENING_CONTROLS,
+  listeningTuningValues,
+  resetListeningTuning as resetListeningTuningSound,
+  type ListeningControlKey,
+} from '@/modules/audioEffects/listening'
 import { formatTimeMs as formatTime } from '@/utils/timeFormat'
 import { getTrackCoverUrl } from '@/utils/trackCover'
 import {
@@ -2904,6 +2911,7 @@ export const usePlayerStore = defineStore('player', () => {
   const audioEffects = computed(() => settings.audioEffects)
   const audioEffectsOutputDevice = ref(settings.audioOutputDevice || 'system_default')
   const audioEffectsProfile = computed(() => audioEffectsProfileFor(audioEffects.value, audioEffectsOutputDevice.value))
+  const listeningTuning = computed(() => listeningTuningValues(audioEffectsProfile.value.sound))
   let audioEffectsRevision = 0
   let audioEffectsTimer: ReturnType<typeof setTimeout> | null = null
   let audioEffectsApplyChain: Promise<void> = Promise.resolve()
@@ -2943,6 +2951,17 @@ export const usePlayerStore = defineStore('player', () => {
 
   function setAudioEffectsPreset(id: string) {
     updateAudioEffectsProfile(applyAudioEffectPreset(audioEffectsProfile.value, id, settings.audioEffects.userPresets))
+  }
+
+  function setListeningTuning(key: ListeningControlKey, value: number) {
+    if (!Number.isFinite(value) || !LISTENING_CONTROLS.some(control => control.key === key)) return
+    updateAudioEffects({ autoHeadroom: true })
+    updateAudioEffectsProfile({ enabled: true, presetId: 'custom',
+      sound: applyListeningTuning(audioEffectsProfile.value.sound, key, value) })
+  }
+
+  function resetListeningTuning() {
+    updateAudioEffectsProfile({ presetId: 'custom', sound: resetListeningTuningSound(audioEffectsProfile.value.sound) })
   }
 
   function resetAudioEffectsSection(section: SoundSection | 'speaker') {
@@ -3519,6 +3538,7 @@ export const usePlayerStore = defineStore('player', () => {
     currentStreamUrl, sleepTimerMode, sleepRemainingSeconds,
     loudnessGainMb, equalizerEnabled, equalizerPresetId, equalizerBands, hasActiveEffects,
     audioEffects, audioEffectsProfile, audioEffectsOutputDevice, updateAudioEffects, updateAudioEffectsProfile,
+    listeningTuning, setListeningTuning, resetListeningTuning,
     updateAudioEffectsSound, setAudioEffectsPreset, resetAudioEffectsSection, saveAudioEffectsPreset,
     deleteAudioEffectsPreset, exportAudioEffectsPreset, importAudioEffectsPreset, importAutoEq, refreshAudioEffectsStats,
     progress, interpolatedPositionMs, interpolatedProgress, livePositionMs, effectivePlaybackSpeed,

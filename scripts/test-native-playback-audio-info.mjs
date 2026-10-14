@@ -3,9 +3,10 @@ import { readFile } from 'node:fs/promises'
 import * as vue from 'vue'
 import * as pinia from 'pinia'
 import ts from 'typescript'
-import { loadAudioEffectsModel } from './audio-effects-model-loader.mjs'
+import { loadAudioEffectsModel, loadListeningTuning } from './audio-effects-model-loader.mjs'
 
 const audioEffectsModel = await loadAudioEffectsModel()
+const listeningTuning = await loadListeningTuning()
 
 let sequence = 0
 async function load(source, dependencies = {}) {
@@ -116,6 +117,7 @@ async function runtime(options = {}) {
   })
   const loaded = await load(source, {
     '@/modules/audioEffects/model': audioEffectsModel,
+    '@/modules/audioEffects/listening': listeningTuning,
     vue, pinia, '@tauri-apps/api/core': core,
     '@tauri-apps/api/event': { listen: async (name, callback) => { events.set(name, callback); return () => events.delete(name) } },
     './history': { useHistoryStore: () => options.history ?? { record: () => {}, rememberedPosition: () => 0, updateResumePosition() {} } },

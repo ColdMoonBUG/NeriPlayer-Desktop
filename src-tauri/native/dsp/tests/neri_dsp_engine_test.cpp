@@ -191,6 +191,104 @@ bool testSpeakerHighPassRemovesUnplayableBass() {
     return true;
 }
 
+bool testSpeakerLoudnessStartsContinuouslyAtZero() {
+    for (const float frequency : {80.0f, 1200.0f, 6000.0f}) {
+        Params params = neutralParams();
+        params[kSpeakerEnabled] = 1.0f;
+        params[kSpeakerHighPassHz] = 0.0f;
+        params[kSpeakerLoudness] = 0.001f;
+        Engine engine;
+        CHECK(configured(engine, params));
+        const auto input = stereoSine(frequency, 0.1f, kSampleRate);
+        const auto output = processFloat(engine, input);
+        const double gainDb = 20.0 * std::log10(rms(output, kSampleRate) / rms(input, kSampleRate));
+        std::printf("speaker 0.1%% at %.0f Hz: %.6f dB\n", frequency, gainDb);
+        CHECK(std::fabs(gainDb) < 0.1);
+    }
+    return true;
+}
+
+bool testSpeakerProtectionSlidesWithoutClearingFilterHistory() {
+    StageContext context;
+    context.smoothing = static_cast<float>(1.0 - std::exp(-64.0 / (kSampleRate * 0.025)));
+    SpeakerStage changed;
+    SpeakerStage reference;
+    SpeakerSettings settings;
+    settings.enabled = true;
+    settings.highPassHz = 180.0f;
+    for (SpeakerStage* stage : {&changed, &reference}) {
+        stage->configure(context);
+        stage->setTargets(settings);
+        stage->snapToTargets();
+    }
+    const auto input = stereoSine(200.0f, 0.2f, 8192);
+    for (int start = 0; start < 4096; start += 64) {
+        std::array<float, 64> left{};
+        std::array<float, 64> right{};
+        for (int i = 0; i < 64; ++i) {
+            left[static_cast<size_t>(i)] = input[static_cast<size_t>(start + i) * 2];
+            right[static_cast<size_t>(i)] = left[static_cast<size_t>(i)];
+        }
+        auto otherLeft = left;
+        auto otherRight = right;
+        changed.process(left.data(), right.data(), 64);
+        reference.process(otherLeft.data(), otherRight.data(), 64);
+    }
+    settings.highPassHz = 181.0f;
+    changed.setTargets(settings);
+    float largestDifference = 0.0f;
+    for (int start = 4096; start < 8192; start += 64) {
+        std::array<float, 64> left{};
+        std::array<float, 64> right{};
+        for (int i = 0; i < 64; ++i) {
+            left[static_cast<size_t>(i)] = input[static_cast<size_t>(start + i) * 2];
+            right[static_cast<size_t>(i)] = left[static_cast<size_t>(i)];
+        }
+        auto otherLeft = left;
+        auto otherRight = right;
+        changed.process(left.data(), right.data(), 64);
+        reference.process(otherLeft.data(), otherRight.data(), 64);
+        for (size_t i = 0; i < left.size(); ++i) {
+            largestDifference = std::max(largestDifference, std::fabs(left[i] - otherLeft[i]));
+        }
+    }
+    std::printf("speaker protection 180 -> 181 Hz maximum PCM difference: %.6f\n", largestDifference);
+    CHECK(largestDifference < 0.005f);
+    return true;
+}
+
+bool testCompressorMakeupSlidesWithoutAnInstantGainJump() {
+    for (const QualityMode quality : {QualityMode::Eco, QualityMode::Balanced, QualityMode::High}) {
+        StageContext context;
+        context.quality = quality;
+        CompressorStage stage;
+        CompressorSettings settings;
+        settings.enabled = true;
+        settings.ratio = 1.0f;
+        stage.configure(context);
+        stage.setTargets(settings);
+        std::array<float, 64> left{};
+        std::array<float, 64> right{};
+        left.fill(0.05f);
+        right.fill(0.05f);
+        stage.process(left.data(), right.data(), 64);
+        settings.makeupDb = 18.0f;
+        stage.setTargets(settings);
+        left.fill(0.05f);
+        right.fill(0.05f);
+        stage.process(left.data(), right.data(), 64);
+        std::printf("compressor makeup 0 -> 18 dB first PCM step: %.6f\n", left[0] - 0.05f);
+        CHECK(std::fabs(left[0] - 0.05f) < 0.002f);
+        for (int block = 0; block < 750; ++block) {
+            left.fill(0.05f);
+            right.fill(0.05f);
+            stage.process(left.data(), right.data(), 64);
+        }
+        CHECK(std::fabs(left.back() - 0.05f * dbToGain(18.0f)) < 0.0001f);
+    }
+    return true;
+}
+
 bool testZeroWidthCollapsesToMono() {
     Params params = neutralParams();
     params[kStereoWidth] = 0.0f;
@@ -351,13 +449,16 @@ bool testDisableFadesOutToIdle() {
 } // namespace
 
 int main() {
-    const std::array<std::pair<const char*, std::function<bool()>>, 12> tests = {{
+    const std::array<std::pair<const char*, std::function<bool()>>, 15> tests = {{
         {"disabled_passthrough", testDisabledEngineIsBitExactPassthrough},
         {"neutral_transparent", testNeutralEnabledChainIsTransparentForFloat},
         {"graphic_band_gain", testGraphicBandBoostMatchesRequestedGain},
         {"smoothed_change", testParameterChangeIsSmoothedWithoutJumps},
         {"limiter_ceiling", testLimiterKeepsPeaksBelowCeiling},
         {"speaker_high_pass", testSpeakerHighPassRemovesUnplayableBass},
+        {"speaker_loudness_continuity", testSpeakerLoudnessStartsContinuouslyAtZero},
+        {"speaker_protection_continuity", testSpeakerProtectionSlidesWithoutClearingFilterHistory},
+        {"compressor_makeup_continuity", testCompressorMakeupSlidesWithoutAnInstantGainJump},
         {"zero_width_mono", testZeroWidthCollapsesToMono},
         {"integer_round_trip", testIntegerFormatsRoundTripWhenNeutral},
         {"mono_input", testMonoInputIsSupported},

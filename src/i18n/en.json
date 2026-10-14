@@ -352,16 +352,91 @@
     "dir_fallback": "Selected download folder unavailable, saved to default location"
   },
   "dsp": {
+    "speaker_simple_help": "Choosing a size automatically adapts bass protection. Advanced tuning provides the detailed speaker controls",
+    "adjustment_mode": "Adjustment mode",
+    "simple_mode": "Simple tuning",
+    "expert_mode": "Advanced tuning",
+    "current_preset": "Current sound: {name}",
+    "no_user_presets": "Save a sound you like to recall it here",
+    "user_preset_note": "Recall your saved sound",
+    "listening": {
+      "title": "Tune by ear",
+      "help": "Choose a sound, then adjust these five controls. Small moves make gentle changes; zero is natural. Bypassed sections restart from neutral sound",
+      "reset": "Zero these five",
+      "neutral": "Natural",
+      "protection": "Tuning enables automatic headroom and peak protection while retaining headphone correction. Compare with the original anytime; zeroing affects only these five controls",
+      "bass": {
+        "title": "Bass",
+        "help": "Make drums and bass lighter or fuller",
+        "left": "Lighter",
+        "right": "Fuller"
+      },
+      "vocal": {
+        "title": "Vocals",
+        "help": "Bring singing and dialogue forward; Natural keeps the original vocals",
+        "left": "Natural",
+        "right": "Forward"
+      },
+      "brightness": {
+        "title": "Brightness",
+        "help": "Move left for softer highs, right for more high-frequency detail",
+        "left": "Softer",
+        "right": "Brighter"
+      },
+      "warmth": {
+        "title": "Warmth",
+        "help": "Add gentle warmth and body; higher settings are more pronounced",
+        "left": "Natural",
+        "right": "Warmer"
+      },
+      "space": {
+        "title": "Space",
+        "help": "Focus or widen the stereo image; mono recordings may change very little",
+        "left": "Focused",
+        "right": "Wider"
+      }
+    },
+    "preset_notes": {
+      "flat": "Natural sound for fine tuning",
+      "pop": "Clearer vocals and rhythm",
+      "rock": "Punchier drums and guitars",
+      "classical": "Gentle highs and spacious sound",
+      "jazz": "Warm, smooth instruments",
+      "electronic": "Strong bass and bright detail",
+      "hip_hop": "More bass and beat",
+      "rnb": "Full bass and warm vocals",
+      "folk": "Natural warmth and strings",
+      "metal": "Strong bass and clear highs",
+      "acg": "Clear vocals and bright melody",
+      "piano": "Piano detail with a little space",
+      "vocal_boost": "Bring singing and dialogue forward",
+      "bass_boost": "Fuller, more powerful bass",
+      "deep_bass": "Deeper bass with harmonics",
+      "treble_boost": "More detail and brightness",
+      "warm": "Softer highs and warm body",
+      "live": "Wider sound with live ambience",
+      "concert_hall": "Longer reverb and hall ambience",
+      "cinema": "Bass, surround and dynamics",
+      "surround_3d": "Wider stereo and envelopment",
+      "karaoke": "Reduce center vocals with reverb",
+      "night": "Gentler dynamics for quiet listening",
+      "spoken": "Clear dialogue with less bass",
+      "loudness_max": "Strong compression, steadier level",
+      "headphone_hifi": "Detail with gentler stereo separation",
+      "studio": "Light crossfeed and ambience",
+      "car": "More bass, highs and vocals",
+      "small_speaker": "Audible bass and clarity"
+    },
     "preset_limit": "You can save up to 50 user presets. Remove an unused preset first",
     "manual": "Manual adjustments",
-    "enabled": "Enable DSP effects",
-    "enabled_help": "Bypass DSP without losing adjustments. Use A/B to compare with the original sound",
-    "compare_original": "A/B: Original sound",
-    "compare_effect": "A/B: Processed sound",
+    "enabled": "Audio effects",
+    "enabled_help": "Turning effects off keeps your settings. Compare with the original sound anytime to find what you prefer",
+    "compare_original": "Play original",
+    "compare_effect": "Play effects",
     "current_output": "Current output: {name}",
     "system_default": "System default device",
     "preset_section": "Effect presets",
-    "preset_help": "Selecting a preset enables DSP. Built-in styles preserve parametric correction; user presets restore the complete sound. Manual adjustments are shown only as the current state",
+    "preset_help": "Choose a card, tune by ear, then save a sound you like. Built-in sounds keep headphone correction; personal presets restore all saved adjustments",
     "preset_name": "Preset name (up to 24 characters)",
     "save_preset": "Save current sound",
     "delete_preset": "Delete user preset",
@@ -424,6 +499,7 @@
     "compressor_reduction": "Compressor reduction",
     "limiter_reduction": "Limiter reduction",
     "categories": {
+      "common": "Common",
       "all": "All",
       "style": "Style",
       "tone": "Tone",
@@ -441,9 +517,9 @@
       "band_pass": "Band pass"
     },
     "speaker_sizes": {
-      "phone": "Small / phone",
-      "tablet": "Medium / tablet",
-      "large": "Large speaker"
+      "phone": "Small",
+      "tablet": "Medium",
+      "large": "Large"
     },
     "quality_modes": {
       "eco": "Eco",
@@ -1413,7 +1489,7 @@
     "audio_processing": "Audio Processing",
     "nav_audio_desc": "Output device, loudness and channels",
     "audio_effects_section": "Audio Effects & Speed",
-    "audio_effects_desc": "Playback rate, vinyl effect and full DSP sound processing, organized by section with per-device memory",
+    "audio_effects_desc": "Choose a sound and tune by ear; speed, vinyl effect and advanced controls are here too",
     "audio_effects_speed_desc": "0.1x to 4x: change playback speed while preserving pitch; 1x is the original speed",
     "audio_effects_pitch_desc": "0.25x to 2x: change pitch while preserving playback speed; 1x is the original pitch",
     "audio_effects_gain_desc": "Playback loudness gain from 0 to 15 dB, separate from DSP output gain; reduce it if distorted",

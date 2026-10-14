@@ -11,6 +11,9 @@ const props = withDefaults(defineProps<{
   step?: number
   unit?: string
   scale?: number
+  minLabel?: string
+  maxLabel?: string
+  valueLabel?: string
 }>(), { step: 0.1, unit: '', scale: 1 })
 const emit = defineEmits<{ 'update:modelValue': [value: number] }>()
 const displayValue = computed(() => {
@@ -28,14 +31,14 @@ const displayValue = computed(() => {
         <div v-if="help" class="setting-desc">{{ help }}</div>
       </div>
       <EditableRangeValue :model-value="modelValue" :min="min" :max="max" :step="step" :input-scale="scale"
-        :display-value="displayValue" :input-suffix="unit" :aria-label="label"
+        :display-value="valueLabel ?? displayValue" :input-suffix="unit" :aria-label="label"
         @update:model-value="emit('update:modelValue', $event)" />
     </div>
     <div class="dsp-number-range">
-      <span>{{ Number((min * scale).toFixed(2)) }}</span>
+      <span>{{ minLabel ?? Number((min * scale).toFixed(2)) }}</span>
       <input type="range" :min="min" :max="max" :step="step" :value="modelValue" :aria-label="label"
         @input="emit('update:modelValue', Number(($event.target as HTMLInputElement).value))" />
-      <span>{{ Number((max * scale).toFixed(2)) }} {{ unit }}</span>
+      <span>{{ maxLabel ?? `${Number((max * scale).toFixed(2))} ${unit}` }}</span>
     </div>
   </div>
 </template>

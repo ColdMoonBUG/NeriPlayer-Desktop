@@ -2,8 +2,9 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import ts from 'typescript'
 import { ref, reactive, computed, watch, nextTick, effectScope } from 'vue'
-import { loadAudioEffectsModel } from './audio-effects-model-loader.mjs'
+import { loadAudioEffectsModel, loadListeningTuning } from './audio-effects-model-loader.mjs'
 const model = await loadAudioEffectsModel()
+const listening = await loadListeningTuning()
 
 const read = path => readFile(new URL(path, import.meta.url), 'utf8')
 const playerSource = await read('../src/stores/player.ts')
@@ -14,7 +15,7 @@ const settingsTree = parse('settings.ts', settingsSource)
 const names = new Set(['setSpeed', 'setPitch', 'effectivePlaybackSpeed', 'setListenTogetherSyncPlaybackRate',
   'setVinylEffect', 'effectivePlaybackPitch', 'resetAudioEffects', 'setLoudnessGain', 'setEqualizer', 'setEqualizerPreset', 'applyPersistedSettings',
   'applyNativeAudioEffects', 'scheduleNativeAudioEffects', 'applyPlaybackParameter', 'updateAudioEffects', 'updateAudioEffectsProfile', 'updateAudioEffectsSound',
-  'setAudioEffectsPreset', 'resetAudioEffectsSection', 'saveAudioEffectsPreset', 'deleteAudioEffectsPreset',
+  'setAudioEffectsPreset', 'setListeningTuning', 'resetListeningTuning', 'resetAudioEffectsSection', 'saveAudioEffectsPreset', 'deleteAudioEffectsPreset',
   'exportAudioEffectsPreset', 'importAudioEffectsPreset', 'importAutoEq', 'refreshAudioEffectsStats'])
 const fragments = []
 function collect(node) {
@@ -54,7 +55,8 @@ function runtime(options = {}) {
   const calls = [], timers = new Map()
   let timerSequence = 0
   const context = {
-    ...state, ...model, parseAutoEq: model.importAutoEq, ref, computed, watch, EQ_PRESETS: presetModule.EQ_PRESETS,
+    ...state, ...model, ...listening, resetListeningTuningSound: listening.resetListeningTuning,
+    parseAutoEq: model.importAutoEq, ref, computed, watch, EQ_PRESETS: presetModule.EQ_PRESETS,
     i18n: { global: { t: key => key } }, crypto,
     invoke: async (command, args) => { calls.push([command, args]); return options.invoke?.(command, args) },
     setTimeout: callback => { const id = ++timerSequence; timers.set(id, callback); return id },
@@ -72,7 +74,7 @@ function runtime(options = {}) {
     ${compiled}
     return { setSpeed, setPitch, setVinylEffect, effectivePlaybackSpeed, effectivePlaybackPitch, setListenTogetherSyncPlaybackRate,
       applyNativeAudioEffects, updateAudioEffects, updateAudioEffectsProfile, updateAudioEffectsSound,
-      setAudioEffectsPreset, resetAudioEffectsSection, saveAudioEffectsPreset, deleteAudioEffectsPreset,
+      setAudioEffectsPreset, setListeningTuning, resetListeningTuning, resetAudioEffectsSection, saveAudioEffectsPreset, deleteAudioEffectsPreset,
       exportAudioEffectsPreset, importAudioEffectsPreset, importAutoEq, refreshAudioEffectsStats,
       resetAudioEffects, setLoudnessGain, setEqualizerPreset, applyPersistedSettings, interpolationSpeed: () => _interpSpeed,
       seekSequence: () => lastSeekCommand.value.seq, anchor: () => [_interpAnchorMs, _interpAnchorTime, _interpRenderedMs] };
@@ -322,5 +324,34 @@ await regression('edits during an in-flight reset apply after it finishes', asyn
   assert.equal(r.calls.filter(([command]) => command === 'set_vinyl_effect').at(-1)[1].enabled, true)
   assert.equal(r.calls.filter(([command]) => command === 'set_loudness_gain').at(-1)[1].gainMb, 650)
 }, { invoke: async command => { if (command === 'reset_audio_effects') await resetGate } })
+
+await regression('beginner tuning persists the actual sound with device isolation and headphone correction intact', async r => {
+  r.updateAudioEffects({ perOutputEnabled: true, autoHeadroom: false })
+  r.importAutoEq('Preamp: -20 dB\nFilter 1: ON PK Fc 1000 Hz Gain -4 dB Q 2')
+  r.updateAudioEffectsSound({ reverb: 0.4, limiterEnabled: false })
+  r.updateAudioEffectsProfile({ enabled: false })
+  const correction = r.audioEffectsProfile.value.sound.parametricBands
+  r.setListeningTuning('bass', 50)
+  assert.equal(r.audioEffectsProfile.value.enabled, true)
+  assert.equal(r.settings.audioEffects.autoHeadroom, true)
+  assert.equal(r.audioEffectsProfile.value.sound.limiterEnabled, true)
+  assert.equal(r.audioEffectsProfile.value.sound.reverb, 0.4)
+  assert.deepEqual(r.audioEffectsProfile.value.sound.parametricBands, correction)
+  assert.equal(r.audioEffectsProfile.value.sound.preampDb, -20)
+  assert.ok(Math.abs(r.audioEffectsProfile.value.sound.bassDb - 4.2) < 1e-6)
+  const before = JSON.stringify(r.settings.audioEffects)
+  r.setListeningTuning('__proto__', 50)
+  r.setListeningTuning('bass', NaN)
+  assert.equal(JSON.stringify(r.settings.audioEffects), before)
+  await r.flush()
+  assert.ok(Math.abs(r.calls.filter(([command]) => command === 'set_audio_effects').at(-1)[1].settings.outputProfiles.Headphones.sound.bassDb - 4.2) < 1e-6)
+  r.audioEffectsOutputDevice.value = 'Speakers'
+  assert.equal(r.audioEffectsProfile.value.sound.bassDb, 0)
+  r.audioEffectsOutputDevice.value = 'Headphones'
+  r.resetListeningTuning()
+  assert.equal(r.audioEffectsProfile.value.sound.bassDb, 0)
+  assert.equal(r.audioEffectsProfile.value.sound.reverb, 0.4)
+  assert.equal(r.playbackSpeed.value, 1)
+})
 
 console.log(`Audio effects store regressions: ${passed} passed`)

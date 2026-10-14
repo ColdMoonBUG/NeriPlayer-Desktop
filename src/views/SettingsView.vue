@@ -351,11 +351,14 @@ function openSettingsSearchResult(result: SettingsSearchResult | undefined) {
 }
 
 /// 找到标题文字一致的设置卡片，滚到可视区中间并闪一下
-function focusSettingsItem(section: SettingsSectionId, title: string, attempt = 0) {
+const audioEffectsSettingsRef = ref<{ revealSetting: (title: string) => Promise<void> } | null>(null)
+async function focusSettingsItem(section: SettingsSectionId, title: string, attempt = 0) {
+  if (section === 'audio_effects' && title === t('player.eq_preset')) title = t('dsp.preset_section')
+  if (section === 'audio_effects') await audioEffectsSettingsRef.value?.revealSetting(title)
   const panel = settingsContentRef.value?.querySelector(`.settings-section-panel[data-section="${section}"]`)
   const titleEl = [...(panel?.querySelectorAll<HTMLElement>('.setting-title') ?? [])]
     .find(element => element.textContent?.trim() === title)
-  const card = titleEl?.closest<HTMLElement>('.setting-card')
+  const card = titleEl?.closest<HTMLElement>(section === 'audio_effects' ? '.setting-card, .effects-import, .effects-section' : '.setting-card')
   if (!card) {
     // 折叠分组的展开动画还没把内容插进来时稍后再找
     if (attempt < 6) setTimeout(() => focusSettingsItem(section, title, attempt + 1), 80)
@@ -1894,7 +1897,7 @@ useEscapeClose(
 
     <!-- 详细音效 -->
         <div v-show="activeSettingsSection === 'audio_effects'" class="settings-section-panel" data-section="audio_effects">
-          <AudioEffectsSettings v-if="activeSettingsSection === 'audio_effects'" />
+          <AudioEffectsSettings v-if="activeSettingsSection === 'audio_effects'" ref="audioEffectsSettingsRef" />
         </div>
 
     <!-- 播放 -->

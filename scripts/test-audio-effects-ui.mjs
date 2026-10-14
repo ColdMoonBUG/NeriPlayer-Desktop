@@ -13,6 +13,7 @@ function loadModule(source, dependencies = {}) {
   return exports
 }
 const model = loadModule(await read('../src/modules/audioEffects/model.ts'))
+const listening = loadModule(await read('../src/modules/audioEffects/listening.ts'), { './model': model })
 const initial = () => model.normalizeAudioEffectsSettings(undefined)
 const calls = []
 let statsCalls = 0
@@ -20,6 +21,9 @@ const player = vue.reactive({
   playbackSpeed: 1, playbackPitch: 1, loudnessGainMb: 0, vinylEffectEnabled: false,
   audioEffects: initial(), audioEffectsOutputDevice: 'USB DAC',
   get audioEffectsProfile() { return model.audioEffectsProfileFor(this.audioEffects, this.audioEffectsOutputDevice) },
+  get listeningTuning() { return listening.listeningTuningValues(this.audioEffectsProfile.sound) },
+  setListeningTuning(key, value) { this.updateAudioEffects({ autoHeadroom: true }); this.updateAudioEffectsProfile({ enabled: true, presetId: 'custom', sound: listening.applyListeningTuning(this.audioEffectsProfile.sound, key, value) }) },
+  resetListeningTuning() { this.updateAudioEffectsProfile({ sound: listening.resetListeningTuning(this.audioEffectsProfile.sound) }) },
   setSpeed(value) { this.playbackSpeed = value },
   setPitch(value) { this.playbackPitch = value },
   setVinylEffect(value) { this.vinylEffectEnabled = value },
@@ -57,6 +61,7 @@ async function component(path, dependencyOverrides = {}) {
     '@tauri-apps/api/core': { isTauri: () => true },
     '@/stores/player': { usePlayerStore: () => player },
     '@/modules/audioEffects/model': model,
+    '@/modules/audioEffects/listening': listening,
     '@/utils/editableRange': loadModule(await read('../src/utils/editableRange.ts')),
     './ui/CustomSelect.vue': { default: select }, '@/components/ui/CustomSelect.vue': { default: select },
     ...components, ...dependencyOverrides,
@@ -68,7 +73,7 @@ async function component(path, dependencyOverrides = {}) {
 
 let focusedInput = null
 class TestElement {
-  constructor(type) { this.type = type; this.tagName = type.toUpperCase(); this.children = []; this.props = {}; this.listeners = new Map() }
+  constructor(type) { this.type = type; this.tagName = type.toUpperCase(); this.children = []; this.props = {}; this.style = { display: '' }; this.listeners = new Map() }
   get parentElement() { return this.parent instanceof TestElement ? this.parent : null }
   matches(selector) {
     if (selector.startsWith('.')) return (this.props.class ?? '').split(/\s+/).includes(selector.slice(1))
@@ -168,7 +173,27 @@ const detailApp = renderer.createApp(await component('../src/components/settings
 detailApp.mount(detailTree)
 try {
   await Promise.resolve(); await vue.nextTick()
-  assert.equal(ranges(detailTree).length, 47, 'all 29 DSP controls, 10 graphic EQ bands, 5 speaker controls and 3 playback controls are wired')
+  assert.equal(ranges(detailTree).length, 52, 'five listening controls and all 47 professional controls are wired')
+  const professional = findAll(detailTree, node => node instanceof TestElement && node.matches('.effects-professional'))[0]
+  assert.equal(professional.style.display, 'none', 'technical controls start hidden in simple mode')
+  assert.equal(findAll(detailTree, node => node.type === 'preset-select' && node.props.label === 'player.eq_preset').length, 0,
+    'detailed presets are direct cards, never a selection box')
+  assert.equal(findAll(detailTree, node => node.type === 'button' && node.matches('.effects-preset-card')).length, 8)
+  button(detailTree, 'dsp.categories.all').props.onClick(); await vue.nextTick()
+  assert.equal(findAll(detailTree, node => node.type === 'button' && node.matches('.effects-preset-card')).length, 29)
+  byLabel(detailTree, 'dsp.presets.warm').props.onClick(); await vue.nextTick()
+  assert.equal(player.audioEffectsProfile.presetId, 'warm')
+  assert.equal(byLabel(detailTree, 'dsp.presets.warm').props['aria-pressed'], true)
+  rangeByLabel(detailTree, 'dsp.listening.bass.title').props.onInput({ target: { value: '50' } }); await vue.nextTick()
+  assert.ok(player.audioEffectsProfile.sound.bassDb > 0 && player.audioEffectsProfile.sound.bassDb < 6)
+  assert.equal(player.audioEffects.autoHeadroom, true)
+  assert.equal(player.audioEffectsProfile.sound.limiterEnabled, true)
+  const calibration = [...player.audioEffectsProfile.sound.equalizerBandsDb]
+  button(detailTree, 'dsp.listening.reset').props.onClick(); await vue.nextTick()
+  assert.equal(player.audioEffectsProfile.sound.bassDb, 0)
+  assert.deepEqual(player.audioEffectsProfile.sound.equalizerBandsDb, calibration)
+  button(detailTree, 'dsp.expert_mode').props.onClick(); await vue.nextTick()
+  assert.equal(professional.style.display, '', 'advanced mode reveals the full controls')
   for (const range of ranges(detailTree)) assert.ok(range.props['aria-label'])
   assert.equal(intervals.size, 1); assert.equal([...intervals.values()][0].milliseconds, 1000); assert.equal(statsCalls, 1)
   rangeByLabel(detailTree, 'settings.audio_effects_band:125').props.onInput({ target: { value: '-3.5' } })
@@ -213,9 +238,11 @@ try {
   byLabel(detailTree, 'dsp.preset_name').props['onUpdate:modelValue'](' My headphones ')
   await vue.nextTick(); button(detailTree, 'dsp.save_preset').props.onClick(); await vue.nextTick()
   assert.equal(player.audioEffects.userPresets[0].name, 'My headphones')
-  const presets = findAll(detailTree, node => node.type === 'preset-select' && node.props.label === 'player.eq_preset')[0]
-  assert.equal(presets.props.options.length, 30)
-  presets.props.onChoose('user_test'); await vue.nextTick()
+  assert.equal(findAll(detailTree, node => node.type === 'button' && node.matches('.effects-preset-card')).length, 1,
+    'saving shows the named preset immediately')
+  button(detailTree, 'dsp.categories.all').props.onClick(); await vue.nextTick()
+  assert.equal(findAll(detailTree, node => node.type === 'button' && node.matches('.effects-preset-card')).length, 30)
+  byLabel(detailTree, 'My headphones').props.onClick(); await vue.nextTick()
   button(detailTree, 'dsp.export_preset').props.onClick(); await vue.nextTick()
   assert.equal(JSON.parse(byLabel(detailTree, 'dsp.preset_json').value).name, 'Exported')
   button(detailTree, 'dsp.import_preset').props.onClick(); assert.ok(calls.some(call => call[0] === 'import'))
@@ -254,6 +281,10 @@ const index = await read('../src/modules/settings/searchIndex.ts')
 for (const key of ['player.playback_speed', 'player.pitch', 'player.vinyl_effect', 'dsp.autoeq', 'dsp.per_output', ...model.SOUND_CONTROLS.map(control => `dsp.controls.${control.key}`)]) assert.ok(index.includes(`title: '${key}'`), `${key} is searchable`)
 for (const locale of ['zh-CN', 'zh-TW', 'en', 'ja']) {
   const messages = JSON.parse(await read(`../src/i18n/${locale}.json`))
+  assert.ok(messages.dsp.simple_mode && messages.dsp.expert_mode)
+  assert.ok(Object.values(messages.dsp.speaker_sizes).every(value => !/[\/]/.test(value)))
+  for (const control of listening.LISTENING_CONTROLS) for (const key of ['title', 'help', 'left', 'right']) assert.ok(messages.dsp.listening[control.key][key])
+  for (const preset of model.AUDIO_EFFECT_PRESETS) assert.ok(messages.dsp.preset_notes[preset.id])
   assert.ok(messages.player.vinyl_effect)
   assert.ok(messages.dsp.preset_limit)
   for (const preset of model.AUDIO_EFFECT_PRESETS) assert.ok(messages.dsp.presets[preset.id], `${locale} preset ${preset.id}`)

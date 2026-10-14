@@ -27,7 +27,8 @@ CompressorSettings speakerBandSettings(float loudness, float ratioBoost) {
     CompressorSettings settings;
     settings.enabled = true;
     settings.thresholdDb = -8.0f - 22.0f * loudness;
-    settings.ratio = 2.5f + ratioBoost * loudness;
+    // 强度接近零时压缩比也接近 1，避免刚离开零点就跳升音量
+    settings.ratio = 1.0f + loudness * (1.5f + ratioBoost * loudness);
     settings.attackMs = 4.0f;
     settings.releaseMs = 140.0f;
     settings.kneeDb = 6.0f;
@@ -43,11 +44,13 @@ void CompressorCore::configure(double sampleRate, const CompressorSettings& sett
     const double detectorRate = sampleRate / static_cast<double>(detectorStride_);
     attack_ = timeCoefficient(detectorRate, settings_.attackMs);
     release_ = timeCoefficient(detectorRate, settings_.releaseMs);
-    makeupGain_ = dbToGain(settings_.makeupDb);
+    targetMakeupGain_ = dbToGain(settings_.makeupDb);
+    makeupSmoothing_ = timeCoefficient(detectorRate, 25.0);
 }
 
 void CompressorCore::reset() {
     reductionDb_ = 0.0f;
+    makeupGain_ = targetMakeupGain_;
     appliedGain_ = makeupGain_;
     strideCounter_ = 0;
 }
@@ -68,6 +71,7 @@ float CompressorCore::computeTargetDb(float inputDb) const {
 
 float CompressorCore::gainFor(float level) {
     if (strideCounter_ == 0) {
+        makeupGain_ += (targetMakeupGain_ - makeupGain_) * makeupSmoothing_;
         const float inputDb = gainToDb(level);
         const float targetReduction = computeTargetDb(inputDb) - inputDb;
         const float coefficient = targetReduction < reductionDb_ ? attack_ : release_;
@@ -125,6 +129,7 @@ void CompressorStage::process(float* left, float* right, int frames) {
 
 void SpeakerStage::configure(const StageContext& context) {
     context_ = context;
+    highPassFrequency_.setCoefficient(context.smoothing);
     expand_.setCoefficient(context.smoothing);
     harmonics_.configure(context);
     clarity_.configure(context, 2);
@@ -144,6 +149,7 @@ void SpeakerStage::setTargets(const SpeakerSettings& input) {
     settings.stereoExpand = clampf(settings.stereoExpand, 0.0f, 1.0f);
     const bool enabling = settings.enabled && !settings_.enabled;
     settings_ = settings;
+    highPassFrequency_.setTarget(settings.highPassHz);
     const float on = settings.enabled ? 1.0f : 0.0f;
     const float harmonicFrequency = clampf(std::max(settings.highPassHz, 60.0f) * 1.4f, 70.0f, 260.0f);
     harmonics_.setTargets(on * settings.bassHarmonics, harmonicFrequency);
@@ -152,12 +158,15 @@ void SpeakerStage::setTargets(const SpeakerSettings& input) {
     clarity_.setBand(1, FilterBandTarget{clarityOn, FilterType::HighShelf, 8000.0f, 3.0f * settings.clarity, 0.707f});
     expand_.setTarget(on * settings.stereoExpand);
     if (enabling) {
+        highPassA_.reset();
+        highPassB_.reset();
         designedHighPassHz_ = -1.0f;
         designedLoudness_ = -1.0f;
     }
 }
 
 void SpeakerStage::snapToTargets() {
+    highPassFrequency_.snap(highPassFrequency_.target());
     expand_.snap(expand_.target());
     harmonics_.snapToTargets();
     clarity_.snapToTargets();
@@ -185,14 +194,15 @@ bool SpeakerStage::active() const {
 
 void SpeakerStage::redesign() {
     const double sampleRate = context_.sampleRate;
-    if (designedHighPassHz_ != settings_.highPassHz) {
-        if (settings_.highPassHz >= 20.0f) {
-            highPassA_.coefficients = designBiquad(FilterType::HighPass, sampleRate, settings_.highPassHz, 0.0, kButterworthQ1);
-            highPassB_.coefficients = designBiquad(FilterType::HighPass, sampleRate, settings_.highPassHz, 0.0, kButterworthQ2);
+    highPassFrequency_.advance();
+    const float highPassHz = highPassFrequency_.value();
+    if (designedHighPassHz_ != highPassHz) {
+        if (highPassHz >= 20.0f) {
+            highPassA_.coefficients = designBiquad(FilterType::HighPass, sampleRate, highPassHz, 0.0, kButterworthQ1);
+            highPassB_.coefficients = designBiquad(FilterType::HighPass, sampleRate, highPassHz, 0.0, kButterworthQ2);
         }
-        highPassA_.reset();
-        highPassB_.reset();
-        designedHighPassHz_ = settings_.highPassHz;
+        // 调整截止频率时保留历史，避免每次拖动都重新启动滤波器
+        designedHighPassHz_ = highPassHz;
     }
     if (designedLoudness_ != settings_.loudness) {
         for (auto& filter : crossoverLow_) {
@@ -232,7 +242,7 @@ void SpeakerStage::process(float* left, float* right, int frames) {
     }
     if (settings_.enabled) {
         redesign();
-        if (settings_.highPassHz >= 20.0f) {
+        if (highPassFrequency_.value() >= 20.0f) {
             highPassA_.processBlock(left, right, frames);
             highPassB_.processBlock(left, right, frames);
         }

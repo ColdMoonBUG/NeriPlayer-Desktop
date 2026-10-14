@@ -46,7 +46,10 @@ int main() {
         params[kReverbAmount] = 0.8f;
         params[kReverbPreDelayMs] = static_cast<float>(iteration % 100);
         params[kSpeakerEnabled] = 1.0f;
+        params[kSpeakerHighPassHz] = 40.0f + static_cast<float>((iteration * 17) % 360);
+        params[kSpeakerLoudness] = static_cast<float>(iteration % 101) / 100.0f;
         params[kCompressorEnabled] = 1.0f;
+        params[kCompressorMakeupDb] = static_cast<float>(iteration % 19);
         params[kLimiterEnabled] = 1.0f;
         for (size_t i = 0; i < samples.size(); ++i) samples[i] = 0.2f * std::sin(static_cast<float>(i));
         valid = neri_desktop_dsp_set_params(desktop, params.data(), kParamCount) != 0 && valid;
