@@ -245,6 +245,7 @@ try {
   assert.equal(findAll(detailTree, node => node.text === 'dsp.user_preset_note').length, 0, 'user preset cards carry no filler description')
   byLabel(detailTree, 'My headphones').props.onClick(); await vue.nextTick()
   let copiedText = ''
+  globalThis.navigator ??= {}
   Object.defineProperty(globalThis.navigator, 'clipboard', { configurable: true, value: { writeText: async text => { copiedText = text } } })
   const transferButton = text => findAll(detailTree, node => node.type === 'button' && node.closest('.effects-transfer-actions')
     && findAll(node, child => child.text === text).length > 0)[0]
