@@ -14,8 +14,41 @@ fn text(row: &Value, keys: &[&str]) -> String {
     }).unwrap_or_default()
 }
 fn https(value: String) -> String {
+    let value = value.trim().to_owned();
     if value.starts_with("//") { format!("https:{value}") }
     else { value.replacen("http://", "https://", 1) }
+}
+
+fn playlist_cover(row: &Value) -> String {
+    for key in ["picUrl", "picurl", "logo", "cover", "coverUrl", "cover_url", "bigpicUrl", "albumPicUrl", "pic"] {
+        let value = &row[key];
+        let candidate = value.as_str().unwrap_or_default().to_owned();
+        let candidate = if candidate.trim().is_empty() { text(value, &["url", "picurl", "picUrl", "src"]) } else { candidate };
+        let candidate = https(candidate);
+        if candidate.starts_with("https://") { return candidate; }
+    }
+    String::new()
+}
+
+// Detail metadata is already bound to the requested ID by the SDK. It need not
+// repeat that ID (owned responses may contain only dirid, title and artwork).
+fn playlist_metadata(row: &Value) -> Value {
+    json!({"name":text(row, &["dirName", "dissname", "title", "name"]),
+        "coverUrl":playlist_cover(row),
+        "creator":text(row, &["nick", "nickname"]),
+        "description":text(row, &["desc", "description"])})
+}
+
+fn detail_summary(binding: Option<&Value>, info: &Value) -> Value {
+    let mut summary = playlist_metadata(info);
+    if let Some(binding) = binding {
+        for key in ["name", "coverUrl", "creator", "description"] {
+            if summary[key].as_str().unwrap_or_default().is_empty() {
+                summary[key] = binding[key].clone();
+            }
+        }
+    }
+    summary
 }
 fn credential(state: &AppState) -> AppResult<Credential> {
     state.auth.lock().qq.as_ref().filter(|auth| auth.info().logged_in)
@@ -53,12 +86,12 @@ async fn rows(api: &qqmusic_api::Client, credential: &Credential, operation: Acc
 }
 
 fn playlist(row: &Value, owned: bool) -> Option<Value> {
-    let id = text(row, &["tid", "dissid", "id"]);
+    let id = text(row, &["tid", "disstid", "dissid", "id"]);
     if id.parse::<u64>().ok().filter(|id| *id > 0).is_none() { return None; }
     Some(json!({
         "id": id, "name": text(row, &["dirName", "dissname", "title", "name"]),
-        "coverUrl": https(text(row, &["picUrl", "picurl", "cover", "bigpicUrl", "albumPicUrl"])),
-        "trackCount": text(row, &["songNum", "songnum", "song_cnt", "song_count"]).parse::<u64>().unwrap_or(0),
+        "coverUrl": playlist_cover(row),
+        "trackCount": text(row, &["songNum", "songnum", "song_cnt", "song_count", "trackCount"]).parse::<u64>().unwrap_or(0),
         "creator": text(row, &["nick", "nickname"]), "owned": owned,
         "dirId": text(row, &["dirId", "dirid"]).parse::<u64>().unwrap_or(0),
     }))
@@ -116,10 +149,11 @@ pub async fn get_qq_playlist(id: String, state: State<'_, AppState>) -> AppResul
     };
     let (songs, data) = rows(&api, &credential, operation).await?;
     let info = data.get("dirinfo").or_else(|| data.pointer("/cdlist/0")).unwrap_or(&Value::Null);
-    let summary = binding.or_else(|| playlist(info, false)).unwrap_or(json!({}));
     let mut seen = HashSet::new();
     let tracks: Vec<_> = songs.iter().filter_map(track).filter(|track| seen.insert(track["id"].as_str().unwrap_or_default().to_owned())).collect();
-    Ok(json!({"name":summary["name"], "coverUrl":summary["coverUrl"], "tracks":tracks}))
+    let mut summary = detail_summary(binding.as_ref(), info);
+    summary["tracks"] = json!(tracks);
+    Ok(summary)
 }
 
 // Public search results do not require an account. Never guess an owned directory ID.
@@ -160,6 +194,36 @@ async fn public_playlist(api: &qqmusic_api::Client, id: &str) -> AppResult<Value
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn qq_playlist_cover_accepts_provider_variants_and_skips_empty_fields() {
+        for row in [
+            json!({"picUrl":"", "logo":" //qpic.y.qq.com/cover.jpg "}),
+            json!({"cover":{"url":"http://qpic.y.qq.com/cover.jpg"}}),
+            json!({"pic":"https://qpic.y.qq.com/cover.jpg"}),
+            json!({"picUrl":" ", "bigpicUrl":"https://qpic.y.qq.com/cover.jpg"}),
+        ] {
+            assert_eq!(playlist_cover(&row), "https://qpic.y.qq.com/cover.jpg");
+        }
+        let summary = playlist(&json!({"disstid":"123456789012345678", "logo":"https://qpic.y.qq.com/cover.jpg", "trackCount":3}), false).unwrap();
+        assert_eq!(summary["id"], "123456789012345678");
+        assert_eq!(summary["trackCount"], 3);
+        assert_eq!(summary["coverUrl"], "https://qpic.y.qq.com/cover.jpg");
+    }
+
+    #[test]
+    fn qq_detail_keeps_artwork_without_repeated_id_and_merges_nonempty_metadata() {
+        let binding = json!({"name":"列表标题", "coverUrl":"https://qpic.y.qq.com/list.jpg"});
+        let info = json!({"dirid":301, "title":"详情标题", "picurl":"https://qpic.y.qq.com/detail.jpg"});
+        let summary = detail_summary(Some(&binding), &info);
+        assert_eq!(summary["name"], "详情标题");
+        assert_eq!(summary["coverUrl"], "https://qpic.y.qq.com/detail.jpg");
+        let summary = detail_summary(None, &info);
+        assert_eq!(summary["coverUrl"], "https://qpic.y.qq.com/detail.jpg");
+        let summary = detail_summary(Some(&binding), &json!({"title":"详情标题"}));
+        assert_eq!(summary["coverUrl"], "https://qpic.y.qq.com/list.jpg");
+        assert_eq!(detail_summary(None, &Value::Null)["coverUrl"], "", "let the UI prefer the known list cover before an album fallback");
+    }
+
     #[test]
     fn qq_library_maps_ids_counts_covers_and_track_sources() {
         let row = json!({"tid":"123456789012345678", "dirId":301, "dirName":"测试歌单", "picUrl":"http://example.com/a.jpg", "songNum":7});

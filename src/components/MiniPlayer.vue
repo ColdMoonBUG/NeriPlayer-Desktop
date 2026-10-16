@@ -419,9 +419,8 @@ defineExpose({
   left: 80px;
   right: 0;
   height: var(--mini-player-height, 76px);
-  background: var(--md-surface-container);
+  background: var(--md-surface-container-low);
   z-index: 100;
-  border-top: 1px solid var(--md-surface-container-highest);
   backdrop-filter: blur(18px) saturate(1.04);
   transition: transform 320ms cubic-bezier(0.22, 1, 0.36, 1), opacity 220ms ease, backdrop-filter 320ms ease;
 }
@@ -475,7 +474,7 @@ defineExpose({
   pointer-events: none;
 }
 
-// thumb 圆点（始终可见）
+// 圆点保持实心，避免进度条透过圆点
 .progress-thumb {
   position: absolute;
   left: 0;
@@ -483,14 +482,13 @@ defineExpose({
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: color-mix(in srgb, var(--md-primary) 60%, transparent);
+  background: var(--md-primary);
   box-shadow: 0 0 4px rgba(0,0,0,0.15);
   transform: translate(-50%, -50%);
-  transition: transform 150ms var(--ease-standard), background 200ms ease;
+  transition: transform 150ms var(--ease-standard);
 
   .progress-track.hovering &,
   .progress-track.dragging & {
-    background: var(--md-primary);
     transform: translate(-50%, -50%) scale(1.3);
   }
 }

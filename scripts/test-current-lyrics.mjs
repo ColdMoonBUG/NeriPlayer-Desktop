@@ -460,4 +460,32 @@ assert.deepEqual(store.lines.map(entry => [entry.translation, entry.roman]), [
 ], '已有副轨也按连续制作信息块过滤，缺失副轨作为边界')
 assert.equal(attachedSecondary[1].translation, '词：徐若瑄', '副轨上下文过滤保留原始数据')
 
+const screenshotVerse = {
+  ...line(14000, 'I miss the days when life was so simple', [{ startMs: 14000, durationMs: 1000, text: 'I miss the days when life was so simple' }]),
+  translation: '我想念那段时光 生活简单无忧', roman: 'verse roman',
+}
+const screenshotLyrics = [line(0, 'Hayd - Head The Clouds'), line(1000, 'by: Robert Hubers、'), line(2000, 'by: Robert Hubers'), screenshotVerse]
+const screenshotOriginal = structuredClone(screenshotLyrics)
+synced = null
+cached = screenshotLyrics
+player.currentTrack = { id: 'netease:screenshot', title: 'Head In The Clouds', artist: 'Hayd', album: 'Changes - EP', durationMs: 0 }
+trigger()
+const releaseScreenshot = store.acquire()
+await flush()
+assert.deepEqual(store.lines, [screenshotVerse], '已有缓存也根据当前曲目清理漏出的标题和署名')
+assert.deepEqual(cached, screenshotOriginal, '过滤旧缓存不改写缓存数据')
+synced = screenshotLyrics
+player.currentTrack = { ...player.currentTrack, id: 'netease:screenshot-synced' }
+trigger()
+await flush()
+assert.deepEqual(store.lines, [screenshotVerse], '同步歌词也按相同规则显示')
+assert.deepEqual(cacheWrites.at(-1)[1], screenshotOriginal, '显示过滤不改写 store 收到的解析结果')
+player.currentTrack = { id: 'local:screenshot.flac', source: 'local', title: 'Head In The Clouds', artist: 'Hayd', album: 'Changes - EP' }
+trigger()
+await flush()
+store.replace(screenshotLyrics)
+assert.deepEqual(store.lines, [screenshotVerse], '本地及编辑替换的歌词也清理同一组杂项')
+assert.deepEqual(screenshotLyrics, screenshotOriginal, '本地及编辑源数据保留')
+releaseScreenshot()
+
 console.log('current lyrics store tests passed')

@@ -273,7 +273,7 @@ function openResult(item: ExploreItem) {
 
 function collectionRoute(item: ExploreCollection): RouteLocationRaw {
   if (item.kind === 'playlist') {
-    if (item.platform === 'qq') return { name: 'qq-playlist', params: { id: item.id } }
+    if (item.platform === 'qq') return { name: 'qq-playlist', params: { id: item.id }, query: { name: item.name, cover: item.cover_url || '' } }
     if (item.platform === 'netease') return { name: 'netease-playlist', params: { id: item.id } }
     if (item.platform === 'bilibili') return { name: 'bili-playlist', params: { mediaId: item.id } }
     return { name: 'youtube-playlist', params: { browseId: item.id } }

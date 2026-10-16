@@ -53,8 +53,11 @@ const EQ_CROSSFADE_SECONDS: f64 = 0.02;
 const DENORMAL_FLOOR: f64 = 1e-30;
 
 /// 用户的音效设置，单位与前端一致（毫贝）
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EffectsSettings {
+    /// 独立音调比例，25～200 表示 0.25～2.0
+    pub pitch_centi: i32,
+    pub vinyl_effect_enabled: bool,
     /// 响度增益，0～1500 mB（0～+15 dB）
     pub loudness_gain_mb: i32,
     pub eq_enabled: bool,
@@ -66,7 +69,24 @@ pub struct EffectsSettings {
     pub balance_centi: i32,
 }
 
+impl Default for EffectsSettings {
+    fn default() -> Self {
+        Self {
+            pitch_centi: 100,
+            vinyl_effect_enabled: false,
+            loudness_gain_mb: 0,
+            eq_enabled: false,
+            eq_band_levels_mb: [0; EQ_BANDS],
+            normalize_volume: false,
+            balance_centi: 0,
+        }
+    }
+}
+
 impl EffectsSettings {
+    pub fn effective_pitch(&self, speed: f32) -> f32 {
+        if self.vinyl_effect_enabled { speed } else { self.pitch_centi as f32 / 100.0 }
+    }
     /// 「重置音效」之后的设置：清掉响度增益和均衡器
     ///
     /// 音量均衡和声道平衡是设置页里的独立设置，前端重置音效时不会重新下发它们，
@@ -80,6 +100,7 @@ impl EffectsSettings {
     }
 
     fn clamped(mut self) -> Self {
+        self.pitch_centi = ((self.pitch_centi.clamp(25, 200) + 2) / 5) * 5;
         self.loudness_gain_mb = self.loudness_gain_mb.clamp(0, MAX_LOUDNESS_GAIN_MB);
         self.balance_centi = self.balance_centi.clamp(-MAX_BALANCE_CENTI, MAX_BALANCE_CENTI);
         for level in &mut self.eq_band_levels_mb {
@@ -109,6 +130,9 @@ impl EffectsSettings {
 pub struct EffectsControl {
     writer: Mutex<()>,
     version: AtomicU64,
+    pitch_centi: AtomicI32,
+    vinyl_effect_enabled: AtomicBool,
+    pub dsp: Arc<crate::audio::dsp::DspControl>,
     loudness_gain_mb: AtomicI32,
     eq_enabled: AtomicBool,
     eq_band_levels_mb: [AtomicI32; EQ_BANDS],
@@ -121,6 +145,9 @@ impl EffectsControl {
         Arc::new(Self {
             writer: Mutex::new(()),
             version: AtomicU64::new(0),
+            pitch_centi: AtomicI32::new(100),
+            vinyl_effect_enabled: AtomicBool::new(false),
+            dsp: crate::audio::dsp::DspControl::new_shared(),
             loudness_gain_mb: AtomicI32::new(0),
             eq_enabled: AtomicBool::new(false),
             eq_band_levels_mb: std::array::from_fn(|_| AtomicI32::new(0)),
@@ -131,6 +158,8 @@ impl EffectsControl {
 
     pub fn snapshot(&self) -> EffectsSettings {
         EffectsSettings {
+            pitch_centi: self.pitch_centi.load(Ordering::Relaxed),
+            vinyl_effect_enabled: self.vinyl_effect_enabled.load(Ordering::Relaxed),
             loudness_gain_mb: self.loudness_gain_mb.load(Ordering::Relaxed),
             eq_enabled: self.eq_enabled.load(Ordering::Relaxed),
             eq_band_levels_mb: std::array::from_fn(|band| {
@@ -149,6 +178,8 @@ impl EffectsControl {
         let mut settings = self.snapshot();
         change(&mut settings);
         let settings = settings.clamped();
+        self.pitch_centi.store(settings.pitch_centi, Ordering::Relaxed);
+        self.vinyl_effect_enabled.store(settings.vinyl_effect_enabled, Ordering::Relaxed);
         self.loudness_gain_mb
             .store(settings.loudness_gain_mb, Ordering::Relaxed);
         self.eq_enabled.store(settings.eq_enabled, Ordering::Relaxed);
@@ -934,6 +965,16 @@ pub fn gain_to_millibels(gain: f64) -> i64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn vinyl_follows_speed_without_overwriting_independent_pitch() {
+        let control = super::EffectsControl::new_shared();
+        control.update(|settings| settings.pitch_centi = 85);
+        control.update(|settings| settings.vinyl_effect_enabled = true);
+        for speed in [0.1, 0.95, 1.05, 4.0] { assert_eq!(control.snapshot().effective_pitch(speed), speed); }
+        assert_eq!(control.snapshot().pitch_centi, 85);
+        control.update(|settings| settings.vinyl_effect_enabled = false);
+        assert_eq!(control.snapshot().effective_pitch(1.05), 0.85);
+    }
     use super::*;
 
     const RATE: u32 = 48_000;
@@ -1367,6 +1408,7 @@ mod tests {
             settings.eq_band_levels_mb = [300, 0, 0, 0, -300];
             settings.normalize_volume = true;
             settings.balance_centi = -35;
+            settings.pitch_centi = 150;
         });
 
         control.update(|settings| *settings = settings.reset_panel());

@@ -56,13 +56,18 @@ for (const mac of [false, true]) {
     'macOS-only controls must only appear in search on macOS')
 }
 
-for (const query of ['长音', 'long note']) {
+for (const [query, expected] of [
+  ['长音', 'lyrics:settings.lyric_emphasis_threshold'],
+  ['long note', 'lyrics:settings.lyric_emphasis_threshold'],
+  ['滚动', 'desktop_lyrics:desktop_lyrics.max_width'],
+  ['max width', 'desktop_lyrics:desktop_lyrics.max_width'],
+]) {
   const results = new Function('computed', 'settingsQuery', 'settingsNavGroups', 'SETTINGS_SEARCH_INDEX', 'SETTINGS_SECTION_IDS', 't', 'filterAndRank', 'searchValue', 'isMacPlatform', `${searchCompiled}\nreturn settingsSearchResults`)(
     callback => callback(), { value: query }, { value: [] }, index, sectionIds, key => key,
     matcher.filterAndRank, matcher.searchValue, false,
   )
-  assert.ok(results.some(result => result.key === 'lyrics:settings.lyric_emphasis_threshold'),
-    `long-note preferences must be discoverable with ${query}`)
+  assert.ok(results.some(result => result.key === expected),
+    `lyric preferences must be discoverable with ${query}`)
 }
 
 console.log(`Settings search index covers ${index.length} entries across ${panels.length} panels`)

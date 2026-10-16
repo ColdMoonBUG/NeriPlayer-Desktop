@@ -81,6 +81,39 @@ const wordLine = {
   ],
 }
 
+const songIdentity = { title: 'Head In The Clouds', artist: 'Hayd', album: 'Changes - EP' }
+const screenshotVerse = {
+  startMs: 14000, durationMs: 5000, text: 'I miss the days when life was so simple',
+  words: [{ startMs: 14000, durationMs: 2000, text: 'I miss the days ' }, { startMs: 16000, durationMs: 3000, text: 'when life was so simple' }],
+  translation: '我想念那段时光 生活简单无忧', roman: 'verse roman',
+}
+const metadataLine = text => ({ startMs: 0, durationMs: 1000, text, words: [] })
+for (const text of ['Hayd - Head The Clouds', 'Head In The Clouds - Hayd', 'Ｈａｙｄ － Head In The Clouds', 'Head In The Clouds / Changes - EP']) {
+  const input = [metadataLine(text), metadataLine('by: Robert Hubers、'), metadataLine('by: Robert Hubers'), screenshotVerse]
+  const original = structuredClone(input)
+  const displayed = filterLyricCreditMetadataLines(input, songIdentity)
+  assert.deepEqual(displayed, [screenshotVerse], `歌曲标题和重复上传署名应被过滤：${text}`)
+  assert.equal(displayed[0], screenshotVerse, '正文对象和逐字时间轴原样保留')
+  assert.deepEqual(input, original, '显示过滤不改缓存和原始歌词')
+}
+for (const text of ['Head In The Clouds', 'Hayd - Head In The Sky', 'Someone - Head The Clouds', 'Hayd - Head Clouds', 'Hayd - Head The Clouds forever', 'Hayd Head-The Clouds', 'Hayd Head-In The Clouds', 'Hayd Head In The Clouds-']) {
+  const input = [metadataLine(text), screenshotVerse]
+  assert.deepEqual(filterLyricCreditMetadataLines(input, songIdentity), input, `正文及不确定身份行应保留：${text}`)
+}
+for (const [title, text] of [
+  ['Head In Clouds', 'Hayd - Head Clouds'],
+  ['The Head Of Clouds', 'Hayd - Head Of Clouds'],
+  ['Head In Clouds Of', 'Hayd - Head In Clouds'],
+  ['云端 Head In The Clouds', 'Hayd - 云端 Head The Clouds'],
+]) {
+  const input = [metadataLine(text), screenshotVerse]
+  assert.deepEqual(filterLyricCreditMetadataLines(input, { ...songIdentity, title }), input, '短标题、首尾缺词和非英文标题不放宽')
+}
+const midSong = Array.from({ length: 20 }, (_, i) => ({ ...metadataLine(i === 10 ? 'Hayd - Head The Clouds' : 'A verse'), startMs: i * 2000 }))
+assert.deepEqual(filterLyricCreditMetadataLines(midSong, songIdentity), midSong, '中段标题形状的正文保留')
+const identityOnly = [metadataLine('Hayd - Head In The Clouds')]
+assert.deepEqual(filterLyricCreditMetadataLines(identityOnly, songIdentity), identityOnly, '过滤身份行后没有正文时保留')
+
 const plainLine = {
   startMs: 12000,
   durationMs: 3000,

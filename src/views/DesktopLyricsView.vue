@@ -174,6 +174,7 @@ onUnmounted(() => {
 
     <section class="dl-body" aria-live="off">
       <DesktopLyricsStage
+        :key="frame.trackId"
         :lines="frame.lines"
         :first-index="frame.firstIndex"
         :clock="clock"

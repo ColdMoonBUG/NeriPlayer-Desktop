@@ -5,7 +5,7 @@ import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } fr
 import { KARAOKE_REGISTRY, KARAOKE_WAKE } from './registry'
 import type { DesktopLyricsFrameLine } from '@/modules/desktopLyrics/frame'
 import type { DesktopLyricsAlign, DesktopLyricsKaraoke } from '@/modules/desktopLyrics/style'
-import { hasWordTiming, highlightWidth } from '@/modules/desktopLyrics/timeline'
+import { hasWordTiming, highlightWidth, longLineScrollOffset } from '@/modules/desktopLyrics/timeline'
 
 const props = defineProps<{
   line: DesktopLyricsFrameLine | null
@@ -18,6 +18,9 @@ const props = defineProps<{
   upcoming?: boolean
 }>()
 
+// 定时重锚和暂停会小幅校正预测时钟，只对明显的回退重新开始滚动
+const SCROLL_CLOCK_CORRECTION_MS = 250
+
 const container = ref<HTMLElement | null>(null)
 const fit = ref<HTMLElement | null>(null)
 const base = ref<HTMLElement | null>(null)
@@ -25,9 +28,11 @@ const outline = ref<HTMLElement | null>(null)
 const fill = ref<HTMLElement | null>(null)
 let wordOffsets: Array<readonly [number, number]> | null = null
 let textWidth = 0
+let availableWidth = 0
 let lastWidth = -1
-let clipStart = 0
-let clipEnd = 0
+let lastOffset = -1
+let scrollStartedMs: number | null = null
+let lastTimeMs: number | null = null
 let observer: ResizeObserver | null = null
 
 const timedWords = computed(() => !!props.line && props.karaoke === 'word' && hasWordTiming(props.line))
@@ -45,22 +50,36 @@ function measure() {
   const box = container.value
   const scaler = fit.value
   if (!element || !box || !scaler) return
-  textWidth = element.offsetWidth
+  const measuredWidth = element.offsetWidth
   const spans = [...element.children] as HTMLElement[]
   wordOffsets = timedWords.value ? spans.map(span => [span.offsetLeft, span.offsetWidth] as const) : null
   const boxStyle = getComputedStyle(box)
   const available = Math.max(0, box.clientWidth - Number.parseFloat(boxStyle.paddingLeft) - Number.parseFloat(boxStyle.paddingRight))
-  // 太长的行整体缩小，最多缩到一半，再长才截掉
-  const scale = textWidth > available && textWidth > 0 ? Math.max(0.5, available / textWidth) : 1
-  scaler.style.transform = scale < 1 ? `scale(${scale})` : ''
-  const excess = Math.max(0, Math.round((textWidth - available / scale) * 2) / 2)
-  clipStart = props.align === 'right' ? excess : props.align === 'center' ? excess / 2 : 0
-  clipEnd = textWidth - (props.align === 'left' ? excess : props.align === 'center' ? excess / 2 : 0)
-  const clip = excess > 0 ? `inset(-100% ${textWidth - clipEnd}px -100% ${clipStart}px)` : ''
-  element.style.clipPath = clip
-  if (outline.value) outline.value.style.clipPath = clip
-  lastWidth = -1
+  if (measuredWidth !== textWidth || available !== availableWidth) {
+    scrollStartedMs = null
+    lastWidth = -1
+    lastOffset = -1
+  }
+  textWidth = measuredWidth
+  availableWidth = available
+  box.classList.toggle('overflowing', textWidth - availableWidth > 2)
+  // 重测保留当前画面，实际尺寸或内容变化时先裁好开头
+  paint(Math.max(0, lastWidth), Math.max(0, lastOffset))
   requestFrame?.()
+}
+
+function paint(width: number, offset: number) {
+  const excess = Math.max(0, textWidth - availableWidth)
+  const clipStart = excess > 2 ? offset : props.align === 'right' ? excess : props.align === 'center' ? excess / 2 : 0
+  const clipEnd = Math.min(textWidth, clipStart + availableWidth)
+  const clip = excess > 0 ? `inset(-100% ${Math.max(0, textWidth - clipEnd)}px -100% ${clipStart}px)` : ''
+  if (base.value) base.value.style.clipPath = clip
+  if (outline.value) outline.value.style.clipPath = clip
+  if (fit.value) fit.value.style.transform = offset > 0 ? `translateX(-${offset}px)` : ''
+  if (fill.value) {
+    const visibleEnd = Math.max(clipStart, Math.min(width, clipEnd))
+    fill.value.style.clipPath = `inset(0 ${Math.max(0, textWidth - visibleEnd)}px 0 ${clipStart ? `${clipStart}px` : '0'})`
+  }
 }
 
 /** 父组件每帧调用；timeMs 已加歌词偏移 */
@@ -68,23 +87,41 @@ function update(timeMs: number) {
   const element = fill.value
   const line = props.line
   if (!element) return
+  if (lastTimeMs !== null && timeMs < lastTimeMs - SCROLL_CLOCK_CORRECTION_MS) scrollStartedMs = null
+  lastTimeMs = timeMs
   let width = 0
   if (line && !props.upcoming) {
     width = props.karaoke === 'off'
       ? (timeMs >= line.startMs ? textWidth : 0)
       : highlightWidth(line, props.endMs, timeMs, textWidth, wordOffsets, props.karaoke === 'word')
   }
+  if (line && !props.upcoming && timeMs >= line.startMs) scrollStartedMs ??= timeMs
+  else scrollStartedMs = null
+  const offset = Math.round(longLineScrollOffset(textWidth - availableWidth, scrollStartedMs === null ? 0 : timeMs - scrollStartedMs) * 2) / 2
   const rounded = Math.round(width * 2) / 2
-  if (rounded === lastWidth) return
+  if (rounded === lastWidth && offset === lastOffset) return
   lastWidth = rounded
-  element.style.clipPath = `inset(0 ${Math.max(0, textWidth - Math.min(rounded, clipEnd))}px 0 ${clipStart ? `${clipStart}px` : '0'})`
+  lastOffset = offset
+  paint(rounded, offset)
 }
 
 const register = inject(KARAOKE_REGISTRY, null)
 const requestFrame = inject(KARAOKE_WAKE, null)
 let unregister: (() => void) | null = null
 
-watch(() => [props.line, props.karaoke, props.fallback, props.align], () => { void nextTick(measure) })
+// 锚点刷新会带来新对象，只在显示内容或槽位状态变化时重新开始滚动
+watch([
+  () => props.line?.startMs,
+  () => segments.value.join('\u0000'),
+  () => props.karaoke,
+  () => props.align,
+  () => props.upcoming,
+], () => {
+  scrollStartedMs = null
+  lastWidth = -1
+  lastOffset = -1
+  void nextTick(measure)
+})
 
 onMounted(() => {
   void nextTick(measure)
@@ -92,6 +129,7 @@ onMounted(() => {
   // 字体加载完成或窗口缩放后重新量
   observer = new ResizeObserver(() => measure())
   if (container.value) observer.observe(container.value)
+  if (base.value) observer.observe(base.value)
   void document.fonts?.ready.then(() => measure())
 })
 
@@ -124,16 +162,14 @@ onBeforeUnmount(() => {
 .karaoke-line.align-left { justify-content: flex-start; }
 .karaoke-line.align-center { justify-content: center; }
 .karaoke-line.align-right { justify-content: flex-end; }
+.karaoke-line.overflowing { justify-content: flex-start; }
 
 .karaoke-fit {
   position: relative;
   flex: 0 0 auto;
   line-height: 1.3;
-  transform-origin: center;
+  will-change: transform;
 }
-
-.karaoke-line.align-left .karaoke-fit { transform-origin: left center; }
-.karaoke-line.align-right .karaoke-fit { transform-origin: right center; }
 
 .karaoke-text {
   display: block;

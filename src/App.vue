@@ -16,6 +16,7 @@ import { syncFrequencyDelayMs, useSyncStore } from '@/stores/sync'
 import { useAuthStore } from '@/stores/auth'
 import { useRecommendStore } from '@/stores/recommend'
 import { useSettingsStore } from '@/stores/settings'
+import { applyFontSettings } from '@/modules/settings/fonts'
 import { HISTORY_CHANGED_EVENT } from '@/stores/history'
 import { useLikedSongsStore } from '@/stores/likedSongs'
 import { useDownloadStore } from '@/stores/download'
@@ -52,6 +53,11 @@ document.documentElement.classList.add(`platform-${detectPlatform()}`)
 const appLog = createLogger('app')
 const player = usePlayerStore()
 const settingsStore = useSettingsStore()
+watch(
+  () => [settingsStore.appFontFamily, settingsStore.lyricFontFamily] as const,
+  ([appFontFamily, lyricFontFamily]) => applyFontSettings(appFontFamily, lyricFontFamily),
+  { immediate: true },
+)
 const likedSongs = useLikedSongsStore()
 const route = useRoute()
 const router = useRouter()
@@ -703,14 +709,18 @@ onUnmounted(() => {
 
 .content {
   flex: 1;
+  max-height: 100%;
   overflow-y: auto;
   overflow-x: hidden;
   position: relative;
   z-index: 2;
   transition: padding-bottom 300ms var(--ease-standard);
 
-  /* 预留迷你播放器高度 + 少量余量避开进度条热区；余量过大会在列表下方露出白带 */
-  &.has-mini-player { padding-bottom: calc(var(--mini-player-height, 76px) + 6px); }
+  /* 缩小滚动视口，避免正文透过透明底栏，底部少量余量避开进度条热区 */
+  &.has-mini-player {
+    max-height: calc(100% - var(--mini-player-height, 76px));
+    padding-bottom: 6px;
+  }
 }
 
 .np-underlay-scrim {

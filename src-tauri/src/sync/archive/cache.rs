@@ -3,7 +3,19 @@ use std::path::{Path, PathBuf};
 
 const MAX_CACHE_BYTES: u64 = 256 * 1024 * 1024;
 
-fn directory() -> PathBuf {
+pub(super) struct TrimOnDrop<'a>(pub(super) Option<&'a Path>);
+
+impl Drop for TrimOnDrop<'_> {
+    fn drop(&mut self) {
+        if let Some(directory) = self.0 {
+            if directory.is_dir() {
+                trim_downloaded(directory);
+            }
+        }
+    }
+}
+
+pub(super) fn directory() -> PathBuf {
     dirs_next::cache_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("NeriPlayer")
@@ -95,6 +107,51 @@ pub(super) fn write(reference: &ObjectRef, compressed: &[u8], protocol: u8) {
     }
 }
 
+pub(super) fn read_downloaded(
+    directory: &Path,
+    reference: &ObjectRef,
+    protocol: u8,
+) -> Option<Vec<u8>> {
+    super::validate_ref(reference, protocol).ok()?;
+    let path = directory.join(object(reference, protocol));
+    if std::fs::metadata(&path).ok()?.len() != reference.compressed_bytes as u64 {
+        return None;
+    }
+    let compressed = std::fs::read(&path).ok()?;
+    if digest(&compressed) != reference.hash {
+        return None;
+    }
+    crate::fsutil::touch_modified(path);
+    Some(compressed)
+}
+
+pub(super) fn write_downloaded(
+    directory: &Path,
+    reference: &ObjectRef,
+    compressed: &[u8],
+    protocol: u8,
+) {
+    let result = (|| -> crate::error::AppResult<()> {
+        std::fs::create_dir_all(directory)?;
+        crate::fsutil::atomic_write(directory.join(object(reference, protocol)), compressed)?;
+        // 下载正文已经过双重哈希和解压校验，原文指针让首次回传也能复用同一压缩对象
+        crate::fsutil::atomic_write(
+            directory.join(pointer(&reference.raw_hash, reference.index, protocol)),
+            serde_json::to_vec(reference)?,
+        )?;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        log::warn!(target: "sync", "archive download cache unavailable: {error}");
+    }
+}
+
+pub(super) fn trim_downloaded(directory: &Path) {
+    if let Err(error) = trim(directory) {
+        log::warn!(target: "sync", "archive download cache trim deferred: {error}");
+    }
+}
+
 fn trim(directory: &Path) -> crate::error::AppResult<()> {
     let mut files = Vec::new();
     let mut size = 0_u64;
@@ -165,5 +222,21 @@ mod tests {
         std::fs::remove_file(pointer_path).unwrap();
         std::fs::remove_file(object_path).unwrap();
         std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn verified_download_creates_reusable_compression_pointer() {
+        let directory = tempfile::tempdir().unwrap();
+        let raw = b"verified remote lyrics";
+        let compressed = super::super::compress(raw, 22).unwrap();
+        let reference = ObjectRef {
+            hash: digest(&compressed), raw_hash: digest(raw), raw_bytes: raw.len() as i32,
+            compressed_bytes: compressed.len() as i32, index: false,
+        };
+        write_downloaded(directory.path(), &reference, &compressed, 4);
+        assert_eq!(read_at(directory.path(), raw, false, 4).unwrap(), (reference.clone(), compressed));
+        let mut invalid = reference;
+        invalid.hash = "0".repeat(64);
+        assert!(read_downloaded(directory.path(), &invalid, 4).is_none());
     }
 }

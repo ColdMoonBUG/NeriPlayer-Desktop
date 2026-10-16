@@ -25,7 +25,9 @@ use crate::audio::pcm::PcmSource;
 use crate::audio::remote::{
     RemoteAudioSource, RemoteReadCancellation, SourceAudioInfo, SymphoniaAudioDecoder,
 };
-use crate::audio::stretch::Stretcher;
+use crate::audio::stretch::PitchShifter;
+use crate::audio::dsp::{AudioEffectsStats, DspProcessor};
+use crate::audio::dsp_settings::AudioEffectsSettings;
 use crate::error::{AppError, AppResult};
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
@@ -307,7 +309,7 @@ struct PlaybackShared {
     device_lost: AtomicBool,
     /// 首帧交给设备的时刻（`metrics::monotonic_ns`），0 表示还没出过帧
     first_frame_ns: Arc<AtomicU64>,
-    /// 变速器已从 ring 取出、还没送到设备的帧数：判断「播完」时要算上
+    /// 变速和音调采样已从 ring 取出、还没送到设备的帧数，判断播完时要算上
     stretch_buffered: AtomicUsize,
     effects: Arc<EffectsControl>,
     /// 这首歌的响度统计：解码线程写，输出回调读；同一首歌重建会话时沿用
@@ -1233,6 +1235,7 @@ impl PlayerEngine {
     pub fn set_volume(&mut self, volume: f32) {
         self.volume = volume.clamp(0.0, 1.0);
         let _ = self.cmd_tx.send(AudioCmd::SetVolume(self.volume));
+        self.effects.dsp.set_volume(self.volume);
     }
 
     pub fn request_output_device(
@@ -1247,9 +1250,28 @@ impl PlayerEngine {
     }
 
     pub fn set_speed(&mut self, speed: f32) {
-        self.speed = speed.clamp(0.25, 3.0);
+        self.speed = speed.clamp(0.1, 4.0);
         // 倍速在输出端实时生效，不需要重建会话
         let _ = self.cmd_tx.send(AudioCmd::SetSpeed(self.speed));
+    }
+
+    pub fn set_pitch(&self, pitch: f32) {
+        self.effects.update(|settings| {
+            settings.pitch_centi = (pitch.clamp(0.25, 2.0) * 100.0).round() as i32;
+        });
+    }
+
+    pub fn set_vinyl_effect(&self, enabled: bool) {
+        self.effects.update(|settings| settings.vinyl_effect_enabled = enabled);
+    }
+
+    pub fn set_audio_effects(&self, settings: AudioEffectsSettings, output_device: &str) -> AudioEffectsSettings {
+        self.effects.update(|legacy| legacy.eq_enabled = false);
+        self.effects.dsp.set_settings(settings, output_device)
+    }
+
+    pub fn audio_effects_stats(&self) -> AudioEffectsStats {
+        self.effects.dsp.stats()
     }
 
     // 音效参数直接写进原子量，正在播放的回调下一块（约 10 ms）就平滑切过去，
@@ -1282,6 +1304,7 @@ impl PlayerEngine {
     pub fn reset_effects(&self) {
         self.effects
             .update(|settings| *settings = settings.reset_panel());
+        self.effects.dsp.reset_preserving_user_presets();
     }
 
     pub fn request_seek(
@@ -1728,6 +1751,7 @@ fn audio_control_loop(
         }
     };
 
+    if let Some(profile) = &profile { effects.dsp.select_output(&profile.name); }
     let mut output_profile = OutputDeviceState { preferred_name: None, profile };
     let mut reporter = MetricsReporter::new();
     loop {
@@ -2003,11 +2027,12 @@ fn audio_control_loop(
                 });
                 if result.is_ok() {
                     output_profile.preferred_name = name;
+                    if let Some(profile) = &output_profile.profile { effects.dsp.select_output(&profile.name); }
                 }
                 let _ = reply.send(result);
             }
             AudioCmd::SetSpeed(next_speed) => {
-                speed = next_speed.clamp(0.25, 3.0);
+                speed = next_speed.clamp(0.1, 4.0);
                 // 输出端的变速器在下一跳（约 15 ms 内）就按新倍速、保持音调地播放，
                 // ring 里的内容与倍速无关，不用停下会话重新解码
                 if let Some(session) = &current {
@@ -2376,6 +2401,7 @@ fn switch_output_device_in_place(
         return Err("Audio output change cancelled".into());
     }
     let Some(previous) = current.as_ref() else {
+        effects.dsp.select_output(&candidate.name);
         output.profile = Some(candidate);
         return Ok(());
     };
@@ -2409,6 +2435,7 @@ fn switch_output_device_in_place(
             Ok(())
         }
         Err(error) => {
+            if let Some(profile) = &output.profile { effects.dsp.select_output(&profile.name); }
             if !paused && ensure_generation(playback_generation, previous.playback_generation).is_ok() {
                 let _ = previous.play();
             }
@@ -2608,6 +2635,7 @@ fn prepare_session(
     if prepare_cancel.load(Ordering::Acquire) {
         return Err("Timed out waiting for decoded audio".into());
     }
+    effects.dsp.select_output(&output.name);
     let decoder_started = Instant::now();
     let session_cancelled = Arc::new(AtomicBool::new(false));
     // 外部 prepare_cancel 挂到读取消链：等待超时后 remote read 可立刻打断
@@ -3377,8 +3405,9 @@ where
 
 /// 输出回调独占的处理状态，建流时一次分配，回调里只复用
 struct OutputChain {
-    stretcher: Stretcher,
+    stretcher: PitchShifter,
     effects: EffectsProcessor,
+    dsp: DspProcessor,
     scratch: Vec<f32>,
     /// 时钟按整微秒推进，余下的零头留到下一次回调，长时间播放不累积偏差
     clock_remainder_us: f64,
@@ -3388,7 +3417,8 @@ impl OutputChain {
     fn new(shared: &PlaybackShared) -> Self {
         let channels = shared.channels.max(1);
         Self {
-            stretcher: Stretcher::new(channels, shared.sample_rate),
+            stretcher: PitchShifter::new(channels, shared.sample_rate, shared.effects.snapshot().effective_pitch(shared.speed.load())),
+            dsp: DspProcessor::new(channels, shared.sample_rate, Arc::clone(&shared.effects.dsp)),
             effects: EffectsProcessor::new(
                 channels,
                 shared.sample_rate,
@@ -3405,7 +3435,7 @@ impl OutputChain {
 /// 输出回调主体：经变速器从 ring 取帧，过音效后写入设备缓冲，推进时钟并记录指标
 ///
 /// 运行在设备回调线程：只用原子操作和预分配的状态，不加锁、不分配。
-/// 倍速（保持音调）和音效参数都在这里实时生效，改它们不需要重建解码会话。
+/// 倍速、独立音调和音效参数都在这里实时生效，改它们不需要重建解码会话
 /// 播放中途取空 ring 记一次欠载；解码已结束后自然排空不算。
 fn render_output<T>(
     shared: &PlaybackShared,
@@ -3415,7 +3445,7 @@ fn render_output<T>(
 ) where
     T: SizedSample + FromSample<f32>,
 {
-    let OutputChain { stretcher, effects, scratch, clock_remainder_us } = chain;
+    let OutputChain { stretcher, effects, dsp, scratch, clock_remainder_us } = chain;
     let started_ns = metrics::monotonic_ns();
     let silence = T::from_sample(0.0);
     // EOF can race begin_rebuffering: the worker clears buffering just before
@@ -3430,6 +3460,7 @@ fn render_output<T>(
 
     let channels = shared.channels.max(1);
     let speed = shared.speed.load();
+    let pitch = shared.effects.snapshot().effective_pitch(speed);
     let draining = shared.finished.load(Ordering::Acquire);
     let gain = shared.volume.load() * shared.fade_gain.load();
     let mut pull = |target: &mut [f32]| shared.ring.pop_frames(target, channels);
@@ -3444,9 +3475,10 @@ fn render_output<T>(
             silent_frames += frames;
             continue;
         }
-        let rendered = stretcher.render(&mut scratch[..frames * channels], speed, draining, &mut pull);
+        let rendered = stretcher.render(&mut scratch[..frames * channels], speed, pitch, draining, &mut pull);
         let filled = rendered.frames * channels;
         effects.process(&mut scratch[..filled]);
+        dsp.process(&mut scratch[..filled]);
         for (target, sample) in chunk[..filled].iter_mut().zip(scratch[..filled].iter().copied()) {
             // 音效全关时样本原样直通；NaN 的 clamp 还是 NaN，不能交给设备
             let value = sample * gain;
@@ -4611,6 +4643,174 @@ mod tests {
         assert!(consumed > 48_000, "倍速后每秒应消费多于 48 000 帧: {consumed}");
         assert_eq!(counters.snapshot().underruns, 0, "变速不能造成断音");
         assert!(output.iter().any(|sample| sample.abs() > 0.1), "变速后仍在出声");
+    }
+
+    #[test]
+    fn vinyl_output_chain_uses_speed_for_pitch_and_finishes_at_exact_media_time() {
+        for speed in [0.1f32, 0.95, 1.05, 4.0] {
+            let shared = render_test_shared(1, 48_000);
+            for index in 0..48_000 {
+                let sample = (0.5 * (std::f64::consts::TAU * 440.0 * index as f64 / 48_000.0).sin()) as f32;
+                assert!(shared.ring.try_push_frame(&[sample]));
+            }
+            shared.speed.store(speed);
+            shared.effects.update(|settings| {
+                settings.pitch_centi = 85;
+                settings.vinyl_effect_enabled = true;
+            });
+            shared.finished.store(true, Ordering::Release);
+            let counters = crate::audio::metrics::OutputMetrics::new();
+            let mut callback = CallbackState::new(&shared);
+            let mut block = [0.0; 480];
+            let mut output = Vec::new();
+            for _ in 0..1500 {
+                let before = counters.snapshot().rendered_frames;
+                callback.render(&shared, &mut block, &counters);
+                let frames = (counters.snapshot().rendered_frames - before) as usize;
+                output.extend_from_slice(&block[..frames]);
+                if shared.ring.readable_samples() == 0 && shared.stretch_buffered.load(Ordering::Acquire) == 0 { break; }
+            }
+            let middle = &output[output.len() / 4..output.len() * 3 / 4];
+            let crossings = middle.windows(2).filter(|pair| pair[0] < 0.0 && pair[1] >= 0.0).count();
+            let frequency = crossings as f64 / (middle.len() as f64 / 48_000.0);
+            assert!((frequency - 440.0 * f64::from(speed)).abs() < 12.0, "speed {speed}: {frequency} Hz");
+            assert!(output.len().abs_diff((48_000.0 / f64::from(speed)).round() as usize) <= 3);
+            assert!(shared.clock.position_us.load(Ordering::Acquire).abs_diff(1_000_000) <= 1);
+            assert_eq!(shared.effects.snapshot().pitch_centi, 85);
+            assert_eq!(shared.stretch_buffered.load(Ordering::Acquire), 0);
+            assert_eq!(counters.snapshot().underruns, 0);
+        }
+    }
+
+    #[test]
+    fn vinyl_switches_restore_independent_pitch_and_remain_continuous() {
+        let shared = render_test_shared(1, 480_000);
+        for index in 0..480_000 {
+            let sample = (0.5 * (std::f64::consts::TAU * 440.0 * index as f64 / 48_000.0).sin()) as f32;
+            assert!(shared.ring.try_push_frame(&[sample]));
+        }
+        shared.speed.store(1.05);
+        shared.effects.update(|settings| settings.pitch_centi = 85);
+        let counters = crate::audio::metrics::OutputMetrics::new();
+        let mut callback = CallbackState::new(&shared);
+        let mut output = [0.0; 480];
+        for enabled in [false, true, false] {
+            shared.effects.update(|settings| settings.vinyl_effect_enabled = enabled);
+            let mut steady = Vec::new();
+            let before_clock = shared.clock.position_us.load(Ordering::Acquire);
+            let mut previous = output[479];
+            let mut max_step = 0.0f32;
+            for index in 0..100 {
+                callback.render(&shared, &mut output, &counters);
+                for sample in output {
+                    assert!(sample.is_finite());
+                    max_step = max_step.max((sample - previous).abs());
+                    previous = sample;
+                }
+                if index >= 50 { steady.extend_from_slice(&output); }
+            }
+            let crossings = steady.windows(2).filter(|pair| pair[0] < 0.0 && pair[1] >= 0.0).count();
+            let expected = 440.0 * if enabled { 1.05 } else { 0.85 };
+            assert!((crossings as f64 * 2.0 - expected).abs() < 12.0);
+            assert!(max_step < 0.08, "vinyl={enabled}: max sample step {max_step}");
+            let advanced = shared.clock.position_us.load(Ordering::Acquire) - before_clock;
+            assert!((advanced as f64 - 1_050_000.0).abs() < 40_000.0);
+            assert_eq!(shared.effects.snapshot().pitch_centi, 85);
+        }
+        assert_eq!(counters.snapshot().underruns, 0);
+    }
+
+    #[test]
+    fn pitch_changes_inside_the_callback_keep_the_media_clock_and_audio_continuous() {
+        let shared = render_test_shared(1, 144_000);
+        for index in 0..144_000 {
+            let sample = (0.5 * (std::f64::consts::TAU * 440.0 * index as f64 / 48_000.0).sin()) as f32;
+            assert!(shared.ring.try_push_frame(&[sample]));
+        }
+        let counters = crate::audio::metrics::OutputMetrics::new();
+        let mut callback = CallbackState::new(&shared);
+        let mut output = [0.0f32; 480];
+        for _ in 0..20 {
+            callback.render(&shared, &mut output, &counters);
+        }
+        let clock_before = shared.clock.position_us.load(Ordering::Acquire);
+        shared.effects.update(|settings| settings.pitch_centi = 200);
+        let mut steady = Vec::new();
+        for index in 0..100 {
+            callback.render(&shared, &mut output, &counters);
+            if index >= 50 {
+                steady.extend_from_slice(&output);
+            }
+        }
+        let clock_advance = shared.clock.position_us.load(Ordering::Acquire) - clock_before;
+        assert!((clock_advance as f64 - 1_000_000.0).abs() < 40_000.0, "pitch must not double media time: {clock_advance}");
+        let crossings = steady.windows(2).filter(|pair| pair[0] < 0.0 && pair[1] >= 0.0).count();
+        assert!((crossings as f64 * 2.0 - 880.0).abs() < 8.0);
+        assert_eq!(counters.snapshot().underruns, 0);
+    }
+
+    #[test]
+    fn output_chain_drains_pitch_buffers_before_finishing_at_the_exact_media_time() {
+        for (speed, pitch_centi) in [(0.1f32, 200), (4.0, 25), (1.0, 50), (1.0, 200)] {
+            let shared = render_test_shared(1, 48_000);
+            for index in 0..48_000 {
+                let sample = (0.5 * (std::f64::consts::TAU * 440.0 * index as f64 / 48_000.0).sin()) as f32;
+                assert!(shared.ring.try_push_frame(&[sample]));
+            }
+            shared.speed.store(speed);
+            shared.effects.update(|settings| settings.pitch_centi = pitch_centi);
+            shared.finished.store(true, Ordering::Release);
+            let counters = crate::audio::metrics::OutputMetrics::new();
+            let mut callback = CallbackState::new(&shared);
+            let mut output = [0.0f32; 480];
+            let mut rendered_callbacks = 0;
+            for _ in 0..1_500 {
+                callback.render(&shared, &mut output, &counters);
+                rendered_callbacks += 1;
+                if shared.ring.readable_samples() == 0 && shared.stretch_buffered.load(Ordering::Acquire) == 0 {
+                    break;
+                }
+            }
+            assert!(rendered_callbacks > 0);
+            assert_eq!(shared.ring.readable_samples(), 0);
+            assert_eq!(shared.stretch_buffered.load(Ordering::Acquire), 0);
+            let clock = shared.clock.position_us.load(Ordering::Acquire);
+            assert!(clock.abs_diff(1_000_000) <= 1, "speed {speed}, pitch {pitch_centi}: clock {clock}");
+            assert_eq!(counters.snapshot().underruns, 0);
+        }
+    }
+
+    #[test]
+    fn rebuilding_an_output_chain_reuses_pitch_without_carrying_the_old_audio() {
+        let first = render_test_shared(1, 48_000);
+        first.effects.update(|settings| settings.pitch_centi = 150);
+        assert!(first.ring.try_push_frame(&[0.75]));
+        let mut callback = CallbackState::new(&first);
+        let counters = crate::audio::metrics::OutputMetrics::new();
+        let mut output = [0.0f32; 480];
+        first.finished.store(true, Ordering::Release);
+        callback.render(&first, &mut output, &counters);
+
+        let mut rebuilt = render_test_shared(1, 48_000);
+        Arc::get_mut(&mut rebuilt).unwrap().effects = Arc::clone(&first.effects);
+        rebuilt.clock.store_ms(12_345);
+        for index in 0..48_000 {
+            let sample = (0.25 * (std::f64::consts::TAU * 440.0 * index as f64 / 48_000.0).sin()) as f32;
+            assert!(rebuilt.ring.try_push_frame(&[sample]));
+        }
+        let mut callback = CallbackState::new(&rebuilt);
+        let mut steady = Vec::new();
+        for index in 0..60 {
+            callback.render(&rebuilt, &mut output, &counters);
+            if index >= 30 {
+                steady.extend_from_slice(&output);
+            }
+        }
+        let crossings = steady.windows(2).filter(|pair| pair[0] < 0.0 && pair[1] >= 0.0).count();
+        assert!((crossings as f64 / 0.3 - 660.0).abs() < 8.0);
+        assert!(steady.iter().all(|sample| sample.abs() < 0.3));
+        let position = rebuilt.clock.position_us.load(Ordering::Acquire);
+        assert!((position as f64 - 12_945_000.0).abs() < 40_000.0);
     }
 
     /// 变速中欠载：变速器里已取出的前瞻要保留，恢复后接着放；播完时时钟与输入时长一致

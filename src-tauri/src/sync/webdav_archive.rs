@@ -279,27 +279,26 @@ impl WebDavArchiveClient {
         content: Option<&[u8]>,
         maximum: usize,
     ) -> AppResult<(StatusCode, Vec<u8>, Option<String>)> {
-        let mut guard = if let Some(lease) = lease {
-            Some(lease.state.lock().await)
-        } else {
-            None
-        };
-        if let Some(state) = guard.as_mut() {
-            lease.unwrap().refresh_if_needed(state).await?;
-        }
-        let xml = method.as_str() == "PROPFIND";
-        let mut request = self.request(method, url.clone());
-        let timeout = if let Some(state) = guard.as_ref() {
+        let (token, timeout) = if let Some(lease) = lease {
+            let mut state = lease.state.lock().await;
+            lease.refresh_if_needed(&mut state).await?;
             let remaining = state
                 .expires
                 .checked_duration_since(Instant::now())
                 .and_then(|duration| duration.checked_sub(Duration::from_secs(5)))
                 .ok_or_else(|| invalid("lease expired"))?;
-            request = request.header("If", format!("<{}> (<{}>)", self.collection, state.token));
-            remaining.min(Duration::from_secs(60))
+            (
+                Some(state.token.clone()),
+                remaining.min(Duration::from_secs(60)),
+            )
         } else {
-            Duration::from_secs(60)
+            (None, Duration::from_secs(60))
         };
+        let xml = method.as_str() == "PROPFIND";
+        let mut request = self.request(method, url.clone());
+        if let Some(token) = token {
+            request = request.header("If", format!("<{}> (<{}>)", self.collection, token));
+        }
         if let Some((name, value)) = condition {
             request = request.header(name, value);
         }
@@ -323,6 +322,9 @@ impl WebDavArchiveClient {
         if response.url() != &url {
             return Err(invalid("object request redirected"));
         }
+        if let Some(lease) = lease {
+            lease.require_live().await?;
+        }
         let status = response.status();
         if matches!(status.as_u16(), 412 | 423) {
             return Err(conflict("condition changed or lease lost"));
@@ -335,11 +337,8 @@ impl WebDavArchiveClient {
             .filter(|value| strong_etag(value))
             .map(String::from);
         let body = bounded_body(response, maximum).await?;
-        if guard
-            .as_ref()
-            .is_some_and(|state| state.closed || Instant::now() >= state.expires)
-        {
-            return Err(invalid("lease expired during request"));
+        if let Some(lease) = lease {
+            lease.require_live().await?;
         }
         Ok((status, body, etag))
     }
@@ -776,6 +775,17 @@ fn parse_listing(
 }
 
 impl Lease {
+    async fn require_live(&self) -> AppResult<()> {
+        let state = self.state.lock().await;
+        if state.closed {
+            return Err(invalid("lease closed"));
+        }
+        if Instant::now() >= state.expires {
+            return Err(invalid("lease expired"));
+        }
+        Ok(())
+    }
+
     async fn refresh_if_needed(&self, state: &mut LeaseState) -> AppResult<()> {
         let start = Instant::now();
         let remaining = state
@@ -833,12 +843,15 @@ impl Lease {
         Ok(())
     }
     pub async fn release(&self) -> AppResult<()> {
-        let mut state = self.state.lock().await;
-        if state.closed {
-            return Ok(());
-        }
-        state.closed = true;
-        self.client.unlock(&state.token).await
+        let token = {
+            let mut state = self.state.lock().await;
+            if state.closed {
+                return Ok(());
+            }
+            state.closed = true;
+            state.token.clone()
+        };
+        self.client.unlock(&token).await
     }
 }
 
@@ -1116,7 +1129,49 @@ fn parse_grant(
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
+    use tokio::net::{TcpListener, TcpStream};
+
+    fn loopback_client(listener: &TcpListener) -> WebDavArchiveClient {
+        let client = Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        WebDavArchiveClient::new(
+            &client,
+            &WebDavSyncConfig {
+                server_url: format!("http://{}/", listener.local_addr().unwrap()),
+                username: "fixture".into(),
+                password: "fixture".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    }
+
+    fn test_lease(api: &WebDavArchiveClient, expires: Instant) -> Arc<Lease> {
+        Arc::new(Lease {
+            client: api.clone(),
+            state: Arc::new(tokio::sync::Mutex::new(LeaseState {
+                token: "12345".into(),
+                expires,
+                closed: false,
+            })),
+        })
+    }
+
+    async fn read_request(socket: &mut TcpStream) -> Vec<u8> {
+        let mut request = Vec::new();
+        loop {
+            let mut buffer = [0_u8; 8192];
+            let count = socket.read(&mut buffer).await.unwrap();
+            assert_ne!(count, 0, "request ended before its headers");
+            request.extend_from_slice(&buffer[..count]);
+            if request.windows(4).any(|part| part == b"\r\n\r\n") {
+                return request;
+            }
+        }
+    }
 
     fn response(status: &str, headers: &str, body: &[u8]) -> Vec<u8> {
         let mut response = format!(
@@ -1424,6 +1479,250 @@ mod tests {
         assert!(put.contains("(<12345>)"));
         assert!(!put.contains("if-match:"));
         assert!(String::from_utf8_lossy(&requests[4]).starts_with("UNLOCK "));
+    }
+
+    #[tokio::test]
+    async fn leased_sibling_gets_overlap_after_a_single_serialized_refresh() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let api = loopback_client(&listener);
+        let lease = test_lease(&api, Instant::now() + Duration::from_secs(30));
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let refresh = read_request(&mut socket).await;
+            assert!(refresh.starts_with(b"LOCK "));
+            socket
+                .write_all(&response(
+                    "200 OK",
+                    "Lock-Token: 12345\r\n",
+                    grant("12345", "Second-300", None).as_bytes(),
+                ))
+                .await
+                .unwrap();
+            socket.shutdown().await.unwrap();
+            let mut waiting = Vec::new();
+            let mut requests = Vec::new();
+            while waiting.len() < 4 {
+                let Ok(accepted) =
+                    tokio::time::timeout(Duration::from_secs(2), listener.accept()).await
+                else {
+                    break;
+                };
+                let (mut socket, _) = accepted.unwrap();
+                requests.push(read_request(&mut socket).await);
+                waiting.push(socket);
+            }
+            let overlapping = waiting.len();
+            for mut socket in waiting {
+                socket
+                    .write_all(&response("200 OK", "", b"leaf"))
+                    .await
+                    .unwrap();
+            }
+            while requests.len() < 4 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                requests.push(read_request(&mut socket).await);
+                socket
+                    .write_all(&response("200 OK", "", b"leaf"))
+                    .await
+                    .unwrap();
+            }
+            (overlapping, requests)
+        });
+        let reads = (0..4).map(|index| {
+            let api = api.clone();
+            let lease = lease.clone();
+            async move { api.get(&format!("leaf-{index}"), Some(&lease), 1024).await }
+        });
+        for result in futures_util::future::join_all(reads).await {
+            assert_eq!(result.unwrap().unwrap().content, b"leaf");
+        }
+        lease.state.lock().await.closed = true;
+        let (overlapping, requests) = task.await.unwrap();
+        assert_eq!(
+            overlapping, 4,
+            "all sibling GETs must reach the server before any response"
+        );
+        assert!(requests.iter().all(|request| request.starts_with(b"GET ")));
+        assert!(requests.iter().all(|request| String::from_utf8_lossy(request)
+            .to_ascii_lowercase()
+            .contains("(<12345>)")));
+    }
+
+    #[tokio::test]
+    async fn releasing_a_lease_during_get_rejects_its_result_and_later_requests() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let api = loopback_client(&listener);
+        let lease = test_lease(&api, Instant::now() + Duration::from_secs(300));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (finish_tx, mut finish_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let (mut get_socket, _) = listener.accept().await.unwrap();
+            assert!(read_request(&mut get_socket).await.starts_with(b"GET "));
+            started_tx.send(()).unwrap();
+            let unlock = tokio::select! {
+                accepted = listener.accept() => Some(accepted.unwrap().0),
+                _ = &mut finish_rx => None,
+            };
+            if let Some(mut socket) = unlock {
+                assert!(read_request(&mut socket).await.starts_with(b"UNLOCK "));
+                socket
+                    .write_all(&response("204 No Content", "", b""))
+                    .await
+                    .unwrap();
+                finish_rx.await.unwrap();
+                get_socket
+                    .write_all(&response("200 OK", "", b"leaf"))
+                    .await
+                    .unwrap();
+            } else {
+                get_socket
+                    .write_all(&response("200 OK", "", b"leaf"))
+                    .await
+                    .unwrap();
+                let (mut socket, _) = listener.accept().await.unwrap();
+                assert!(read_request(&mut socket).await.starts_with(b"UNLOCK "));
+                socket
+                    .write_all(&response("204 No Content", "", b""))
+                    .await
+                    .unwrap();
+            }
+        });
+        let read = {
+            let api = api.clone();
+            let lease = lease.clone();
+            tokio::spawn(async move { api.get("leaf", Some(&lease), 1024).await })
+        };
+        started_rx.await.unwrap();
+        let released = tokio::time::timeout(Duration::from_secs(2), lease.release()).await;
+        let released_while_pending = released.is_ok();
+        if let Ok(result) = released {
+            result.unwrap();
+        }
+        finish_tx.send(()).unwrap();
+        let result = read.await.unwrap();
+        if !released_while_pending {
+            lease.release().await.unwrap();
+        }
+        task.await.unwrap();
+        let later = api.get("later", Some(&lease), 1024).await;
+        assert!(
+            released_while_pending,
+            "release must complete while a GET is waiting for its response"
+        );
+        assert!(matches!(result, Err(AppError::Api(message)) if message.contains("lease")));
+        assert!(
+            matches!(later, Err(AppError::Api(message)) if message.contains("lease closed"))
+        );
+    }
+
+    #[tokio::test]
+    async fn lease_expiry_is_rechecked_after_reading_the_response_body() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let api = loopback_client(&listener);
+        let lease = test_lease(&api, Instant::now() + Duration::from_secs(300));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            read_request(&mut socket).await;
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nl")
+                .await
+                .unwrap();
+            started_tx.send(()).unwrap();
+            finish_rx.await.unwrap();
+            socket.write_all(b"eaf").await.unwrap();
+        });
+        let read = {
+            let api = api.clone();
+            let lease = lease.clone();
+            tokio::spawn(async move { api.get("leaf", Some(&lease), 1024).await })
+        };
+        started_rx.await.unwrap();
+        let unlocked_during_body = if let Ok(mut state) = lease.state.try_lock() {
+            state.expires = Instant::now();
+            true
+        } else {
+            false
+        };
+        finish_tx.send(()).unwrap();
+        let result = read.await.unwrap();
+        lease.state.lock().await.closed = true;
+        task.await.unwrap();
+        assert!(
+            unlocked_during_body,
+            "response body I/O must not hold the lease state lock"
+        );
+        assert!(
+            matches!(result, Err(AppError::Api(message)) if message.contains("lease expired"))
+        );
+    }
+
+    #[tokio::test]
+    async fn later_refresh_does_not_extend_an_inflight_requests_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let api = loopback_client(&listener);
+        let lease = test_lease(&api, Instant::now() + Duration::from_secs(30));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            assert!(read_request(&mut socket).await.starts_with(b"LOCK "));
+            socket
+                .write_all(&response(
+                    "200 OK",
+                    "Lock-Token: 12345\r\n",
+                    grant("12345", "Second-7", None).as_bytes(),
+                ))
+                .await
+                .unwrap();
+            let (mut pending_socket, _) = listener.accept().await.unwrap();
+            assert!(read_request(&mut pending_socket)
+                .await
+                .starts_with(b"GET /first "));
+            started_tx.send(()).unwrap();
+            let (mut socket, _) = listener.accept().await.unwrap();
+            assert!(read_request(&mut socket).await.starts_with(b"LOCK "));
+            socket
+                .write_all(&response(
+                    "200 OK",
+                    "Lock-Token: 12345\r\n",
+                    grant("12345", "Second-300", None).as_bytes(),
+                ))
+                .await
+                .unwrap();
+            let (mut socket, _) = listener.accept().await.unwrap();
+            assert!(read_request(&mut socket)
+                .await
+                .starts_with(b"GET /second "));
+            socket
+                .write_all(&response("200 OK", "", b"leaf"))
+                .await
+                .unwrap();
+            finish_rx.await.unwrap();
+            drop(pending_socket);
+        });
+        let first = {
+            let api = api.clone();
+            let lease = lease.clone();
+            tokio::spawn(async move { api.get("first", Some(&lease), 1024).await })
+        };
+        started_rx.await.unwrap();
+        let second = api.get("second", Some(&lease), 1024).await;
+        let refreshed_while_pending = !first.is_finished();
+        let first = tokio::time::timeout(Duration::from_secs(5), first).await;
+        finish_tx.send(()).unwrap();
+        lease.state.lock().await.closed = true;
+        task.await.unwrap();
+        assert_eq!(second.unwrap().unwrap().content, b"leaf");
+        assert!(
+            refreshed_while_pending,
+            "another request must refresh while the first is pending"
+        );
+        assert!(
+            matches!(first.unwrap().unwrap(), Err(AppError::Network(error)) if error.is_timeout()),
+            "the first request must retain its original short timeout after the later refresh"
+        );
     }
 
     #[tokio::test]

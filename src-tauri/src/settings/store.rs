@@ -1,8 +1,10 @@
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 
 use crate::error::{AppError, AppResult};
+use crate::audio::dsp_settings::{AudioEffectsSettings, ParametricEqBand};
 
 pub const SETTINGS_FORMAT_VERSION: u32 = 1;
 pub const SETTINGS_STORE_FILE: &str = "settings.json";
@@ -15,6 +17,7 @@ pub const MAX_MEDIA_CACHE_SIZE_MB: i32 = 512 * 1024;
 
 const SETTINGS_STORE_KEY: &str = "appSettings";
 const EQUALIZER_BAND_COUNT: usize = 5;
+const MAX_FONT_FAMILY_CHARS: usize = 64;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,6 +32,8 @@ pub struct AppSettings {
     pub format_version: u32,
     pub dark_mode: String,
     pub theme_color: String,
+    pub app_font_family: String,
+    pub lyric_font_family: String,
     pub locale: String,
     pub default_screen: String,
     /// 关闭主窗口时收进托盘继续播放；关掉后关闭即退出
@@ -144,6 +149,10 @@ pub struct AppSettings {
     pub volume: f32,
     pub audio_output_device: String,
     pub playback_speed: f32,
+    pub playback_pitch: f32,
+    pub vinyl_effect_enabled: bool,
+    #[serde(default = "legacy_audio_effects_settings")]
+    pub audio_effects: AudioEffectsSettings,
     #[serde(deserialize_with = "lenient_i32")]
     pub loudness_gain_mb: i32,
     pub equalizer_enabled: bool,
@@ -164,6 +173,10 @@ pub struct AppSettings {
 
 const MAX_DESKTOP_LYRICS_STYLE_BYTES: usize = 16 * 1024;
 const MAX_SHORTCUT_BINDINGS_BYTES: usize = 8 * 1024;
+
+fn legacy_audio_effects_settings() -> AudioEffectsSettings {
+    AudioEffectsSettings { version: 0, ..AudioEffectsSettings::default() }
+}
 
 /// 前端数字输入可能带小数：整数字段四舍五入接收，单个字段不能让整份设置被拒绝
 fn lenient_i32<'de, D>(deserializer: D) -> Result<i32, D::Error>
@@ -198,6 +211,8 @@ impl Default for AppSettings {
             format_version: SETTINGS_FORMAT_VERSION,
             dark_mode: "dark".into(),
             theme_color: "purple".into(),
+            app_font_family: String::new(),
+            lyric_font_family: String::new(),
             locale: "zh-CN".into(),
             default_screen: "home".into(),
             close_to_tray: true,
@@ -285,6 +300,9 @@ impl Default for AppSettings {
             volume: 1.0,
             audio_output_device: String::new(),
             playback_speed: 1.0,
+            playback_pitch: 1.0,
+            vinyl_effect_enabled: false,
+            audio_effects: AudioEffectsSettings::default(),
             loudness_gain_mb: 0,
             equalizer_enabled: false,
             equalizer_preset_id: "flat".into(),
@@ -306,6 +324,8 @@ impl AppSettings {
             "dark",
         );
         self.theme_color = normalize_theme_color(&self.theme_color);
+        self.app_font_family = normalize_font_family(&self.app_font_family);
+        self.lyric_font_family = normalize_font_family(&self.lyric_font_family);
         self.locale = normalize_choice(
             &self.locale,
             &["zh-CN", "zh-TW", "en", "ja"],
@@ -363,7 +383,8 @@ impl AppSettings {
             .download_parallelism
             .clamp(MIN_DOWNLOAD_PARALLELISM, MAX_DOWNLOAD_PARALLELISM);
         self.volume = clamp_f32(self.volume, 0.0, 1.0, 1.0);
-        self.playback_speed = clamp_f32(self.playback_speed, 0.25, 3.0, 1.0);
+        self.playback_speed = (clamp_f32(self.playback_speed, 0.1, 4.0, 1.0) * 20.0).round() / 20.0;
+        self.playback_pitch = (clamp_f32(self.playback_pitch, 0.25, 2.0, 1.0) * 20.0).round() / 20.0;
         self.loudness_gain_mb = self.loudness_gain_mb.clamp(0, 1_500);
         self.volume_balance = (clamp_f32(self.volume_balance, -1.0, 1.0, 0.0) * 100.0).round() / 100.0;
         let style_bytes = serde_json::to_vec(&self.desktop_lyrics).map_or(usize::MAX, |bytes| bytes.len());
@@ -477,6 +498,20 @@ impl AppSettings {
             .map(|value| (*value).clamp(-1_500, 1_500))
             .collect();
         self.equalizer_bands.resize(EQUALIZER_BAND_COUNT, 0);
+        if self.audio_effects.version == 0 && self.equalizer_enabled {
+            let headroom = self.equalizer_bands.iter().copied().fold(0, i32::max);
+            self.audio_effects.main.enabled = true;
+            self.audio_effects.main.preset_id = "custom".into();
+            self.audio_effects.main.sound.parametric_enabled = true;
+            self.audio_effects.main.sound.parametric_bands = [60.0, 230.0, 910.0, 3600.0, 14000.0]
+                .into_iter().zip(&self.equalizer_bands).map(|(frequency_hz, level)| ParametricEqBand {
+                    frequency_hz, gain_db: (*level - headroom) as f32 / 100.0, q: 1.0,
+                    ..ParametricEqBand::default()
+                }).collect();
+            self.audio_effects.auto_headroom = false;
+        }
+        self.equalizer_enabled = false;
+        self.audio_effects = self.audio_effects.clone().normalized();
     }
 
     pub fn normalized(mut self) -> Self {
@@ -589,6 +624,21 @@ fn clamp_f32(value: f32, min: f32, max: f32, fallback: f32) -> f32 {
     }
 }
 
+fn normalize_font_family(value: &str) -> String {
+    static INVALID_CHARACTERS: OnceLock<regex::Regex> = OnceLock::new();
+    let invalid = INVALID_CHARACTERS.get_or_init(|| {
+        regex::Regex::new(r"[^\p{L}\p{N} ._-]").expect("valid font family character pattern")
+    });
+    invalid
+        .replace_all(value, "")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(MAX_FONT_FAMILY_CHARS)
+        .collect()
+}
+
 fn normalize_choice(value: &str, allowed: &[&str], fallback: &str) -> String {
     let normalized = value.trim();
     if allowed.contains(&normalized) {
@@ -618,10 +668,12 @@ fn normalize_equalizer_preset(value: &str) -> String {
             "bass_boost",
             "bass_reduce",
             "classical",
+            "club",
             "dance",
             "deep",
             "electronic",
             "hip_hop",
+            "folk",
             "jazz",
             "latin",
             "loudness",
@@ -674,6 +726,62 @@ fn non_empty_or_default(value: &str, fallback: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn audio_effects_defaults_are_exported_as_typed_settings() {
+        let value = serde_json::to_value(super::AppSettings::default()).unwrap();
+        assert_eq!(value["audioEffects"]["version"], 2);
+        assert_eq!(value["audioEffects"]["main"]["sound"]["equalizerBandsDb"].as_array().map(Vec::len), Some(10));
+        assert_eq!(value["vinylEffectEnabled"], false);
+    }
+
+    #[test]
+    fn legacy_five_band_settings_migrate_once_without_double_equalization() {
+        let mut settings: super::AppSettings = serde_json::from_value(serde_json::json!({
+            "equalizerEnabled": true, "equalizerBands": [600, 0, -300, 300, 100],
+        })).unwrap();
+        assert_eq!(settings.audio_effects.version, 0);
+        settings.normalize();
+        assert!(!settings.equalizer_enabled);
+        assert!(settings.audio_effects.main.enabled);
+        assert!(!settings.audio_effects.auto_headroom);
+        let bands = &settings.audio_effects.main.sound.parametric_bands;
+        assert_eq!(bands.iter().map(|band| band.frequency_hz).collect::<Vec<_>>(), vec![60.0, 230.0, 910.0, 3600.0, 14000.0]);
+        assert_eq!(bands.iter().map(|band| band.gain_db).collect::<Vec<_>>(), vec![0.0, -6.0, -9.0, -3.0, -5.0]);
+        settings.audio_effects.main.enabled = false;
+        settings.equalizer_enabled = true;
+        settings.normalize();
+        assert!(!settings.audio_effects.main.enabled, "新版保存后不能因legacy字段重新开启");
+        assert!(!settings.equalizer_enabled, "新版配置必须禁用旧均衡器以避免叠加");
+    }
+
+    #[test]
+    fn legacy_extreme_bands_keep_the_full_thirty_db_attenuation() {
+        let mut settings: super::AppSettings = serde_json::from_value(serde_json::json!({
+            "equalizerEnabled": true, "equalizerBands": [1500, -1500, 0, 1500, -1500],
+        })).unwrap();
+        settings.normalize();
+        assert_eq!(settings.audio_effects.main.sound.parametric_bands.iter().map(|band| band.gain_db).collect::<Vec<_>>(), vec![0.0, -30.0, -15.0, 0.0, -30.0]);
+        assert!(!settings.equalizer_enabled && !settings.audio_effects.auto_headroom);
+    }
+    #[test]
+    fn audio_ratios_use_android_ranges_steps_and_legacy_defaults() {
+        let settings: AppSettings = serde_json::from_str("{}").unwrap();
+        let value = serde_json::to_value(settings.normalized()).unwrap();
+        assert_eq!(value["playbackPitch"], serde_json::json!(1.0));
+        for (speed, pitch, expected_speed, expected_pitch) in [
+            (0.01, 0.1, 0.1, 0.25),
+            (4.5, 2.5, 4.0, 2.0),
+            (1.234, 0.876, 1.25, 0.9),
+        ] {
+            let settings: AppSettings = serde_json::from_value(serde_json::json!({
+                "playbackSpeed": speed, "playbackPitch": pitch,
+            })).unwrap();
+            let value = serde_json::to_value(settings.normalized()).unwrap();
+            assert!((value["playbackSpeed"].as_f64().unwrap() - expected_speed).abs() < 1e-5);
+            assert!((value["playbackPitch"].as_f64().unwrap() - expected_pitch).abs() < 1e-5);
+        }
+    }
+
     #[test]
     fn audio_display_settings_new_defaults_show_bitrate_and_format() {
         let settings: AppSettings = serde_json::from_str("{}").expect("new settings");
@@ -812,6 +920,60 @@ mod tests {
     }
 
     use super::{AppSettings, MAX_MEDIA_CACHE_SIZE_MB, MIN_MEDIA_CACHE_SIZE_MB};
+
+    #[test]
+    fn font_settings_default_for_old_snapshots() {
+        let old: AppSettings = serde_json::from_str("{}").expect("old settings");
+        let settings = serde_json::to_value(old.normalized()).expect("default settings");
+        assert_eq!(settings["appFontFamily"], "");
+        assert_eq!(settings["lyricFontFamily"], "");
+    }
+
+    #[test]
+    fn font_settings_sanitize_css_and_limit_unicode_characters() {
+        for (value, expected) in [
+            ("  Noto  Sans SC  ".to_string(), "Noto Sans SC".to_string()),
+            ("思源黑体.1-_ Regular".to_string(), "思源黑体.1-_ Regular".to_string()),
+            ("A\"; color:red/*x*/".to_string(), "A colorredx".to_string()),
+            ("Noto\tSans\nSC".to_string(), "NotoSansSC".to_string()),
+            ("x".repeat(80), "x".repeat(64)),
+            ("𠮷".repeat(80), "𠮷".repeat(64)),
+        ] {
+            let settings: AppSettings = serde_json::from_value(serde_json::json!({
+                "appFontFamily": value,
+                "lyricFontFamily": value,
+            })).expect("font settings");
+            let saved = serde_json::to_value(settings.normalized()).expect("saved font settings");
+            assert_eq!(saved["appFontFamily"], expected);
+            assert_eq!(saved["lyricFontFamily"], expected);
+            let restored: AppSettings = serde_json::from_value(saved).expect("restored font settings");
+            let restored = serde_json::to_value(restored.normalized()).expect("restored font JSON");
+            assert_eq!(restored["appFontFamily"], expected);
+            assert_eq!(restored["lyricFontFamily"], expected);
+        }
+    }
+
+    #[test]
+    fn font_settings_survive_config_import_and_export() {
+        #[derive(serde::Deserialize, serde::Serialize)]
+        struct Config {
+            #[serde(deserialize_with = "super::deserialize_app_settings")]
+            settings: AppSettings,
+        }
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "settings": {
+                "appFontFamily": "思源黑体",
+                "lyricFontFamily": "Noto Serif SC",
+                "lyricFontScale": 1.25,
+            }
+        })).expect("font config");
+        let exported = serde_json::to_value(config).expect("exported config");
+        assert_eq!(exported["settings"]["appFontFamily"], "思源黑体");
+        assert_eq!(exported["settings"]["lyricFontFamily"], "Noto Serif SC");
+        assert_eq!(exported["settings"]["lyricFontScale"], 1.25);
+        let imported: Config = serde_json::from_value(exported.clone()).expect("imported config");
+        assert_eq!(serde_json::to_value(imported).expect("imported JSON"), exported);
+    }
 
     #[test]
     fn lyric_emphasis_threshold_defaults_and_normalizes_for_config_round_trip() {

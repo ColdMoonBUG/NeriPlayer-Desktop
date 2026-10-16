@@ -1477,8 +1477,13 @@ onUnmounted(() => {
           <CloudListState class="platform-sync" variant="banner" :status="cloudPlaylistStatus('qq')" @retry="recommend.fetchUserPlaylists('qq')" />
         </div>
         <TransitionGroup tag="div" name="lib-list" class="lib-list">
-        <div v-for="pl in filteredQqPlaylists" :key="'qq-' + pl.id" class="playlist-item" @click="router.push({ name: 'qq-playlist', params: { id: pl.id } })" @contextmenu="collectionMenuRef?.open($event, { route: { name: 'qq-playlist', params: { id: pl.id } }, webUrl: collectionWebUrl('qq', 'playlist', pl.id) })">
-          <div class="pl-icon" :class="{ 'has-cover': pl.coverUrl && !isLibraryCoverFailed('qq-playlist', pl.id, pl.coverUrl) }"><img v-if="pl.coverUrl && !isLibraryCoverFailed('qq-playlist', pl.id, pl.coverUrl)" :src="toDisplayableLibraryCoverUrl(pl.coverUrl)" class="pl-cover-img" referrerpolicy="no-referrer" loading="lazy" @error="markLibraryCoverFailed('qq-playlist', pl.id, pl.coverUrl)" /><span v-else class="material-symbols-rounded filled" style="font-size: 22px">library_music</span></div>
+        <div v-for="pl in filteredQqPlaylists" :key="'qq-' + pl.id" class="playlist-item" @click="router.push({ name: 'qq-playlist', params: { id: pl.id }, query: { name: pl.name, cover: pl.coverUrl } })" @contextmenu="collectionMenuRef?.open($event, { route: { name: 'qq-playlist', params: { id: pl.id }, query: { name: pl.name, cover: pl.coverUrl } }, webUrl: collectionWebUrl('qq', 'playlist', pl.id) })">
+          <div class="pl-icon" :class="{ 'has-cover': pl.coverUrl }">
+            <BilibiliCoverImage v-if="pl.coverUrl" :src="pl.coverUrl" class="pl-cover-img">
+              <span class="material-symbols-rounded filled" style="font-size: 22px">library_music</span>
+            </BilibiliCoverImage>
+            <span v-else class="material-symbols-rounded filled" style="font-size: 22px">library_music</span>
+          </div>
           <div class="pl-info"><div class="pl-name">{{ pl.name }}</div><div class="pl-count">{{ t('library.track_count', { count: pl.trackCount }) }}</div></div>
           <span class="material-symbols-rounded" style="font-size: 18px; opacity: 0.3">chevron_right</span>
         </div>

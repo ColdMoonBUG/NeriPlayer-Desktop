@@ -5,6 +5,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { writeText } from '@tauri-apps/plugin-clipboard-manager'
 import { useToastStore } from '@/stores/toast'
 import { createLogger } from '@/utils/logger'
+import CustomSelect from '@/components/ui/CustomSelect.vue'
 
 /// 运行日志（对齐 Android LogViewer）：后端环形缓冲 + 前端日志，等宽字体按时间顺序显示，
 /// 支持级别 / 来源筛选、全文搜索、自动跟随最新、展开单行与复制
@@ -104,6 +105,10 @@ const levelCounts = computed(() => {
 })
 
 const targets = computed(() => [...new Set(entries.value.map(entry => shortTarget(entry.target)))].sort())
+const targetOptions = computed(() => [
+  { value: '', label: t('settings.debug_logs_all_targets') },
+  ...targets.value.map(target => ({ value: target, label: target })),
+])
 
 function normalizeLevel(level: string): Level {
   const upper = level.toUpperCase()
@@ -214,10 +219,7 @@ const levelClass = (level: string) => `level-${normalizeLevel(level).toLowerCase
           <span class="log-level-count">{{ levelCounts[level] }}</span>
         </button>
       </div>
-      <select v-model="targetFilter" class="log-target-select" :aria-label="t('settings.debug_logs_target')">
-        <option value="">{{ t('settings.debug_logs_all_targets') }}</option>
-        <option v-for="target in targets" :key="target" :value="target">{{ target }}</option>
-      </select>
+      <CustomSelect v-model="targetFilter" class="log-target-select" :options="targetOptions" :label="t('settings.debug_logs_target')" />
       <label class="log-search">
         <span class="material-symbols-rounded" aria-hidden="true">search</span>
         <input v-model="query" type="search" :placeholder="t('settings.debug_logs_search')" />
@@ -338,15 +340,15 @@ const levelClass = (level: string) => `level-${normalizeLevel(level).toLowerCase
 }
 
 .log-target-select {
-  height: 30px;
   max-width: 200px;
-  padding: 0 8px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--md-outline-variant);
-  background: var(--md-surface-container-high);
-  color: var(--md-on-surface);
   font-family: var(--font-mono);
-  font-size: 12px;
+
+  :deep(.custom-select-trigger) {
+    height: 30px;
+    padding: 0 8px;
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+  }
 }
 
 .log-search {

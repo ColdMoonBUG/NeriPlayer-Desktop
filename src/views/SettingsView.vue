@@ -14,6 +14,7 @@ import {
   DESKTOP_LYRICS_BACKGROUNDS,
   DESKTOP_LYRICS_FONT_PRESETS,
   DESKTOP_LYRICS_FONT_SIZE,
+  DESKTOP_LYRICS_MAX_WIDTH,
   DESKTOP_LYRICS_KARAOKE,
   DESKTOP_LYRICS_LAYOUTS,
   DESKTOP_LYRICS_LETTER_SPACING,
@@ -80,6 +81,8 @@ import {
 import { applyTheme, switchThemeWithRipple, type ThemeMode } from '@/utils/theme'
 import { THEME_COLORS, getSwatchColor, applyThemeColor, getSavedThemeColor, switchThemeColorWithRipple } from '@/utils/themeColor'
 import ShortcutSettings from '@/components/settings/ShortcutSettings.vue'
+import FontFamilyControl from '@/components/settings/FontFamilyControl.vue'
+import AudioEffectsSettings from '@/components/settings/AudioEffectsSettings.vue'
 import { SETTINGS_SEARCH_INDEX } from '@/modules/settings/searchIndex'
 import { isMacPlatform } from '@/modules/shortcuts/platform'
 import { filterAndRank, searchValue } from '@/modules/search/textMatcher'
@@ -98,7 +101,7 @@ const player = usePlayerStore()
 const lt = useListenTogetherStore()
 const toast = useToastStore()
 const {
-  darkMode, themeColor: selectedColor, coverStyle,
+  darkMode, themeColor: selectedColor, coverStyle, appFontFamily, lyricFontFamily,
   defaultScreen, closeToTray, showMenuBarLyrics, showCoverBadge, showNowPlayingTitle, showToolbarDock,
   showQualitySwitch, lyricFontScale,
   normalizeVolume, multichannelDrc, volumeBalance, audioOutputDevice,
@@ -348,11 +351,14 @@ function openSettingsSearchResult(result: SettingsSearchResult | undefined) {
 }
 
 /// 找到标题文字一致的设置卡片，滚到可视区中间并闪一下
-function focusSettingsItem(section: SettingsSectionId, title: string, attempt = 0) {
+const audioEffectsSettingsRef = ref<{ revealSetting: (title: string) => Promise<void> } | null>(null)
+async function focusSettingsItem(section: SettingsSectionId, title: string, attempt = 0) {
+  if (section === 'audio_effects' && title === t('player.eq_preset')) title = t('dsp.preset_section')
+  if (section === 'audio_effects') await audioEffectsSettingsRef.value?.revealSetting(title)
   const panel = settingsContentRef.value?.querySelector(`.settings-section-panel[data-section="${section}"]`)
   const titleEl = [...(panel?.querySelectorAll<HTMLElement>('.setting-title') ?? [])]
     .find(element => element.textContent?.trim() === title)
-  const card = titleEl?.closest<HTMLElement>('.setting-card')
+  const card = titleEl?.closest<HTMLElement>(section === 'audio_effects' ? '.setting-card, .effects-import, .effects-section' : '.setting-card')
   if (!card) {
     // 折叠分组的展开动画还没把内容插进来时稍后再找
     if (attempt < 6) setTimeout(() => focusSettingsItem(section, title, attempt + 1), 80)
@@ -558,6 +564,7 @@ type SettingsSectionId =
   | 'language'
   | 'playback'
   | 'audio'
+  | 'audio_effects'
   | 'quality'
   | 'playback_sources'
   | 'appearance'
@@ -575,7 +582,7 @@ type SettingsSectionId =
 
 const SETTINGS_UI_STATE_KEY = 'neri:settings-ui-state'
 const SETTINGS_SECTION_IDS: SettingsSectionId[] = [
-  'accounts', 'general', 'shortcuts', 'language', 'playback', 'audio', 'quality', 'playback_sources',
+  'accounts', 'general', 'shortcuts', 'language', 'playback', 'audio', 'audio_effects', 'quality', 'playback_sources',
   'appearance', 'now_playing', 'background', 'motion', 'lyrics', 'desktop_lyrics',
   'downloads', 'storage', 'network', 'backup', 'listen_together', 'about',
 ]
@@ -673,6 +680,7 @@ const settingsNavGroups = computed<{ items: SettingsNavItem[] }[]>(() => [
     items: [
       { id: 'playback', label: t('settings.playback'), description: t('settings.nav_playback_desc'), icon: 'play_circle' },
       { id: 'audio', label: t('settings.audio_processing'), description: t('settings.nav_audio_desc'), icon: 'graphic_eq' },
+      { id: 'audio_effects', label: t('settings.audio_effects_section'), description: t('settings.audio_effects_desc'), icon: 'tune' },
       { id: 'quality', label: t('settings.audio_quality'), description: t('settings.audio_quality_desc'), icon: 'high_quality' },
       { id: 'playback_sources', label: t('settings.playback_sources'), description: t('settings.playback_sources_desc'), icon: 'alt_route' },
     ],
@@ -727,6 +735,7 @@ function selectSettingsSection(id: SettingsSectionId) {
       language: [],
       playback: ['playback'],
       audio: [],
+      audio_effects: [],
       quality: ['quality'],
       playback_sources: [],
       appearance: [],
@@ -1635,6 +1644,28 @@ useEscapeClose(
       </div>
     </div>
 
+    <div class="setting-card font-setting-card">
+      <div class="font-setting-heading">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">font_download</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.app_font') }}</div>
+          <div class="setting-desc">{{ t('settings.app_font_desc') }}</div>
+        </div>
+      </div>
+      <FontFamilyControl v-model="appFontFamily" :label="t('settings.app_font')" :preview-text="t('settings.font_preview')" />
+    </div>
+
+    <div class="setting-card font-setting-card">
+      <div class="font-setting-heading">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">lyrics</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.lyric_font') }}</div>
+          <div class="setting-desc">{{ t('settings.lyric_font_desc') }}</div>
+        </div>
+      </div>
+      <FontFamilyControl v-model="lyricFontFamily" :label="t('settings.lyric_font')" :preview-text="t('settings.font_preview')" :preview-weight="850" />
+    </div>
+
     <!-- 取色方式 -->
     <div class="setting-card">
       <div class="setting-icon-wrap"><span class="material-symbols-rounded">colorize</span></div>
@@ -1864,6 +1895,11 @@ useEscapeClose(
         </div>
         <label class="m3-switch"><input type="checkbox" v-model="multichannelDrc" /><span class="track"><span class="thumb"><span v-if="multichannelDrc" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
       </div>
+        </div>
+
+    <!-- 详细音效 -->
+        <div v-show="activeSettingsSection === 'audio_effects'" class="settings-section-panel" data-section="audio_effects">
+          <AudioEffectsSettings v-if="activeSettingsSection === 'audio_effects'" ref="audioEffectsSettingsRef" />
         </div>
 
     <!-- 播放 -->
@@ -2547,6 +2583,15 @@ useEscapeClose(
         </div>
         <input type="range" class="m3-slider" :value="desktopLyricsStyle.fontSize" :min="DESKTOP_LYRICS_FONT_SIZE.min" :max="DESKTOP_LYRICS_FONT_SIZE.max" :step="DESKTOP_LYRICS_FONT_SIZE.step"
           :aria-label="t('desktop_lyrics.font_size')" @input="updateDesktopLyrics({ fontSize: Number(($event.target as HTMLInputElement).value) })" />
+      </div>
+
+      <div class="setting-card sub-card">
+        <div class="setting-info">
+          <div class="setting-title">{{ t('desktop_lyrics.max_width') }}</div>
+          <div class="setting-desc">{{ desktopLyricsStyle.maxWidth }}px · {{ t('desktop_lyrics.max_width_desc') }}</div>
+        </div>
+        <input type="range" class="m3-slider" :value="desktopLyricsStyle.maxWidth" :min="DESKTOP_LYRICS_MAX_WIDTH.min" :max="DESKTOP_LYRICS_MAX_WIDTH.max" :step="DESKTOP_LYRICS_MAX_WIDTH.step"
+          :aria-label="t('desktop_lyrics.max_width')" @input="updateDesktopLyrics({ maxWidth: Number(($event.target as HTMLInputElement).value) })" />
       </div>
 
       <div class="setting-card setting-card--select sub-card">
@@ -4048,6 +4093,16 @@ useEscapeClose(
 }
 
 .setting-info { flex: 1; min-width: 0; }
+.font-setting-card {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 14px;
+}
+.font-setting-heading {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
 .setting-title { font-size: 14px; font-weight: 500; }
 .setting-desc { font-size: 12px; color: var(--md-on-surface-variant); margin-top: 2px; }
 

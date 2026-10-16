@@ -69,11 +69,11 @@ async function runtime(options = {}) {
       invoked.push({ command, args })
       if (command === 'validate_downloads') return options.validate ? options.validate() : { tracks: options.downloads || [] }
       if (command === 'delete_download' && options.deleteError) throw new Error('fixture delete failed')
-      if (command === 'cancel_download') return options.cancel ? options.cancel.promise : false
-      if (command === 'cancel_all_downloads') return 0
+      if (command === 'cancel_download') return options.cancelResult ? options.cancelResult(args) : options.cancel ? options.cancel.promise : false
+      if (command === 'cancel_all_downloads') return options.cancelAll ? options.cancelAll.promise : 0
       if (command === 'get_default_download_dir') return 'E:/Music/NeriPlayer'
       if (command === 'download_track') {
-        events.get('download-progress')?.({ payload: { trackId: args.trackId, status: 'start' } })
+        if (!options.skipStart) events.get('download-progress')?.({ payload: { trackId: args.trackId, status: 'start' } })
         if (options.start) return options.start(args)
       }
     } },
@@ -108,6 +108,205 @@ async function runtime(options = {}) {
     emit: payload => events.get('download-progress')({ payload }),
     emitEvent: (name, payload) => events.get(name)?.({ payload }),
   }
+}
+
+{
+  const cancelAll = deferred()
+  const r = await runtime({ cancelAll })
+  for (let id = 0; id < 843; id++) await r.store.downloadTrack(track(`bulk-${id}`))
+  await flush()
+  let updates = 0
+  const stopWatching = vue.watch(() => r.store.downloading, () => updates++, { flush: 'sync' })
+  const cancelling = r.store.cancelAllDownloads()
+  assert.ok(updates <= 2, 'stopping a large queue publishes task state in a constant number of updates')
+  assert.equal(r.store.downloading.get('netease:bulk-0').status, 'cancelling', 'running tasks reflect cancellation before IPC returns')
+  assert.equal(r.store.downloading.get('netease:bulk-842').status, 'cancelled')
+  assert.equal(r.invoked.filter(call => call.command === 'cancel_all_downloads').length, 1)
+  assert.equal(r.resolved.length, 1, 'cancel all must remove every queued task before releasing any slot')
+  stopWatching()
+  cancelAll.resolve(1)
+  await cancelling
+  r.emit({ trackId: 'netease:bulk-0', status: 'cancelled' })
+  await flush()
+  assert.equal(r.store.runningDownloadCount, 0)
+}
+for (const oldFails of [false, true]) {
+  const oldResolution = deferred()
+  const r = await runtime({ resolve: item => item.id.endsWith(':slow-resolver') ? oldResolution.promise : stream })
+  await r.store.downloadTrack(track('slow-resolver'))
+  await r.store.downloadTrack(track('next-resolver'))
+  await flush()
+  await r.store.cancelDownload('netease:slow-resolver')
+  await flush()
+  assert.equal(r.store.downloading.get('netease:slow-resolver').status, 'cancelled')
+  assert.equal(r.store.downloading.get('netease:next-resolver').status, 'downloading', 'cancelling resolution immediately releases its queue slot')
+  r.emit({ trackId: 'netease:next-resolver', status: 'complete' })
+  await flush()
+  assert.equal(r.messages.length, 1, 'a cancelled resolver cannot delay the finished batch summary')
+  assert.match(r.messages[0].args[0], /"cancelled":1/)
+  r.store.clearFinishedTasks()
+  if (oldFails) oldResolution.reject(new Error('cancelled resolver failed late'))
+  else oldResolution.resolve(stream)
+  await flush()
+  assert.equal(r.store.downloading.size, 0, 'late resolver results cannot recreate cleared tasks')
+  assert.equal(r.invoked.filter(call => call.command === 'download_track').length, 1)
+  assert.equal(r.messages.length, 1)
+}
+for (const all of [false, true]) {
+  const cancellation = deferred()
+  const r = await runtime(all ? { cancelAll: cancellation } : { cancel: cancellation })
+  await r.store.downloadTrack(track('late-progress'))
+  await flush()
+  const cancelling = all ? r.store.cancelAllDownloads() : r.store.cancelDownload('netease:late-progress')
+  for (const status of ['queued', 'start', 'downloading', 'processing']) {
+    r.emit({ trackId: 'netease:late-progress', status, downloadedBytes: 1024, totalBytes: 2048 })
+    assert.equal(r.store.downloading.get('netease:late-progress').status, 'cancelling', `late ${status} events cannot revive a cancelled task`)
+  }
+  cancellation.resolve(all ? 1 : true)
+  await cancelling
+  r.emit({ trackId: 'netease:late-progress', status: 'cancelled' })
+  await flush()
+  assert.equal(r.store.downloading.get('netease:late-progress').status, 'cancelled', 'terminal events still finish cancellation')
+  for (const status of ['queued', 'start', 'downloading', 'processing']) {
+    r.emit({ trackId: 'netease:late-progress', status, downloadedBytes: 1024, totalBytes: 2048 })
+    assert.equal(r.store.downloading.get('netease:late-progress').status, 'cancelled', `late ${status} events cannot revive a finished cancellation`)
+  }
+  r.store.clearFinishedTasks()
+  for (const status of ['queued', 'start', 'downloading', 'processing']) {
+    r.emit({ trackId: 'netease:late-progress', status, downloadedBytes: 1024, totalBytes: 2048 })
+    assert.equal(r.store.downloading.size, 0, `late ${status} events cannot recreate a cleared cancellation`)
+  }
+}
+for (const all of [false, true]) for (const rejected of [false, true]) {
+  const cancellation = deferred()
+  const r = await runtime(all ? { cancelAll: cancellation } : { cancel: cancellation })
+  await r.store.downloadTrack(track('cancel-failure'))
+  await flush()
+  r.emit({ trackId: 'netease:cancel-failure', status: 'processing' })
+  const cancelling = all ? r.store.cancelAllDownloads() : r.store.cancelDownload('netease:cancel-failure')
+  assert.equal(r.store.downloading.get('netease:cancel-failure').status, 'cancelling')
+  if (rejected) cancellation.reject(new Error('fixture cancellation failed'))
+  else cancellation.resolve(all ? 0 : false)
+  await cancelling
+  assert.equal(r.store.downloading.get('netease:cancel-failure').status, 'processing', 'failed cancellation restores the previous active state')
+  assert.equal(r.store.downloading.get('netease:cancel-failure').message, 'download.cancel_failed')
+  r.emit({ trackId: 'netease:cancel-failure', status: 'cancelled' })
+  await flush()
+}
+for (const all of [false, true]) {
+  const startup = deferred()
+  let cancellations = 0
+  const r = await runtime({ skipStart: true, start: () => startup.promise, cancelResult: () => ++cancellations > 1 })
+  await r.store.downloadTrack(track('launch-race'))
+  await r.store.downloadTrack(track('launch-next'))
+  await flush()
+  if (all) await r.store.cancelAllDownloads()
+  else await r.store.cancelDownload('netease:launch-race')
+  assert.equal(r.store.downloading.get('netease:launch-race').status, 'cancelling', 'a submitted startup keeps its slot until the backend confirms cancellation')
+  if (!all) assert.equal(r.store.downloading.get('netease:launch-next').status, 'queued')
+  startup.resolve()
+  await flush()
+  assert.equal(r.invoked.filter(call => call.command === 'cancel_download').length, all ? 1 : 2, 'cancellation is resent after startup registers the backend task')
+  r.emit({ trackId: 'netease:launch-race', status: 'cancelled' })
+  await flush()
+  if (!all) {
+    assert.equal(r.store.downloading.get('netease:launch-next').status, 'resolving')
+    r.emit({ trackId: 'netease:launch-next', status: 'cancelled' })
+    await flush()
+  }
+}
+for (const all of [false, true]) {
+  const startup = deferred(), cancelAll = deferred()
+  const r = await runtime({
+    skipStart: true, start: () => startup.promise, cancelAll,
+    cancelResult: () => { throw new Error('fixture cancellation transport failed') },
+  })
+  await r.store.downloadTrack(track('launch-cancel-failure'))
+  await flush()
+  const cancelling = all ? r.store.cancelAllDownloads() : r.store.cancelDownload('netease:launch-cancel-failure')
+  if (all) cancelAll.reject(new Error('fixture cancellation transport failed'))
+  await cancelling
+  assert.equal(r.store.downloading.get('netease:launch-cancel-failure').status, 'resolving', 'a failed IPC restores an in-flight startup')
+  assert.equal(r.store.downloading.get('netease:launch-cancel-failure').message, 'download.cancel_failed')
+  startup.resolve()
+  await flush()
+  assert.equal(r.invoked.filter(call => call.command === 'cancel_download').length, all ? 0 : 1, 'a failed cancellation cannot silently cancel again after startup')
+  r.emit({ trackId: 'netease:launch-cancel-failure', status: 'cancelled' })
+  await flush()
+}
+for (const all of [false, true]) for (const rejected of [false, true]) {
+  const startup = deferred(), followup = deferred()
+  let cancellations = 0
+  const r = await runtime({
+    skipStart: true, start: () => startup.promise,
+    cancelResult: () => {
+      cancellations++
+      if (!all && cancellations === 1) return false
+      if (cancellations === (all ? 1 : 2)) return followup.promise
+      return true
+    },
+  })
+  await r.store.downloadTrack(track('followup-cancel-failure'))
+  await flush()
+  if (all) await r.store.cancelAllDownloads()
+  else await r.store.cancelDownload('netease:followup-cancel-failure')
+  startup.resolve()
+  await flush()
+  await r.store.downloadTrack(track('followup-pending'))
+  if (rejected) followup.reject(new Error('fixture followup cancellation failed'))
+  else followup.resolve(false)
+  await flush()
+  assert.equal(r.store.downloading.get('netease:followup-cancel-failure').status, 'resolving', 'failed post-launch cancellation restores a cancellable task')
+  assert.equal(r.store.downloading.get('netease:followup-cancel-failure').message, 'download.cancel_failed')
+  assert.equal(r.store.downloading.get('netease:followup-pending').status, 'queued', 'failed cancellation retains the backend task slot')
+  assert.equal(await r.store.cancelDownload('netease:followup-cancel-failure'), true)
+  assert.equal(cancellations, all ? 2 : 3, 'the user can resend cancellation after the followup fails')
+  r.emit({ trackId: 'netease:followup-cancel-failure', status: 'cancelled' })
+  await flush()
+  r.emit({ trackId: 'netease:followup-pending', status: 'cancelled' })
+  await flush()
+}
+for (const all of [false, true]) {
+  const startup = deferred(), followup = deferred()
+  let cancellations = 0
+  const r = await runtime({
+    skipStart: true, start: () => startup.promise,
+    cancelResult: () => !all && ++cancellations === 1 ? false : followup.promise,
+  })
+  await r.store.downloadTrack(track('followup-generation'))
+  await flush()
+  if (all) await r.store.cancelAllDownloads()
+  else await r.store.cancelDownload('netease:followup-generation')
+  startup.resolve()
+  await flush()
+  r.emit({ trackId: 'netease:followup-generation', status: 'cancelled' })
+  r.store.retryDownload('netease:followup-generation')
+  await flush()
+  r.emit({ trackId: 'netease:followup-generation', status: 'processing' })
+  followup.reject(new Error('old followup cancellation failed late'))
+  await flush()
+  assert.equal(r.store.downloading.get('netease:followup-generation').status, 'processing', 'an old followup failure cannot restore over a retry')
+  assert.equal(r.store.downloading.get('netease:followup-generation').message, undefined)
+  r.emit({ trackId: 'netease:followup-generation', status: 'cancelled' })
+  await flush()
+}
+for (const all of [false, true]) {
+  const cancellation = deferred()
+  const r = await runtime(all ? { cancelAll: cancellation } : { cancel: cancellation })
+  await r.store.downloadTrack(track('cancellation-generation'))
+  await flush()
+  const cancelling = all ? r.store.cancelAllDownloads() : r.store.cancelDownload('netease:cancellation-generation')
+  r.emit({ trackId: 'netease:cancellation-generation', status: 'cancelled' })
+  await flush()
+  r.store.retryDownload('netease:cancellation-generation')
+  await flush()
+  r.emit({ trackId: 'netease:cancellation-generation', status: 'processing' })
+  cancellation.reject(new Error('previous cancellation failed late'))
+  await cancelling
+  assert.equal(r.store.downloading.get('netease:cancellation-generation').status, 'processing', 'an old cancellation result cannot restore over a retry')
+  assert.equal(r.store.downloading.get('netease:cancellation-generation').message, undefined)
+  r.emit({ trackId: 'netease:cancellation-generation', status: 'cancelled' })
+  await flush()
 }
 
 {
@@ -210,13 +409,14 @@ async function runtime(options = {}) {
   r.emit({ trackId: 'netease:success', status: 'complete' })
   await flush()
   await r.store.cancelAllDownloads()
-  assert.equal(r.messages.length, 0, 'cancel all is silent and unresolved cancellation blocks summary')
-  resolution.resolve(stream)
-  await flush()
+  assert.equal(r.messages.length, 0, 'summary still waits for the active backend task to confirm cancellation')
   r.emit({ trackId: 'netease:pending-cancel', status: 'cancelled' })
   await flush()
   assert.equal(r.messages.length, 1)
   assert.match(r.messages[0].args[0], /"cancelled":2/)
+  resolution.resolve(stream)
+  await flush()
+  assert.equal(r.messages.length, 1, 'the cancelled resolver cannot delay or duplicate the summary')
 }
 {
   const validation = deferred()
@@ -262,8 +462,8 @@ for (const oldFails of [false, true]) {
   await r.store.cancelDownload('netease:generation')
   r.store.retryDownload('netease:generation')
   await flush()
-  assert.equal(r.store.downloading.get('netease:generation').status, 'queued', 'immediate retry waits for cancelled resolver to settle')
-  assert.equal(r.resolved.length, 1)
+  assert.equal(r.store.downloading.get('netease:generation').status, 'downloading', 'immediate retry starts without waiting for the cancelled resolver')
+  assert.equal(r.resolved.length, 2)
   if (oldFails) oldResolution.reject(new Error('old resolver failed'))
   else oldResolution.resolve(stream)
   await flush()

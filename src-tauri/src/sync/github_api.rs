@@ -10,6 +10,9 @@ const MAX_SYNC_FILE_BYTES: u64 = 12 * 1024 * 1024;
 const MAX_API_ERROR_CHARS: usize = 240;
 const MAX_TREE_ENTRIES: usize = 100_000;
 const TREE_BATCH_ENTRIES: usize = 1000;
+const ARCHIVE_COMMIT_MAX_FILES: usize = 64;
+const ARCHIVE_COMMIT_MAX_CONTENT_BYTES: usize = 3 * 1024 * 1024;
+const ARCHIVE_COMMIT_MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 
 pub type GitHubResult<T> = Result<T, GitHubApiError>;
 
@@ -79,6 +82,30 @@ pub struct GitHubHead {
     pub repository_id: String,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct GitHubArchiveProof {
+    api_base: String,
+    owner: String,
+    repo: String,
+    head: GitHubHead,
+    pub(crate) tree_sha: String,
+    pub(crate) object_ids: std::collections::HashMap<String, String>,
+}
+
+impl GitHubArchiveProof {
+    fn matches(&self, api_base: &str, owner: &str, repo: &str, head: &GitHubHead) -> bool {
+        self.api_base == api_base && self.owner == owner && self.repo == repo
+            && self.head.sha == head.sha && self.head.branch == head.branch
+            && self.head.repository_id == head.repository_id
+    }
+
+    pub(crate) fn verify_cached(&self, path: &str, content: &[u8]) -> GitHubResult<bool> {
+        let expected = self.object_ids.get(path)
+            .ok_or_else(|| GitHubApiError::NotFound(format!("archive object missing from fixed commit: {path}")))?;
+        Ok(git_blob_sha1(content) == *expected)
+    }
+}
+
 impl GitHubApiClient {
     async fn bounded_body(mut response: reqwest::Response, maximum: usize) -> GitHubResult<Vec<u8>> {
         if response.content_length().is_some_and(|bytes| bytes > maximum as u64) {
@@ -95,10 +122,17 @@ impl GitHubApiClient {
     }
 
     async fn archive_json(&self, request: RequestBuilder) -> GitHubResult<serde_json::Value> {
-        let response = self.request(request).send().await?;
+        self.archive_json_budget(request, 4 * 1024 * 1024).await
+    }
+
+    async fn archive_json_budget(&self, request: RequestBuilder, maximum: usize) -> GitHubResult<serde_json::Value> {
+        let request = self.request(request).build()?;
+        let expected_url = request.url().clone();
+        let response = self.http.execute(request).await?;
+        if response.url() != &expected_url { return Err(GitHubApiError::InvalidResponse("archive response redirected".into())); }
         let status = response.status();
         let headers = response.headers().clone();
-        let body = Self::bounded_body(response, 4 * 1024 * 1024).await?;
+        let body = Self::bounded_body(response, maximum).await?;
         if status == StatusCode::UNAUTHORIZED { return Err(GitHubApiError::TokenExpired); }
         if !status.is_success() { return Err(api_error(status, &headers, String::from_utf8_lossy(&body).into(), "sync archive", true)); }
         serde_json::from_slice(&body).map_err(|error| GitHubApiError::InvalidResponse(format!("invalid archive JSON: {error}")))
@@ -131,31 +165,83 @@ impl GitHubApiClient {
     }
 
     pub async fn publish_archive(&self, owner: &str, repo: &str, head: &GitHubHead, prepared: &super::archive::PreparedArchive, verified_paths: &std::collections::HashSet<String>) -> GitHubResult<String> {
-        use super::archive::{MANIFEST_FILE, canonical_object_path};
-        let commit = self.archive_json(self.http.get(self.endpoint(&format!("repos/{owner}/{repo}/git/commits/{}",head.sha)))).await?;
-        let base_tree = required_json_string(&commit["tree"],"sha")?;
-        let listing = self.archive_json(self.http.get(self.endpoint(&format!("repos/{owner}/{repo}/git/trees/{base_tree}")))).await?;
-        if listing["truncated"].as_bool()!=Some(false) { return Err(GitHubApiError::InvalidResponse("archive tree listing is truncated or incomplete".into())); }
-        // 对齐 Android GitHubArchiveTreeReader：清单必须正是基准树，路径唯一、对象 id 合法、规模有上限
-        if listing["sha"].as_str()!=Some(base_tree.as_str()) { return Err(GitHubApiError::InvalidResponse("archive tree listing does not match the base tree".into())); }
-        let entries = listing["tree"].as_array().ok_or_else(||GitHubApiError::InvalidResponse("missing archive tree entries".into()))?;
-        if entries.len()>MAX_TREE_ENTRIES { return Err(GitHubApiError::InvalidResponse("archive tree listing is too large".into())); }
-        let mut existing = std::collections::HashMap::new();
-        let mut listed = std::collections::HashSet::new();
-        for entry in entries {
-            let path = required_json_string(entry,"path")?;
-            if !is_git_object_id(&required_json_string(entry,"sha")?) { return Err(GitHubApiError::InvalidResponse("archive tree listing has an invalid object id".into())); }
-            if !listed.insert(path.clone()) { return Err(GitHubApiError::InvalidResponse("archive tree listing repeats a path".into())); }
-            if path==MANIFEST_FILE && (entry["type"].as_str()!=Some("blob") || entry["mode"].as_str()!=Some("100644")) {return Err(GitHubApiError::InvalidResponse("manifest is not a regular file".into()));}
-            if canonical_object_path(&path) {
-                if entry["type"].as_str()!=Some("blob") || entry["mode"].as_str()!=Some("100644") { return Err(GitHubApiError::InvalidResponse("owned archive path is not a regular file".into())); }
-                existing.insert(path,required_json_string(entry,"sha")?);
+        self.publish_archive_with_proof(owner, repo, head, prepared, verified_paths, None).await
+    }
+
+    pub(crate) async fn get_archive_proof(&self, owner: &str, repo: &str, head: &GitHubHead) -> GitHubResult<GitHubArchiveProof> {
+        if !is_git_object_id(&head.sha) { return Err(GitHubApiError::InvalidResponse("archive proof requires a fixed commit id".into())); }
+        let commit = self.archive_json(self.http.get(self.endpoint(&format!("repos/{owner}/{repo}/git/commits/{}", head.sha)))).await?;
+        if commit["sha"].as_str() != Some(&head.sha) { return Err(GitHubApiError::InvalidResponse("archive commit does not match the fixed head".into())); }
+        let tree_sha = required_json_string(&commit["tree"], "sha")?;
+        if !is_git_object_id(&tree_sha) { return Err(GitHubApiError::InvalidResponse("archive commit has an invalid tree id".into())); }
+        let listing = self.archive_json_budget(self.http.get(self.endpoint(&format!("repos/{owner}/{repo}/git/trees/{tree_sha}"))), MAX_SYNC_FILE_BYTES as usize).await?;
+        let object_ids = archive_tree_objects(&listing, &tree_sha)?;
+        Ok(GitHubArchiveProof { api_base: self.api_base.clone(), owner: owner.into(), repo: repo.into(), head: head.clone(), tree_sha, object_ids })
+    }
+
+    pub(crate) async fn publish_archive_with_proof(&self, owner: &str, repo: &str, head: &GitHubHead, prepared: &super::archive::PreparedArchive, verified_paths: &std::collections::HashSet<String>, proof: Option<&GitHubArchiveProof>) -> GitHubResult<String> {
+        let fetched;
+        let proof = if let Some(proof) = proof {
+            if !proof.matches(&self.api_base, owner, repo, head) { return Err(GitHubApiError::InvalidResponse("archive proof belongs to another target or head".into())); }
+            proof
+        } else {
+            fetched = self.get_archive_proof(owner, repo, head).await?;
+            &fetched
+        };
+        if let Some(body) = archive_commit_request(owner, repo, head, prepared, verified_paths, proof)? {
+            return self.publish_archive_batch(owner, repo, head, &body).await;
+        }
+        self.publish_staged_archive(owner, repo, head, prepared, verified_paths, Some(proof)).await
+    }
+
+    fn graphql_endpoint(&self) -> GitHubResult<url::Url> {
+        let mut endpoint = url::Url::parse(&self.api_base).map_err(|_|GitHubApiError::InvalidResponse("invalid GitHub API base".into()))?;
+        endpoint.set_path(if endpoint.path().trim_end_matches('/') == "/api/v3" { "/api/graphql" } else if endpoint.path().trim_matches('/').is_empty() { "/graphql" } else { return Err(GitHubApiError::InvalidResponse("unsupported atomic GraphQL endpoint".into())); });
+        endpoint.set_query(None);
+        endpoint.set_fragment(None);
+        Ok(endpoint)
+    }
+
+    async fn publish_archive_batch(&self, owner: &str, repo: &str, head: &GitHubHead, body: &serde_json::Value) -> GitHubResult<String> {
+        let endpoint = self.graphql_endpoint()?;
+        let response = self.request(self.http.post(endpoint.clone()).json(body)).send().await?;
+        if response.url() != &endpoint { return Err(GitHubApiError::InvalidResponse("atomic publication response redirected".into())); }
+        let status = response.status();
+        let headers = response.headers().clone();
+        let bytes = Self::bounded_body(response, 64 * 1024).await?;
+        if status == StatusCode::UNAUTHORIZED { return Err(GitHubApiError::TokenExpired); }
+        if !status.is_success() { return Err(api_error(status, &headers, String::from_utf8_lossy(&bytes).into(), "atomic archive publication", true)); }
+        let result: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_|GitHubApiError::InvalidResponse("invalid GraphQL publication response".into()))?;
+        if let Some(errors) = result.get("errors") {
+            let errors = errors.as_array().ok_or_else(||GitHubApiError::InvalidResponse("invalid GraphQL errors".into()))?;
+            if !errors.is_empty() {
+                let has_code = |code| errors.iter().any(|error| error["type"].as_str() == Some(code) || error["extensions"]["code"].as_str() == Some(code));
+                if has_code("STALE_DATA") { return Err(GitHubApiError::ContentConflict { status: 409, message: "branch changed before atomic publication".into() }); }
+                if has_code("RATE_LIMITED") { return Err(GitHubApiError::RateLimited { status: status.as_u16(), retry_at_ms: github_rate_limit_resume_at(&headers, now_ms()) }); }
+                // 未知 GraphQL 错误只重读当前分支，错误结果绝不改走第二次写入
+                let reference = self.archive_json(self.http.get(self.endpoint(&format!("repos/{owner}/{repo}/git/ref/heads/{}", urlencoding::encode(&head.branch))))).await?;
+                if required_json_string(&reference["object"], "sha")? != head.sha { return Err(GitHubApiError::ContentConflict { status: 409, message: "branch moved during atomic publication".into() }); }
+                return Err(GitHubApiError::Api { status: status.as_u16(), message: "GitHub atomic archive publication failed".into() });
             }
         }
+        archive_commit_ack(&result, owner, repo, head, required_json_string(&body["variables"]["input"], "clientMutationId")?.as_str())
+    }
+
+    async fn publish_staged_archive(&self, owner: &str, repo: &str, head: &GitHubHead, prepared: &super::archive::PreparedArchive, verified_paths: &std::collections::HashSet<String>, proof: Option<&GitHubArchiveProof>) -> GitHubResult<String> {
+        use super::archive::MANIFEST_FILE;
+        let (base_tree, existing) = if let Some(proof) = proof {
+            (proof.tree_sha.clone(), proof.object_ids.clone())
+        } else {
+            let commit = self.archive_json(self.http.get(self.endpoint(&format!("repos/{owner}/{repo}/git/commits/{}",head.sha)))).await?;
+            let base_tree = required_json_string(&commit["tree"],"sha")?;
+            let listing = self.archive_json_budget(self.http.get(self.endpoint(&format!("repos/{owner}/{repo}/git/trees/{base_tree}"))), MAX_SYNC_FILE_BYTES as usize).await?;
+            let existing = archive_tree_objects(&listing, &base_tree)?;
+            (base_tree, existing)
+        };
         let mut changes = Vec::new();
         for (path,content) in prepared.objects.iter().chain(std::iter::once((&MANIFEST_FILE.to_string(),&prepared.content))) {
-            if path!=MANIFEST_FILE && !canonical_object_path(path) {return Err(GitHubApiError::InvalidResponse("object outside archive closure".into()));}
-            if path!=MANIFEST_FILE && verified_paths.contains(path) && existing.contains_key(path) {continue;}
+            validate_archive_upload(path, content)?;
+            if path!=MANIFEST_FILE && verified_paths.contains(path) && existing.get(path).is_some_and(|expected| *expected == git_blob_sha1(content)) {continue;}
             let blob = self.archive_json(self.http.post(self.endpoint(&format!("repos/{owner}/{repo}/git/blobs"))).json(&serde_json::json!({"content":BASE64.encode(content),"encoding":"base64"}))).await?;
             let blob_sha = required_json_string(&blob,"sha")?;
             // 服务器回报的 blob id 必须就是这份内容的 git SHA-1，否则提交里引用的不是我们上传的数据
@@ -173,9 +259,7 @@ impl GitHubApiClient {
         }
         let commit = self.archive_json(self.http.post(self.endpoint(&format!("repos/{owner}/{repo}/git/commits"))).json(&serde_json::json!({"message":"Sync from NeriPlayer Desktop","tree":tree_sha,"parents":[head.sha]}))).await?;
         let commit_sha = required_json_string(&commit,"sha")?;
-        let mut endpoint = url::Url::parse(&self.api_base).map_err(|_|GitHubApiError::InvalidResponse("invalid GitHub API base".into()))?;
-        endpoint.set_path(if endpoint.path().trim_end_matches('/')=="/api/v3" {"/api/graphql"} else if endpoint.path().trim_matches('/').is_empty() {"/graphql"} else {return Err(GitHubApiError::InvalidResponse("unsupported atomic GraphQL endpoint".into()));});
-        endpoint.set_query(None); endpoint.set_fragment(None);
+        let endpoint = self.graphql_endpoint()?;
         let response = self.http.post(endpoint.clone()).bearer_auth(&self.token).header("Accept","application/json").json(&serde_json::json!({
             "query":"mutation NeriPlayerSyncPublish($input: UpdateRefsInput!) { updateRefs(input: $input) { clientMutationId } }",
             "variables":{"input":{"repositoryId":head.repository_id,"refUpdates":[{"name":format!("refs/heads/{}",head.branch),"beforeOid":head.sha,"afterOid":commit_sha,"force":false}],"clientMutationId":commit_sha}}
@@ -491,6 +575,89 @@ impl GitHubApiClient {
     }
 }
 
+fn archive_tree_objects(listing: &serde_json::Value, expected_tree: &str) -> GitHubResult<std::collections::HashMap<String, String>> {
+    use super::archive::{MANIFEST_FILE, canonical_object_path};
+    if listing["truncated"].as_bool() != Some(false) { return Err(GitHubApiError::InvalidResponse("archive tree listing is truncated or incomplete".into())); }
+    if listing["sha"].as_str() != Some(expected_tree) { return Err(GitHubApiError::InvalidResponse("archive tree listing does not match the base tree".into())); }
+    let entries = listing["tree"].as_array().ok_or_else(||GitHubApiError::InvalidResponse("missing archive tree entries".into()))?;
+    if entries.len() > MAX_TREE_ENTRIES { return Err(GitHubApiError::InvalidResponse("archive tree listing is too large".into())); }
+    let mut existing = std::collections::HashMap::new();
+    let mut listed = std::collections::HashSet::new();
+    for entry in entries {
+        let path = required_json_string(entry, "path")?;
+        let sha = required_json_string(entry, "sha")?;
+        let kind = required_json_string(entry, "type")?;
+        let mode = required_json_string(entry, "mode")?;
+        if !is_git_object_id(&sha) { return Err(GitHubApiError::InvalidResponse("archive tree listing has an invalid object id".into())); }
+        if !listed.insert(path.clone()) { return Err(GitHubApiError::InvalidResponse("archive tree listing repeats a path".into())); }
+        if path == MANIFEST_FILE && (kind != "blob" || mode != "100644") { return Err(GitHubApiError::InvalidResponse("manifest is not a regular file".into())); }
+        if canonical_object_path(&path) {
+            if kind != "blob" || mode != "100644" { return Err(GitHubApiError::InvalidResponse("owned archive path is not a regular file".into())); }
+            existing.insert(path, sha);
+        }
+    }
+    Ok(existing)
+}
+
+fn validate_archive_upload(path: &str, content: &[u8]) -> GitHubResult<()> {
+    use super::archive::{MANIFEST_FILE, MAX_OBJECT_BYTES, canonical_object_path, digest};
+    if content.is_empty() || content.len() > MAX_OBJECT_BYTES { return Err(GitHubApiError::InvalidResponse("archive object exceeds upload budget".into())); }
+    if path == MANIFEST_FILE { return Ok(()); }
+    if !canonical_object_path(path) { return Err(GitHubApiError::InvalidResponse("object outside archive closure".into())); }
+    let expected = path.strip_suffix(".zst").and_then(|path| path.rsplit_once('-')).map(|(_, hash)| hash);
+    if expected != Some(digest(content).as_str()) { return Err(GitHubApiError::InvalidResponse("sync object does not match its content address".into())); }
+    Ok(())
+}
+
+fn archive_commit_request(owner: &str, repo: &str, head: &GitHubHead, prepared: &super::archive::PreparedArchive, verified_paths: &std::collections::HashSet<String>, proof: &GitHubArchiveProof) -> GitHubResult<Option<serde_json::Value>> {
+    use super::archive::MANIFEST_FILE;
+    let mut additions = Vec::new();
+    let mut bytes = 0usize;
+    for (path, content) in &prepared.objects {
+        validate_archive_upload(path, content)?;
+        if verified_paths.contains(path) && proof.object_ids.get(path).is_some_and(|expected| *expected == git_blob_sha1(content)) { continue; }
+        additions.push((path.as_str(), content.as_slice()));
+        bytes = bytes.saturating_add(content.len());
+    }
+    validate_archive_upload(MANIFEST_FILE, &prepared.content)?;
+    additions.push((MANIFEST_FILE, &prepared.content));
+    bytes = bytes.saturating_add(prepared.content.len());
+    let mut deletions: Vec<_> = proof.object_ids.keys().filter(|path| !prepared.objects.contains_key(*path)).collect();
+    deletions.sort();
+    if additions.len().saturating_add(deletions.len()) > ARCHIVE_COMMIT_MAX_FILES || bytes > ARCHIVE_COMMIT_MAX_CONTENT_BYTES { return Ok(None); }
+    let mutation_id = uuid::Uuid::new_v4().to_string();
+    let body = serde_json::json!({
+        "query":"mutation NeriPlayerSyncCommit($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { clientMutationId commit { oid parents(first: 2) { nodes { oid } } } ref { name prefix repository { nameWithOwner } target { oid } } } }",
+        "variables":{"input":{
+            "branch":{"repositoryNameWithOwner":format!("{owner}/{repo}"),"branchName":head.branch},
+            "expectedHeadOid":head.sha,
+            "message":{"headline":"Sync from NeriPlayer Desktop"},
+            "fileChanges":{
+                "additions":additions.iter().map(|(path, content)|serde_json::json!({"path":path,"contents":BASE64.encode(content)})).collect::<Vec<_>>(),
+                "deletions":deletions.iter().map(|path|serde_json::json!({"path":path})).collect::<Vec<_>>()
+            },
+            "clientMutationId":mutation_id
+        }}
+    });
+    let request_bytes = serde_json::to_vec(&body).map_err(|_|GitHubApiError::InvalidResponse("invalid archive commit request".into()))?.len();
+    Ok((request_bytes <= ARCHIVE_COMMIT_MAX_REQUEST_BYTES).then_some(body))
+}
+
+fn archive_commit_ack(result: &serde_json::Value, owner: &str, repo: &str, head: &GitHubHead, mutation_id: &str) -> GitHubResult<String> {
+    let result = &result["data"]["createCommitOnBranch"];
+    if result["clientMutationId"].as_str() != Some(mutation_id) { return Err(GitHubApiError::InvalidResponse("atomic publication acknowledgement mismatch".into())); }
+    let commit = &result["commit"];
+    let sha = required_json_string(commit, "oid")?;
+    if !is_git_object_id(&sha) || sha == head.sha { return Err(GitHubApiError::InvalidResponse("archive commit has an invalid or unchanged object id".into())); }
+    let parents = commit["parents"]["nodes"].as_array().ok_or_else(||GitHubApiError::InvalidResponse("missing archive commit parents".into()))?;
+    if parents.len() != 1 || parents[0]["oid"].as_str() != Some(&head.sha) { return Err(GitHubApiError::InvalidResponse("archive commit parent does not match the expected head".into())); }
+    let reference = &result["ref"];
+    if reference["name"].as_str() != Some(&head.branch) || reference["prefix"].as_str() != Some("refs/heads/") { return Err(GitHubApiError::InvalidResponse("archive commit acknowledged another branch".into())); }
+    if !required_json_string(&reference["repository"], "nameWithOwner")?.eq_ignore_ascii_case(&format!("{owner}/{repo}")) { return Err(GitHubApiError::InvalidResponse("archive commit acknowledged another repository".into())); }
+    if reference["target"]["oid"].as_str() != Some(&sha) { return Err(GitHubApiError::InvalidResponse("archive commit and branch target do not match".into())); }
+    Ok(sha)
+}
+
 /// git 为 blob 计算的对象 id：`sha1("blob <len>\0" + content)`
 fn git_blob_sha1(content: &[u8]) -> String {
     use sha1::{Digest, Sha1};
@@ -610,7 +777,7 @@ mod tests {
         let api = GitHubApiClient::new_with_api_base(&loopback_client(), "fixture", &base);
         let head = GitHubHead { branch: "main".into(), sha: "old-head".into(), repository_id: "repo-node".into() };
         let error = api
-            .publish_archive("owner", "repo", &head, &prepared, &std::collections::HashSet::new())
+            .publish_staged_archive("owner", "repo", &head, &prepared, &std::collections::HashSet::new(), None)
             .await
             .unwrap_err();
         server.await.unwrap();
@@ -655,7 +822,7 @@ mod tests {
             let api = GitHubApiClient::new_with_api_base(&loopback_client(), "fixture", &base);
             let head = GitHubHead { branch: "main".into(), sha: "old-head".into(), repository_id: "repo-node".into() };
             let error = api
-                .publish_archive("owner", "repo", &head, &prepared, &std::collections::HashSet::new())
+                .publish_staged_archive("owner", "repo", &head, &prepared, &std::collections::HashSet::new(), None)
                 .await
                 .unwrap_err();
             assert_eq!(error.is_content_conflict(), conflict, "head {current_head}");
@@ -669,7 +836,7 @@ mod tests {
         let (base,mut requests,server)=mock_server(archive_publication_responses(&prepared,r#"{"data":{"updateRefs":{"clientMutationId":"new-commit"}}}"#)).await;
         let api=GitHubApiClient::new_with_api_base(&loopback_client(),"fixture",&base);
         let head=GitHubHead{branch:"sync-data".into(),sha:"old-head".into(),repository_id:"repo-node".into()};
-        assert_eq!(api.publish_archive("owner","repo",&head,&prepared,&std::collections::HashSet::new()).await.unwrap(),"new-commit");
+        assert_eq!(api.publish_staged_archive("owner","repo",&head,&prepared,&std::collections::HashSet::new(),None).await.unwrap(),"new-commit");
         let count=prepared.objects.len()+6;let mut captured=Vec::new();for _ in 0..count{captured.push(requests.recv().await.unwrap());}
         let tree=&captured[captured.len()-3];assert!(tree.contains(&format!("\"base_tree\":\"{BASE_TREE}\"")));assert!(tree.contains("\"sha\":null"));assert!(!tree.contains("README.md"));
         let mutation=captured.last().unwrap();assert!(mutation.starts_with("POST /graphql "));assert!(mutation.contains("\"beforeOid\":\"old-head\""));assert!(mutation.contains("\"afterOid\":\"new-commit\""));assert!(mutation.contains("\"force\":false"));assert!(!captured.iter().any(|request|request.starts_with("PATCH ")||request.starts_with("PUT ")));
@@ -682,7 +849,7 @@ mod tests {
         let (base,mut requests,server)=mock_server(archive_publication_responses(&prepared,r#"{"errors":[{"type":"STALE_DATA","message":"branch changed"}]}"#)).await;
         let api=GitHubApiClient::new_with_api_base(&loopback_client(),"fixture",&base);
         let head=GitHubHead{branch:"main".into(),sha:"old-head".into(),repository_id:"repo-node".into()};
-        assert!(api.publish_archive("owner","repo",&head,&prepared,&std::collections::HashSet::new()).await.unwrap_err().is_content_conflict());
+        assert!(api.publish_staged_archive("owner","repo",&head,&prepared,&std::collections::HashSet::new(),None).await.unwrap_err().is_content_conflict());
         for _ in 0..prepared.objects.len()+6 {assert!(!requests.recv().await.unwrap().starts_with("PATCH "));}
         server.await.unwrap();
     }
@@ -694,6 +861,185 @@ mod tests {
         for path in ["neriplayer-sync-v3.manifest","object.zst"] {api.get_file_at_ref("owner","repo",path,"fixed-head",100).await.unwrap();}
         for _ in 0..2 {let request=requests.recv().await.unwrap();assert!(request.lines().next().unwrap().contains("ref=fixed-head"));assert!(request.contains("application/vnd.github.raw+json"));}
         server.await.unwrap();
+    }
+
+    fn batch_ack(head: &GitHubHead, mutation_id: &str) -> serde_json::Value {
+        serde_json::json!({"data":{"createCommitOnBranch":{
+            "clientMutationId":mutation_id,
+            "commit":{"oid":"7777777777777777777777777777777777777777","parents":{"nodes":[{"oid":head.sha}]}},
+            "ref":{"name":head.branch,"prefix":"refs/heads/","repository":{"nameWithOwner":"owner/repo"},"target":{"oid":"7777777777777777777777777777777777777777"}}
+        }}})
+    }
+
+    #[tokio::test]
+    async fn small_archive_publishes_with_one_conditional_graphql_commit() {
+        let prepared = super::super::archive::prepare(&super::super::models::SyncData::default(), None).unwrap();
+        let head = GitHubHead { branch: "sync-data".into(), sha: "8".repeat(40), repository_id: "repo-node".into() };
+        let retired = format!("neriplayer-sync-v3-{}.zst", "a".repeat(64));
+        let listing = tree_listing(&format!(r#"{{"path":"README.md","type":"blob","mode":"100644","sha":"{}"}},{{"path":"{retired}","type":"blob","mode":"100644","sha":"{}"}}"#, "2".repeat(40), "3".repeat(40)));
+        let (base, mut requests, server) = mock_server(vec![
+            response("200 OK", &serde_json::json!({"sha":head.sha,"tree":{"sha":BASE_TREE}}).to_string()),
+            response("200 OK", &listing),
+            response("200 OK", &batch_ack(&head, "__MUTATION_ID__").to_string()),
+        ]).await;
+        let api = GitHubApiClient::new_with_api_base(&loopback_client(), "fixture", &base);
+        let result = api.publish_archive("owner", "repo", &head, &prepared, &std::collections::HashSet::new()).await;
+        assert_eq!(result.unwrap(), "7777777777777777777777777777777777777777");
+        let _commit = requests.recv().await.unwrap();
+        let _tree = requests.recv().await.unwrap();
+        let mutation = requests.recv().await.unwrap();
+        assert!(mutation.starts_with("POST /graphql "));
+        let body: serde_json::Value = serde_json::from_str(mutation.split_once("\r\n\r\n").unwrap().1).unwrap();
+        let input = &body["variables"]["input"];
+        assert_eq!(input["expectedHeadOid"], head.sha);
+        assert_eq!(input["branch"]["branchName"], "sync-data");
+        let additions = input["fileChanges"]["additions"].as_array().unwrap();
+        assert_eq!(additions.len(), prepared.objects.len() + 1);
+        assert!(additions.iter().all(|entry| entry["path"] != "README.md"));
+        assert_eq!(input["fileChanges"]["deletions"], serde_json::json!([{"path":retired}]));
+        server.await.unwrap();
+    }
+
+    fn proof_for(api: &GitHubApiClient, head: &GitHubHead) -> GitHubArchiveProof {
+        GitHubArchiveProof { api_base: api.api_base.clone(), owner: "owner".into(), repo: "repo".into(), head: head.clone(), tree_sha: BASE_TREE.into(), object_ids: std::collections::HashMap::new() }
+    }
+
+    #[tokio::test]
+    async fn fixed_tree_proof_reuses_only_bytes_with_the_remote_git_blob_id() {
+        let head = GitHubHead { branch: "main".into(), sha: "8".repeat(40), repository_id: "repo-node".into() };
+        let path = "neriplayer-sync-v4-2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824.zst";
+        let listing = tree_listing(&format!(r#"{{"path":"{path}","type":"blob","mode":"100644","sha":"b6fc4c620b67d95f953a5c1c1230aaab5db5a1b0"}}"#));
+        let (base, mut requests, server) = mock_server(vec![
+            response("200 OK", &serde_json::json!({"sha":head.sha,"tree":{"sha":BASE_TREE}}).to_string()),
+            response("200 OK", &listing),
+        ]).await;
+        let api = GitHubApiClient::new_with_api_base(&loopback_client(), "fixture", &base);
+        let proof = api.get_archive_proof("owner", "repo", &head).await.unwrap();
+        assert!(proof.verify_cached(path, b"hello").unwrap());
+        assert!(!proof.verify_cached(path, b"changed").unwrap());
+        assert!(proof.verify_cached("missing.zst", b"hello").unwrap_err().is_not_found());
+        assert!(requests.recv().await.unwrap().starts_with(&format!("GET /repos/owner/repo/git/commits/{} ", head.sha)));
+        assert!(requests.recv().await.unwrap().starts_with(&format!("GET /repos/owner/repo/git/trees/{BASE_TREE} ")));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_tree_proof_cannot_acknowledge_another_commit_or_target() {
+        let head = GitHubHead { branch: "main".into(), sha: "8".repeat(40), repository_id: "repo-node".into() };
+        let (base, _, server) = mock_server(vec![response("200 OK", &serde_json::json!({"sha":"9".repeat(40),"tree":{"sha":BASE_TREE}}).to_string())]).await;
+        let api = GitHubApiClient::new_with_api_base(&loopback_client(), "fixture", &base);
+        assert!(api.get_archive_proof("owner", "repo", &head).await.unwrap_err().to_string().contains("fixed head"));
+        server.await.unwrap();
+        let proof = proof_for(&api, &head);
+        let prepared = super::super::archive::prepare(&super::super::models::SyncData::default(), None).unwrap();
+        for (owner, repo, candidate) in [
+            ("another", "repo", head.clone()),
+            ("owner", "another", head.clone()),
+            ("owner", "repo", GitHubHead { sha: "9".repeat(40), ..head.clone() }),
+            ("owner", "repo", GitHubHead { branch: "another".into(), ..head.clone() }),
+        ] {
+            assert!(api.publish_archive_with_proof(owner, repo, &candidate, &prepared, &std::collections::HashSet::new(), Some(&proof)).await.unwrap_err().to_string().contains("another target or head"));
+        }
+        let other_api = GitHubApiClient::new_with_api_base(&loopback_client(), "fixture", "http://127.0.0.1:1");
+        assert!(other_api.publish_archive_with_proof("owner", "repo", &head, &prepared, &std::collections::HashSet::new(), Some(&proof)).await.unwrap_err().to_string().contains("another target or head"));
+    }
+
+    #[tokio::test]
+    async fn a_reused_proof_skips_tree_reads_and_unchanged_objects() {
+        let head = GitHubHead { branch: "main".into(), sha: "8".repeat(40), repository_id: "repo-node".into() };
+        let prepared = super::super::archive::prepare(&super::super::models::SyncData::default(), None).unwrap();
+        let (base, mut requests, server) = mock_server(vec![response("200 OK", &batch_ack(&head, "__MUTATION_ID__").to_string())]).await;
+        let api = GitHubApiClient::new_with_api_base(&loopback_client(), "fixture", &base);
+        let mut proof = proof_for(&api, &head);
+        proof.object_ids = prepared.objects.iter().map(|(path, content)| (path.clone(), git_blob_sha1(content))).collect();
+        let verified = proof.object_ids.keys().cloned().collect();
+        api.publish_archive_with_proof("owner", "repo", &head, &prepared, &verified, Some(&proof)).await.unwrap();
+        let request = requests.recv().await.unwrap();
+        assert!(request.starts_with("POST /graphql "));
+        let body: serde_json::Value = serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(body["variables"]["input"]["fileChanges"]["additions"].as_array().unwrap().len(), 1);
+        assert_eq!(body["variables"]["input"]["fileChanges"]["additions"][0]["path"], super::super::archive::MANIFEST_FILE);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn batch_acknowledgement_rejects_wrong_mutation_parent_branch_repository_or_target() {
+        let head = GitHubHead { branch: "main".into(), sha: "8".repeat(40), repository_id: "repo-node".into() };
+        let prepared = super::super::archive::prepare(&super::super::models::SyncData::default(), None).unwrap();
+        for (pointer, wrong_value) in [
+            ("/clientMutationId", serde_json::json!("another-mutation")),
+            ("/commit/oid", serde_json::json!("invalid")),
+            ("/commit/oid", serde_json::json!(head.sha)),
+            ("/commit/parents/nodes", serde_json::json!([])),
+            ("/commit/parents/nodes/0/oid", serde_json::json!("9".repeat(40))),
+            ("/ref/name", serde_json::json!("another")),
+            ("/ref/prefix", serde_json::json!("refs/tags/")),
+            ("/ref/repository/nameWithOwner", serde_json::json!("another/repo")),
+            ("/ref/target/oid", serde_json::json!("9".repeat(40))),
+        ] {
+            let mut acknowledgement = batch_ack(&head, "__MUTATION_ID__");
+            *acknowledgement["data"]["createCommitOnBranch"].pointer_mut(pointer).unwrap() = wrong_value;
+            let (base, _, server) = mock_server(vec![response("200 OK", &acknowledgement.to_string())]).await;
+            let api = GitHubApiClient::new_with_api_base(&loopback_client(), "fixture", &base);
+            let proof = proof_for(&api, &head);
+            let error = api.publish_archive_with_proof("owner", "repo", &head, &prepared, &std::collections::HashSet::new(), Some(&proof)).await.unwrap_err();
+            assert!(matches!(error, GitHubApiError::InvalidResponse(_)), "{pointer}: {error}");
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn batch_conflicts_and_rate_limits_never_trigger_another_publication() {
+        let head = GitHubHead { branch: "main".into(), sha: "8".repeat(40), repository_id: "repo-node".into() };
+        let prepared = super::super::archive::prepare(&super::super::models::SyncData::default(), None).unwrap();
+        for (failure, rate_limited) in [
+            (r#"{"errors":[{"type":"STALE_DATA","message":"branch moved"}]}"#, false),
+            (r#"{"errors":[{"extensions":{"code":"RATE_LIMITED"},"message":"rate limited"}]}"#, true),
+        ] {
+            let (base, mut requests, server) = mock_server(vec![response("200 OK", failure)]).await;
+            let api = GitHubApiClient::new_with_api_base(&loopback_client(), "fixture", &base);
+            let proof = proof_for(&api, &head);
+            let error = api.publish_archive_with_proof("owner", "repo", &head, &prepared, &std::collections::HashSet::new(), Some(&proof)).await.unwrap_err();
+            if rate_limited { assert!(matches!(error, GitHubApiError::RateLimited { .. })); }
+            else { assert!(error.is_content_conflict()); }
+            assert!(requests.recv().await.unwrap().starts_with("POST /graphql "));
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn archives_with_many_retired_objects_keep_staged_atomic_publication() {
+        let head = GitHubHead { branch: "main".into(), sha: "8".repeat(40), repository_id: "repo-node".into() };
+        let prepared = super::super::archive::prepare(&super::super::models::SyncData::default(), None).unwrap();
+        let responses: Vec<_> = archive_publication_responses(&prepared, r#"{"data":{"updateRefs":{"clientMutationId":"new-commit"}}}"#).into_iter().skip(2).collect();
+        let (base, mut requests, server) = mock_server(responses).await;
+        let api = GitHubApiClient::new_with_api_base(&loopback_client(), "fixture", &base);
+        let mut proof = proof_for(&api, &head);
+        for index in 0..65 { proof.object_ids.insert(format!("neriplayer-sync-v3-{index:064x}.zst"), "3".repeat(40)); }
+        assert_eq!(api.publish_archive_with_proof("owner", "repo", &head, &prepared, &std::collections::HashSet::new(), Some(&proof)).await.unwrap(), "new-commit");
+        let first = requests.recv().await.unwrap();
+        assert!(first.starts_with("POST /repos/owner/repo/git/blobs "));
+        let mut last = first;
+        for _ in 1..prepared.objects.len() + 4 { last = requests.recv().await.unwrap(); }
+        assert!(last.contains("UpdateRefsInput"));
+        assert!(last.contains(&format!("\"beforeOid\":\"{}\"", head.sha)));
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn archive_commit_budgets_include_base64_expansion_and_reject_wrong_content_addresses() {
+        let head = GitHubHead { branch: "main".into(), sha: "8".repeat(40), repository_id: "repo-node".into() };
+        let api = GitHubApiClient::new_with_api_base(&loopback_client(), "fixture", "http://127.0.0.1:1");
+        let proof = proof_for(&api, &head);
+        let mut prepared = super::super::archive::prepare(&super::super::models::SyncData::default(), None).unwrap();
+        prepared.objects.clear();
+        for size in [1_500_000, 3 * 1024 * 1024 - 1_500_000 - prepared.content.len()] {
+            let content = vec![b'x'; size];
+            prepared.objects.insert(format!("neriplayer-sync-v4-{}.zst", super::super::archive::digest(&content)), content);
+        }
+        assert!(archive_commit_request("owner", "repo", &head, &prepared, &std::collections::HashSet::new(), &proof).unwrap().is_none());
+        prepared.objects.insert(format!("neriplayer-sync-v4-{}.zst", "a".repeat(64)), b"wrong bytes".to_vec());
+        assert!(archive_commit_request("owner", "repo", &head, &prepared, &std::collections::HashSet::new(), &proof).unwrap_err().to_string().contains("content address"));
     }
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -740,6 +1086,13 @@ mod tests {
                 let _ = request_tx
                     .send(String::from_utf8_lossy(&request).into_owned())
                     .await;
+                let response = if response.contains("__MUTATION_ID__") {
+                    let request = String::from_utf8_lossy(&request);
+                    let body: serde_json::Value = serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+                    let mutation_id = body["variables"]["input"]["clientMutationId"].as_str().unwrap_or("missing-mutation");
+                    let response_body = response.split_once("\r\n\r\n").unwrap().1.replace("__MUTATION_ID__", mutation_id);
+                    super::tests::response("200 OK", &response_body)
+                } else { response };
                 socket.write_all(response.as_bytes()).await.unwrap();
                 socket.shutdown().await.unwrap();
             }

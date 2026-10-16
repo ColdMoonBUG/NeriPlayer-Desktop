@@ -3,6 +3,9 @@ import { readFile } from 'node:fs/promises'
 import ts from 'typescript'
 import * as pinia from 'pinia'
 import * as vue from 'vue'
+import { loadAudioEffectsModel } from './audio-effects-model-loader.mjs'
+
+const audioEffectsModel = await loadAudioEffectsModel()
 
 const storage = new Map()
 globalThis.localStorage = {
@@ -51,6 +54,7 @@ new Function('require', 'exports', compiled)(name => {
   if (name === '@/utils/logger') return { createLogger: () => ({ info() {}, warn() {}, error() {}, debug() {} }) }
   if (name === '@/modules/desktopLyrics/style') return desktopLyricsStyle
   if (name === '@/modules/shortcuts/bindings') return shortcutBindings
+  if (name === '@/modules/audioEffects/model') return audioEffectsModel
   throw new Error(`Unexpected settings dependency: ${name}`)
 }, exports)
 

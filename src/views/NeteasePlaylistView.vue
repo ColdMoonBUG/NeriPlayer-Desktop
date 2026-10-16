@@ -155,8 +155,9 @@ async function loadDetail() {
     try {
       const data = await invoke<any>('get_qq_playlist', { id: String(route.params.id) })
       if (request !== qqDetailRequest) return
-      playlistName.value = data.name || ''
-      coverUrl.value = data.coverUrl || ''
+      playlistName.value = data.name || (typeof route.query.name === 'string' ? route.query.name : '')
+      coverUrl.value = data.coverUrl || (typeof route.query.cover === 'string' ? route.query.cover : '')
+        || data.tracks?.find((track: TrackInfo) => track.coverUrl)?.coverUrl || ''
       tracks.value = data.tracks || []
       trackCount.value = tracks.value.length
       playCount.value = data.playCount || 0

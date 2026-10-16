@@ -262,6 +262,6 @@ export const useCurrentLyricsStore = defineStore('currentLyrics', () => {
     lines.value = next
   }
 
-  const displayLines = computed(() => filterLyricCreditMetadataLines(lines.value))
+  const displayLines = computed(() => filterLyricCreditMetadataLines(lines.value, player.currentTrack))
   return { lines: displayLines, loading, acquire, replace }
 })

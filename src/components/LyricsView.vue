@@ -42,6 +42,7 @@ const emit = defineEmits<{ seek: [timeMs: number] }>()
 
 const hostRef = ref<HTMLDivElement>()
 const isLayoutReady = ref(false)
+const displayControlsHidden = ref(false)
 let lyricPlayer: DomLyricPlayer | null = null
 let rafId = 0
 let layoutFrameId = 0
@@ -378,9 +379,13 @@ function resolveLineIndexAt(clientY: number): number {
   return bestIndex
 }
 
+function onDisplayControlsContextMenu(event: MouseEvent): void {
+  lyricMenu.value = { show: true, x: event.clientX, y: event.clientY, index: -1 }
+}
+
 function onLyricContextMenu(event: MouseEvent): void {
   const index = resolveLineIndexAt(event.clientY)
-  if (index < 0) return
+  if (index < 0 && !hasTranslation.value && !hasRomanization.value) return
   event.preventDefault()
   lyricMenu.value = { show: true, x: event.clientX, y: event.clientY, index }
 }
@@ -396,15 +401,31 @@ function onLineContextMenu(event: Event): void {
   lyricMenu.value = { show: true, x: lineEvent.clientX, y: lineEvent.clientY, index }
 }
 
-const lyricMenuItems = computed<ContextMenuItem[]>(() => [
-  createContextMenuItem(t('lyrics.copy_line'), { id: 'copy-line', icon: 'content_copy' }),
-  createContextMenuItem(t('lyrics.copy_all'), { id: 'copy-all', icon: 'copy_all' }),
-  createContextMenuItem(t('lyrics.seek_here'), { id: 'seek', icon: 'play_arrow' }),
-])
+const lyricMenuItems = computed<ContextMenuItem[]>(() => {
+  const items: ContextMenuItem[] = lyricMenu.value.index >= 0 ? [
+    createContextMenuItem(t('lyrics.copy_line'), { id: 'copy-line', icon: 'content_copy' }),
+    createContextMenuItem(t('lyrics.copy_all'), { id: 'copy-all', icon: 'copy_all' }),
+    createContextMenuItem(t('lyrics.seek_here'), { id: 'seek', icon: 'play_arrow' }),
+  ] : []
+  if (hasTranslation.value || hasRomanization.value) {
+    items.push(displayControlsHidden.value
+      ? createContextMenuItem(t('lyrics.show_display_controls'), { id: 'show-display-controls', icon: 'visibility' })
+      : createContextMenuItem(t('lyrics.hide_display_controls'), { id: 'hide-display-controls', icon: 'visibility_off' }))
+  }
+  return items
+})
 
 async function handleLyricMenuClick(item: ContextMenuActionItem): Promise<void> {
   const index = lyricMenu.value.index
   lyricMenu.value.show = false
+  if (item.id === 'hide-display-controls') {
+    displayControlsHidden.value = true
+    return
+  }
+  if (item.id === 'show-display-controls') {
+    displayControlsHidden.value = false
+    return
+  }
   const line = props.lyrics[index]
   if (!line) return
 
@@ -499,7 +520,7 @@ function syncPlayerElementSize(): boolean {
   return width > 0 && height > 0
 }
 
-function syncMountedGroupSizes(): boolean {
+function syncMountedGroupSizes(refreshMasks = false): boolean {
   if (!lyricPlayer) return false
   let changed = false
 
@@ -513,6 +534,7 @@ function syncMountedGroupSizes(): boolean {
 
     const previous = lyricPlayer.lyricGroupSize.get(group)
     if (
+      refreshMasks ||
       !previous ||
       Math.abs(previous[0] - width) > SIZE_EPSILON ||
       Math.abs(previous[1] - height) > SIZE_EPSILON
@@ -527,16 +549,16 @@ function syncMountedGroupSizes(): boolean {
   return changed
 }
 
-function forceLayoutAtCurrentTime(): boolean {
+function forceLayoutAtCurrentTime(refreshMasks = false): boolean {
   if (!lyricPlayer) return false
   const hasPlayerSize = syncPlayerElementSize()
   const time = Math.max(0, Math.round(amllTimeMs.value))
 
   lyricPlayer.setCurrentTime(time, true)
-  const changedBeforeLayout = syncMountedGroupSizes()
+  const changedBeforeLayout = syncMountedGroupSizes(refreshMasks)
   void lyricPlayer.calcLayout(true, true)
   lyricPlayer.update(0)
-  const changedAfterLayout = syncMountedGroupSizes()
+  const changedAfterLayout = syncMountedGroupSizes(refreshMasks)
 
   if (changedBeforeLayout || changedAfterLayout) {
     void lyricPlayer.calcLayout(true, true)
@@ -566,12 +588,16 @@ function scheduleFontReadyLayout(token: number): void {
 
   void fonts.ready.then(() => {
     if (!lyricPlayer || token !== layoutSyncToken) return
-    scheduleLayoutSync()
+    scheduleLayoutSync(false, true)
   })
 }
 
+function onFontsLoaded(): void {
+  // 首次使用的字体可能在下一帧排版后才开始加载
+  scheduleLayoutSync(false, true)
+}
 /// hide：新歌词首次排版时先隐藏，避免行从屏幕外飞入；缩放、字号等重排保持可见
-function scheduleLayoutSync(hide = false): void {
+function scheduleLayoutSync(hide = false, refreshMasks = false): void {
   if (!lyricPlayer) return
   if (layoutFrameId) cancelAnimationFrame(layoutFrameId)
 
@@ -587,7 +613,7 @@ function scheduleLayoutSync(hide = false): void {
       if (!lyricPlayer || token !== layoutSyncToken) return
 
       pass += 1
-      const hasPlayerSize = forceLayoutAtCurrentTime()
+      const hasPlayerSize = forceLayoutAtCurrentTime(refreshMasks && pass === 1)
       const needsMorePasses =
         pass < LAYOUT_SETTLE_PASSES ||
         (!hasPlayerSize && pass < LAYOUT_SETTLE_MAX_PASSES)
@@ -648,6 +674,7 @@ onMounted(() => {
       wakeTarget.addEventListener(type, wakeFrameLoop, { passive: true })
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
+    document.fonts?.addEventListener?.('loadingdone', onFontsLoaded)
     window.addEventListener('focus', syncForeground)
 
     startResizeObserver()
@@ -657,6 +684,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   document.removeEventListener('visibilitychange', onVisibilityChange)
+  document.fonts?.removeEventListener?.('loadingdone', onFontsLoaded)
   window.removeEventListener('focus', syncForeground)
   stopFrameLoop()
   cancelLayoutSync()
@@ -694,9 +722,9 @@ watch([() => settings.lyricBlur, () => settings.lyricBlurAmount], () => {
   syncLyricOptions()
 })
 
-watch(() => settings.lyricFontScale, () => {
-  scheduleLayoutSync()
-})
+watch([() => settings.lyricFontScale, () => settings.lyricFontFamily], () => {
+  scheduleLayoutSync(false, true)
+}, { flush: 'post' })
 
 watch(() => props.isPlaying, () => {
   syncPlayState()
@@ -728,7 +756,13 @@ watch(() => props.seekSeq, (seq, oldSeq) => {
       }"
       @contextmenu="onLyricContextMenu"
     />
-    <div v-if="hasTranslation || hasRomanization" class="lyrics-display-controls" role="group" :aria-label="t('settings.lyrics')">
+    <div
+      v-if="!displayControlsHidden && (hasTranslation || hasRomanization)"
+      class="lyrics-display-controls"
+      role="group"
+      :aria-label="t('settings.lyrics')"
+      @contextmenu.prevent.stop="onDisplayControlsContextMenu"
+    >
       <button
         v-if="hasTranslation"
         type="button"
@@ -770,8 +804,6 @@ watch(() => props.seekSeq, (seq, oldSeq) => {
 <style scoped lang="scss">
 .lyrics-view {
   --amll-lp-font-size: calc(max(max(5vh, 2.5vw), 12px) * var(--lyric-font-scale, 1));
-  // 与 AMLL 行组横向留白保持一致
-  --lyric-line-padding-x: var(--amll-lp-font-size);
   position: relative;
   width: 100%;
   height: 100%;
@@ -784,10 +816,10 @@ watch(() => props.seekSeq, (seq, oldSeq) => {
   position: absolute;
   z-index: 3;
   bottom: 16px;
-  left: var(--lyric-line-padding-x);
+  left: 50%;
   display: flex;
   gap: 2px;
-  max-width: calc(100% - var(--lyric-line-padding-x) - 12px);
+  max-width: calc(100% - 24px);
   padding: 4px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 999px;
@@ -796,20 +828,20 @@ watch(() => props.seekSeq, (seq, oldSeq) => {
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
   opacity: 0;
   pointer-events: none;
-  transform: translateY(6px);
+  transform: translate(-50%, 6px);
   transition: opacity 180ms ease, transform 180ms ease;
 }
 
 .lyrics-view:hover .lyrics-display-controls {
   opacity: 1;
   pointer-events: auto;
-  transform: translateY(0);
+  transform: translate(-50%, 0);
 }
 
 .lyrics-display-controls:has(:focus-visible) {
   opacity: 1;
   pointer-events: auto;
-  transform: translateY(0);
+  transform: translate(-50%, 0);
 }
 
 .lyrics-display-toggle {
@@ -858,17 +890,11 @@ watch(() => props.seekSeq, (seq, oldSeq) => {
   }
 }
 
-@media screen and (max-width: 500px) {
-  .lyrics-view {
-    --lyric-line-padding-x: 20px;
-  }
-}
-
 @media (hover: none), (pointer: coarse) {
   .lyrics-display-controls {
     opacity: 1;
     pointer-events: auto;
-    transform: translateY(0);
+    transform: translate(-50%, 0);
   }
 }
 
@@ -916,6 +942,7 @@ watch(() => props.seekSeq, (seq, oldSeq) => {
 
 :deep(.amll-lyric-player) {
   text-align: left;
+  font-family: var(--lyric-font-family, var(--font-family-default));
   font-weight: 850;
   font-variation-settings: 'wght' 850;
   -webkit-font-smoothing: antialiased;

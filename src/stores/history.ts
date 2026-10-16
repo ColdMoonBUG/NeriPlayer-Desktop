@@ -363,10 +363,11 @@ export const useHistoryStore = defineStore('history', () => {
       .filter(entry => entry.track.id && entry.playedAt > 0 && !isLocalTrack(entry.track))
     const candidates = [...previousEntries, ...previousDeletions, ...nextEntries.map(entry => entry.track)]
       .filter(track => !isLocalTrack(track))
+    const findMatchingTrack = createDeletionTrackMatcher(candidates)
     const resolvedDeletions: HistoryDeletion[] = []
 
     for (const rawDeletion of rawDeletions) {
-      const candidate = await findMatchingTrack(candidates, rawDeletion, canApply)
+      const candidate = await findMatchingTrack(rawDeletion, canApply)
       if (!canApply()) return interrupted()
       if (candidate) {
         resolvedDeletions.push({
@@ -408,24 +409,40 @@ export const useHistoryStore = defineStore('history', () => {
     return 'applied'
   }
 
-  async function findMatchingTrack(
-    candidates: TrackInfo[],
-    deletion: BackendHistoryDeletion,
-    isCurrent: () => boolean,
-  ): Promise<TrackInfo | undefined> {
-    const expectedSongId = String(deletion.songId ?? '')
-    const expectedAlbum = String(deletion.album ?? '')
-    const expectedMediaUri = String(deletion.mediaUri ?? '')
-    for (const candidate of candidates) {
-      const identity = await syncIdentity(candidate)
+  function createDeletionTrackMatcher(candidates: TrackInfo[]) {
+    const identities = new Map<string, Awaited<ReturnType<typeof syncIdentity>>>()
+    const matches = new Map<string, TrackInfo>()
+    let nextCandidate = 0
+
+    return async (deletion: BackendHistoryDeletion, isCurrent: () => boolean): Promise<TrackInfo | undefined> => {
+      const expectedKey = JSON.stringify([
+        String(deletion.songId ?? ''),
+        String(deletion.album ?? '') || null,
+        String(deletion.mediaUri ?? '') || null,
+      ])
       if (!isCurrent()) return undefined
-      if (
-        identity.songId === expectedSongId &&
-        (identity.album === expectedAlbum || !expectedAlbum) &&
-        (identity.mediaUri === expectedMediaUri || !expectedMediaUri)
-      ) return candidate
+      if (matches.has(expectedKey)) return matches.get(expectedKey)
+
+      // 沿原候选顺序逐步建立索引，保留首次命中并避免重复扫描与异步哈希
+      while (nextCandidate < candidates.length) {
+        const candidate = candidates[nextCandidate++]!
+        const identityKey = JSON.stringify([inferSource(candidate), candidate.id, candidate.album])
+        let identity = identities.get(identityKey)
+        if (!identity) {
+          identity = await syncIdentity(candidate)
+          if (!isCurrent()) return undefined
+          identities.set(identityKey, identity)
+        }
+        for (const album of [identity.album, null]) {
+          for (const mediaUri of [identity.mediaUri, null]) {
+            const key = JSON.stringify([identity.songId, album, mediaUri])
+            if (!matches.has(key)) matches.set(key, candidate)
+          }
+        }
+        if (matches.has(expectedKey)) return matches.get(expectedKey)
+      }
+      return undefined
     }
-    return undefined
   }
 
   load()

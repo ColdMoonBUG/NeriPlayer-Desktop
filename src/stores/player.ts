@@ -8,6 +8,8 @@ import { useToastStore } from './toast'
 import {
   MAX_MEDIA_CACHE_SIZE_MB,
   MIN_MEDIA_CACHE_SIZE_MB,
+  normalizePlaybackSpeed,
+  normalizePlaybackPitch,
   useSettingsStore,
 } from './settings'
 import { useDownloadStore } from './download'
@@ -71,6 +73,31 @@ import {
   type DeferredPlaybackSeek,
 } from '@/modules/playback/playbackRequest'
 import { createLogger } from '@/utils/logger'
+import {
+  applyAudioEffectPreset,
+  AUDIO_EFFECT_PRESETS,
+  ANDROID_OUTPUT_ROUTES,
+  audioEffectsProfileFor,
+  DEFAULT_AUDIO_EFFECTS_SETTINGS,
+  exportAudioEffectsProfile,
+  importAudioEffects,
+  importAutoEq as parseAutoEq,
+  normalizeAudioEffectsSettings,
+  normalizeAudioEffectsSound,
+  replaceAudioEffectsProfile,
+  resetAudioEffectsSoundSection,
+  type AudioEffectsProfile,
+  type AudioEffectsSettings,
+  type AudioEffectsSound,
+  type SoundSection,
+} from '@/modules/audioEffects/model'
+import {
+  applyListeningTuning,
+  LISTENING_CONTROLS,
+  listeningTuningValues,
+  resetListeningTuning as resetListeningTuningSound,
+  type ListeningControlKey,
+} from '@/modules/audioEffects/listening'
 import { formatTimeMs as formatTime } from '@/utils/timeFormat'
 import { getTrackCoverUrl } from '@/utils/trackCover'
 import {
@@ -112,6 +139,17 @@ export interface TrackInfo {
   addedAt?: number
   syncPayload?: Record<string, unknown>
   playlistKey?: string
+}
+
+export interface AudioEffectsRuntimeStats {
+  active: boolean
+  cpuLoadPercent: number
+  limiterReductionDb: number
+  compressorReductionDb: number
+  sampleRate: number
+  nativeAvailable: boolean
+  inactiveReason: string | null
+  outputDevice: string
 }
 
 /**
@@ -291,27 +329,29 @@ interface PendingSeekState {
 // 均衡器预设（5频段: 60Hz, 230Hz, 910Hz, 3.6kHz, 14kHz，单位 mB）
 export const EQ_PRESETS: Record<string, number[]> = {
   flat:           [0, 0, 0, 0, 0],
-  acoustic:       [300, 200, 0, 100, 200],
-  bass_boost:     [600, 400, 0, 0, 0],
-  bass_reduce:    [-600, -400, 0, 0, 0],
-  classical:      [400, 200, -100, 200, 300],
-  dance:          [500, 200, 100, -100, 200],
-  deep:           [500, 300, 100, -100, -200],
-  electronic:     [500, 300, 0, 100, 400],
-  hip_hop:        [500, 300, 0, 100, 300],
-  jazz:           [300, 100, -100, 100, 300],
-  latin:          [300, 0, -100, 200, 400],
+  acoustic:       [300, 200, 100, 200, 300],
+  bass_boost:     [700, 500, 200, -100, -300],
+  bass_reduce:    [-700, -500, -200, 0, 100],
+  classical:      [400, 200, -100, 300, 500],
+  club:           [500, 300, 0, 300, 400],
+  dance:          [600, 400, 100, 400, 500],
+  deep:           [800, 500, 100, 0, 200],
+  electronic:     [500, 200, -100, 400, 600],
+  folk:           [100, 300, 0, 400, 500],
+  hip_hop:        [700, 400, 100, 200, 400],
+  jazz:           [300, 200, 100, 300, 400],
+  latin:          [400, 300, 100, 400, 500],
   loudness:       [500, 200, 0, -100, -200],
-  lounge:         [-200, -100, 0, 100, 200],
-  piano:          [200, 100, 0, 100, 200],
-  pop:            [-100, 200, 400, 200, -100],
-  rnb:            [500, 400, 100, -100, 200],
-  rock:           [400, 200, -100, 200, 400],
-  small_speakers: [400, 200, 100, 200, 400],
-  spoken_word:    [-200, 0, 300, 200, -100],
-  treble_boost:   [0, 0, 0, 400, 600],
-  treble_reduce:  [0, 0, 0, -400, -600],
-  vocal_boost:    [-200, 0, 400, 300, 0],
+  lounge:         [200, 100, 100, 300, 400],
+  piano:          [200, 100, 0, 300, 400],
+  pop:            [-100, 300, 500, 300, 0],
+  rnb:            [400, 300, 200, 400, 300],
+  rock:           [600, 300, -100, 300, 600],
+  small_speakers: [400, 100, -200, 400, 700],
+  spoken_word:    [-400, -200, 400, 500, 200],
+  treble_boost:   [-300, -100, 200, 500, 800],
+  treble_reduce:  [100, 0, -200, -500, -800],
+  vocal_boost:    [-200, 100, 500, 500, 100],
   custom:         [0, 0, 0, 0, 0],
 }
 
@@ -549,6 +589,7 @@ export const usePlayerStore = defineStore('player', () => {
   const loadedPlaybackTrackKey = ref<string | null>(null)
   let deferredPlaybackSeek: DeferredPlaybackSeek | null = null
   let _speedInvokeTimer: ReturnType<typeof setTimeout> | null = null
+  let _pitchInvokeTimer: ReturnType<typeof setTimeout> | null = null
 
   function markCommandSource(source: PlaybackCommandSource) {
     lastCommandSource.value = source
@@ -1134,7 +1175,7 @@ export const usePlayerStore = defineStore('player', () => {
     }
 
     const elapsedMs = Math.max(0, now - pendingSeek.issuedAt)
-    const speed = _interpIsPlaying ? Math.max(0.25, effectivePlaybackSpeed() || _interpSpeed || 1) : 0
+    const speed = _interpIsPlaying ? Math.max(0.1, effectivePlaybackSpeed() || _interpSpeed || 1) : 0
     const durationLimit = nextDurationMs || durationMs.value || currentTrack.value?.durationMs || 0
     const lowerBound = Math.max(0, pendingSeek.targetMs - SEEK_BACKWARD_TOLERANCE_MS)
     const upperCandidate = pendingSeek.targetMs + elapsedMs * speed + SEEK_FORWARD_TOLERANCE_MS
@@ -2672,7 +2713,9 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   // 播放速度
-  const playbackSpeed = ref(settings.playbackSpeed)
+  const playbackSpeed = ref(normalizePlaybackSpeed(settings.playbackSpeed))
+  const playbackPitch = ref(normalizePlaybackPitch(settings.playbackPitch))
+  const vinylEffectEnabled = ref(settings.vinylEffectEnabled === true)
   const currentStreamUrl = ref<string | null>(null)
   let currentResolvedStreamUrls: string[] = []
   // 自己解析出的直链对应的一起听频道和音质，分享给听众时据此加音质标记
@@ -2699,7 +2742,7 @@ export const usePlayerStore = defineStore('player', () => {
 
   function effectivePlaybackSpeed(): number {
     const multiplier = listenTogetherSyncRateMultiplier ?? 1
-    return Math.max(0.25, Math.min(3, playbackSpeed.value * multiplier))
+    return Math.max(0.1, Math.min(4, playbackSpeed.value * multiplier))
   }
 
   function setListenTogetherSyncPlaybackRate(multiplier: number | null) {
@@ -2715,8 +2758,7 @@ export const usePlayerStore = defineStore('player', () => {
     if (_speedInvokeTimer) clearTimeout(_speedInvokeTimer)
     _speedInvokeTimer = setTimeout(() => {
       _speedInvokeTimer = null
-      invoke('set_speed', { speed: effectivePlaybackSpeed() })
-        .catch(error => log.warn('listen together sync rate not applied:', error))
+      void applyPlaybackParameter('speed')
     }, 80)
   }
 
@@ -2798,7 +2840,7 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   async function setSpeed(spd: number) {
-    const next = Math.max(0.25, Math.min(3, spd))
+    const next = normalizePlaybackSpeed(spd)
     const wasPlaying = _interpIsPlaying
     // 先锚定当前渲染位置，立刻切换插值速度，歌词/进度同步跟手
     const nowMs = currentRenderedPosition()
@@ -2823,12 +2865,215 @@ export const usePlayerStore = defineStore('player', () => {
     if (_speedInvokeTimer) clearTimeout(_speedInvokeTimer)
     _speedInvokeTimer = setTimeout(() => {
       _speedInvokeTimer = null
-      invoke('set_speed', { speed: effectivePlaybackSpeed() })
-        .catch(error => log.warn('playback speed not applied:', error))
+      void applyPlaybackParameter('speed')
     }, 200)
   }
 
-  // 音效参数（响度增益 + 均衡器）
+  async function setPitch(pitch: number) {
+    playbackPitch.value = normalizePlaybackPitch(pitch)
+    settings.playbackPitch = playbackPitch.value
+    // 音调不参与媒体时钟和歌词插值，只改变 DSP 的重采样倍率
+    if (_pitchInvokeTimer) clearTimeout(_pitchInvokeTimer)
+    _pitchInvokeTimer = setTimeout(() => {
+      _pitchInvokeTimer = null
+      void applyPlaybackParameter('pitch')
+    }, 80)
+  }
+
+  function effectivePlaybackPitch(): number {
+    return vinylEffectEnabled.value ? effectivePlaybackSpeed() : playbackPitch.value
+  }
+
+  let vinylEffectRevision = 0
+  let vinylEffectApplyChain: Promise<void> = Promise.resolve()
+  function applyPlaybackParameter(parameter: 'speed' | 'pitch' | 'loudness'): Promise<void> {
+    vinylEffectApplyChain = Promise.all([audioEffectsApplyChain, vinylEffectApplyChain]).then(async () => {
+      if (parameter === 'speed') await invoke('set_speed', { speed: effectivePlaybackSpeed() })
+      else if (parameter === 'pitch') await invoke('set_pitch', { pitch: playbackPitch.value })
+      else await invoke('set_loudness_gain', { gainMb: loudnessGainMb.value })
+    }).catch(error => log.warn(`playback ${parameter} not applied:`, error))
+    return vinylEffectApplyChain
+  }
+  async function setVinylEffect(enabled: boolean) {
+    vinylEffectEnabled.value = enabled
+    settings.vinylEffectEnabled = enabled
+    // 切换时保留手动音调，并把尚未下发的滑条值一并应用
+    if (_speedInvokeTimer) clearTimeout(_speedInvokeTimer)
+    if (_pitchInvokeTimer) clearTimeout(_pitchInvokeTimer)
+    _speedInvokeTimer = null
+    _pitchInvokeTimer = null
+    const revision = ++vinylEffectRevision
+    vinylEffectApplyChain = Promise.all([audioEffectsApplyChain, vinylEffectApplyChain]).then(async () => {
+      if (revision !== vinylEffectRevision) return
+      await invoke('set_pitch', { pitch: playbackPitch.value })
+      await invoke('set_speed', { speed: effectivePlaybackSpeed() })
+      await invoke('set_vinyl_effect', { enabled })
+    }).catch(error => log.warn('vinyl effect not applied:', error))
+    await vinylEffectApplyChain
+  }
+
+  const audioEffects = computed(() => settings.audioEffects)
+  const audioEffectsOutputDevice = ref(settings.audioOutputDevice || 'system_default')
+  const audioEffectsProfile = computed(() => audioEffectsProfileFor(audioEffects.value, audioEffectsOutputDevice.value))
+  const listeningTuning = computed(() => listeningTuningValues(audioEffectsProfile.value.sound))
+  let audioEffectsRevision = 0
+  let audioEffectsTimer: ReturnType<typeof setTimeout> | null = null
+  let audioEffectsApplyChain: Promise<void> = Promise.resolve()
+  let audioEffectsStatsRevision = 0
+
+  function applyNativeAudioEffects(): Promise<void> {
+    if (audioEffectsTimer) clearTimeout(audioEffectsTimer)
+    audioEffectsTimer = null
+    const revision = ++audioEffectsRevision
+    const snapshot = normalizeAudioEffectsSettings(settings.audioEffects)
+    // 请求串行，已排队的旧配置不能覆盖更新的滑条或重置结果
+    audioEffectsApplyChain = audioEffectsApplyChain.then(async () => {
+      if (revision !== audioEffectsRevision) return
+      await invoke('set_audio_effects', { settings: snapshot, outputDevice: audioEffectsOutputDevice.value })
+    }).catch(error => log.warn('native audio effects not applied:', error))
+    return audioEffectsApplyChain
+  }
+
+  function scheduleNativeAudioEffects() {
+    ++audioEffectsRevision
+    if (audioEffectsTimer) clearTimeout(audioEffectsTimer)
+    audioEffectsTimer = setTimeout(() => { void applyNativeAudioEffects() }, 48)
+  }
+
+  function updateAudioEffects(patch: Partial<AudioEffectsSettings>) {
+    settings.audioEffects = normalizeAudioEffectsSettings({ ...settings.audioEffects, ...patch })
+  }
+
+  function updateAudioEffectsProfile(patch: Partial<AudioEffectsProfile>) {
+    settings.audioEffects = replaceAudioEffectsProfile(settings.audioEffects, audioEffectsOutputDevice.value,
+      { ...audioEffectsProfile.value, ...patch })
+  }
+
+  function updateAudioEffectsSound(patch: Partial<AudioEffectsSound>) {
+    updateAudioEffectsProfile({ presetId: 'custom', sound: { ...audioEffectsProfile.value.sound, ...patch } })
+  }
+
+  function setAudioEffectsPreset(id: string) {
+    updateAudioEffectsProfile(applyAudioEffectPreset(audioEffectsProfile.value, id, settings.audioEffects.userPresets))
+  }
+
+  function setListeningTuning(key: ListeningControlKey, value: number) {
+    if (!Number.isFinite(value) || !LISTENING_CONTROLS.some(control => control.key === key)) return
+    updateAudioEffects({ autoHeadroom: true })
+    updateAudioEffectsProfile({ enabled: true, presetId: 'custom',
+      sound: applyListeningTuning(audioEffectsProfile.value.sound, key, value) })
+  }
+
+  function resetListeningTuning() {
+    updateAudioEffectsProfile({ presetId: 'custom', sound: resetListeningTuningSound(audioEffectsProfile.value.sound) })
+  }
+
+  function resetAudioEffectsSection(section: SoundSection | 'speaker') {
+    if (section === 'speaker') updateAudioEffects({ speaker: { ...DEFAULT_AUDIO_EFFECTS_SETTINGS.speaker } })
+    else updateAudioEffectsProfile({ presetId: 'custom',
+      sound: resetAudioEffectsSoundSection(audioEffectsProfile.value.sound, section) })
+  }
+
+  function saveAudioEffectsPreset(name: string) {
+    const normalizedName = Array.from(name.trim()).slice(0, 24).join('')
+    if (!normalizedName) throw new Error(i18n.global.t('dsp.preset_name'))
+    if (settings.audioEffects.userPresets.length >= 50) throw new Error(i18n.global.t('dsp.preset_limit'))
+    const id = `user_${crypto.randomUUID()}`
+    updateAudioEffects({ userPresets: [...settings.audioEffects.userPresets,
+      { id, name: normalizedName, sound: audioEffectsProfile.value.sound }] })
+    updateAudioEffectsProfile({ presetId: id })
+    return id
+  }
+
+  function deleteAudioEffectsPreset(id: string) {
+    updateAudioEffects({ userPresets: settings.audioEffects.userPresets.filter(preset => preset.id !== id) })
+    if (audioEffectsProfile.value.presetId === id) updateAudioEffectsProfile({ presetId: 'custom' })
+  }
+
+  function exportAudioEffectsPreset(id?: string): string {
+    const preset = id ? settings.audioEffects.userPresets.find(item => item.id === id) : undefined
+    return exportAudioEffectsProfile(preset ? { enabled: true, presetId: preset.id, sound: preset.sound }
+      : audioEffectsProfile.value, preset?.name)
+  }
+
+  interface ImportedPresetEntry { name: string, sound: AudioEffectsSound, sourceId?: string }
+
+  // 同名同音色的预设视为已有，重复导入同一份备份不会堆出一串副本
+  function mergeImportedPresets(entries: ImportedPresetEntry[]) {
+    const presets = [...settings.audioEffects.userPresets]
+    const fingerprint = (sound: AudioEffectsSound) => JSON.stringify(normalizeAudioEffectsSound(sound))
+    const idMap = new Map<string, string>()
+    let added = 0
+    let skipped = 0
+    for (const entry of entries) {
+      const name = Array.from(entry.name.trim()).slice(0, 24).join('')
+      if (!name) { skipped++; continue }
+      const existing = presets.find(preset => preset.name === name && fingerprint(preset.sound) === fingerprint(entry.sound))
+      if (existing) {
+        if (entry.sourceId) idMap.set(entry.sourceId, existing.id)
+        continue
+      }
+      if (presets.length >= 50) { skipped++; continue }
+      const id = `user_${crypto.randomUUID()}`
+      presets.push({ id, name, sound: normalizeAudioEffectsSound(entry.sound) })
+      if (entry.sourceId) idMap.set(entry.sourceId, id)
+      added++
+    }
+    if (added) updateAudioEffects({ userPresets: presets })
+    return { added, skipped, idMap }
+  }
+
+  function importedPresetId(id: string, idMap: Map<string, string>) {
+    return idMap.get(id) ?? (AUDIO_EFFECT_PRESETS.some(preset => preset.id === id) ? id : 'custom')
+  }
+
+  function androidRouteLabel(route: string) {
+    const known = (ANDROID_OUTPUT_ROUTES as readonly string[]).includes(route)
+    return i18n.global.t('dsp.import.route_preset', { route: known ? i18n.global.t(`dsp.import.routes.${route}`) : route })
+  }
+
+  /** 导入 Android 配置备份、完整音效设置、Android 预设分享码或 PC 导出的配置 */
+  function importAudioEffectsPreset(text: string) {
+    const imported = importAudioEffects(text)
+    if (imported.kind === 'profile') {
+      const merged = imported.name
+        ? mergeImportedPresets([{ name: imported.name, sound: imported.profile.sound, sourceId: imported.profile.presetId }])
+        : { added: 0, skipped: 0, idMap: new Map<string, string>() }
+      updateAudioEffectsProfile({ ...imported.profile, presetId: merged.idMap.get(imported.profile.presetId) ?? 'custom' })
+      return { kind: imported.kind, source: imported.source, name: imported.name,
+        addedPresets: merged.added, skippedPresets: merged.skipped, routes: 0 }
+    }
+    const { settings: incoming, routeProfiles } = imported
+    const merged = mergeImportedPresets([
+      ...incoming.userPresets.map(preset => ({ name: preset.name, sound: preset.sound, sourceId: preset.id })),
+      ...routeProfiles.map(item => ({ name: androidRouteLabel(item.route), sound: item.profile.sound })),
+    ])
+    updateAudioEffects({ speaker: incoming.speaker, powerMode: incoming.powerMode, autoHeadroom: incoming.autoHeadroom })
+    updateAudioEffectsProfile({ ...incoming.main, presetId: importedPresetId(incoming.main.presetId, merged.idMap) })
+    return { kind: imported.kind, source: imported.source, name: '',
+      addedPresets: merged.added, skippedPresets: merged.skipped, routes: routeProfiles.length }
+  }
+
+  function importAutoEq(text: string) {
+    const imported = parseAutoEq(text)
+    updateAudioEffectsProfile({ enabled: true, presetId: 'custom',
+      sound: { ...audioEffectsProfile.value.sound, ...imported.sound, equalizerEnabled: true } })
+    return imported
+  }
+
+  async function refreshAudioEffectsStats(): Promise<AudioEffectsRuntimeStats> {
+    const revision = ++audioEffectsStatsRevision
+    const stats = await invoke<AudioEffectsRuntimeStats>('get_audio_effects_stats')
+    if (revision === audioEffectsStatsRevision && stats?.outputDevice) audioEffectsOutputDevice.value = stats.outputDevice
+    return stats
+  }
+
+  watch(() => settings.audioEffects, scheduleNativeAudioEffects, { deep: true })
+  watch(() => settings.audioOutputDevice, () => {
+    void refreshAudioEffectsStats().catch(error => log.warn('audio effects output unavailable:', error))
+  })
+
+  // 旧版响度参数继续保留，均衡器数据仅供兼容旧配置
   const loudnessGainMb = ref(settings.loudnessGainMb)
   const equalizerEnabled = ref(settings.equalizerEnabled)
   const equalizerPresetId = ref(settings.equalizerPresetId)
@@ -2837,18 +3082,18 @@ export const usePlayerStore = defineStore('player', () => {
   /** 是否有任何非默认音效 */
   const hasActiveEffects = computed(() =>
     playbackSpeed.value !== 1.0
+    || playbackPitch.value !== 1.0
+    || vinylEffectEnabled.value
     || loudnessGainMb.value !== 0
     || equalizerEnabled.value
+    || audioEffectsProfile.value.enabled
+    || audioEffects.value.speaker.enabled
   )
 
   async function setLoudnessGain(mb: number) {
-    loudnessGainMb.value = Math.round(Math.max(0, Math.min(1500, mb)))
+    loudnessGainMb.value = Number.isFinite(mb) ? Math.round(Math.max(0, Math.min(1500, mb))) : 0
     settings.loudnessGainMb = loudnessGainMb.value
-    try {
-      await invoke('set_loudness_gain', { gainMb: loudnessGainMb.value })
-    } catch (error) {
-      log.warn('loudness gain not applied:', error)
-    }
+    await applyPlaybackParameter('loudness')
   }
 
   // 音量均衡由设置页直接改 settings，这里跟随下发到音频链
@@ -2871,7 +3116,10 @@ export const usePlayerStore = defineStore('player', () => {
 
   async function setEqualizer(enabled: boolean, bands: number[]) {
     equalizerEnabled.value = enabled
-    equalizerBands.value = bands.map(v => Math.round(Math.max(-1500, Math.min(1500, v))))
+    equalizerBands.value = Array.from({ length: 5 }, (_, i) => {
+      const value = bands[i]
+      return Number.isFinite(value) ? Math.round(Math.max(-1500, Math.min(1500, value))) : 0
+    })
     settings.equalizerEnabled = enabled
     settings.equalizerBands = [...equalizerBands.value]
     try {
@@ -2882,32 +3130,78 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   async function setEqualizerPreset(presetId: string) {
+    if (!Object.prototype.hasOwnProperty.call(EQ_PRESETS, presetId)) presetId = 'flat'
     equalizerPresetId.value = presetId
     settings.equalizerPresetId = presetId
-    const bands = EQ_PRESETS[presetId] || [0, 0, 0, 0, 0]
+    const bands = presetId === 'custom' ? equalizerBands.value : EQ_PRESETS[presetId]
     await setEqualizer(presetId !== 'flat', [...bands])
   }
 
   async function resetAudioEffects() {
+    if (_speedInvokeTimer) clearTimeout(_speedInvokeTimer)
+    if (_pitchInvokeTimer) clearTimeout(_pitchInvokeTimer)
+    _speedInvokeTimer = null
+    _pitchInvokeTimer = null
+    if (audioEffectsTimer) clearTimeout(audioEffectsTimer)
+    audioEffectsTimer = null
+    ++audioEffectsRevision
+    ++vinylEffectRevision
+    settings.audioEffects = normalizeAudioEffectsSettings({ ...DEFAULT_AUDIO_EFFECTS_SETTINGS,
+      userPresets: settings.audioEffects.userPresets })
     loudnessGainMb.value = 0
     equalizerEnabled.value = false
     equalizerPresetId.value = 'flat'
     equalizerBands.value = [0, 0, 0, 0, 0]
     playbackSpeed.value = 1.0
-    listenTogetherSyncRateMultiplier = null
+    playbackPitch.value = 1.0
+    vinylEffectEnabled.value = false
     settings.loudnessGainMb = 0
     settings.equalizerEnabled = false
     settings.equalizerPresetId = 'flat'
     settings.equalizerBands = [0, 0, 0, 0, 0]
     settings.playbackSpeed = 1.0
-    _interpSpeed = 1.0
-    try {
+    settings.playbackPitch = 1.0
+    settings.vinylEffectEnabled = false
+    const nowMs = currentRenderedPosition()
+    _interpSpeed = effectivePlaybackSpeed()
+    _interpAnchorMs = nowMs
+    _interpAnchorTime = performance.now()
+    _interpRenderedMs = nowMs
+    interpolatedPositionMs.value = nowMs
+    const resetRequest = Promise.all([audioEffectsApplyChain, vinylEffectApplyChain]).then(async () => {
       await invoke('reset_audio_effects')
-      await invoke('set_speed', { speed: 1.0 })
-    } catch (error) {
-      log.warn('audio effects reset not applied:', error)
+      await invoke('set_speed', { speed: effectivePlaybackSpeed() })
+    })
+    audioEffectsApplyChain = resetRequest.catch(error => log.warn('native audio effects reset not applied:', error))
+    const results = await Promise.allSettled([
+      resetRequest,
+    ])
+    for (const result of results) {
+      if (result.status === 'rejected') log.warn('audio effects reset not applied:', result.reason)
     }
   }
+
+  // 导入配置和后端规整后的值也要及时作用于当前播放会话
+  watch(() => settings.playbackSpeed, value => {
+    if (value !== playbackSpeed.value) void setSpeed(value)
+  })
+  watch(() => settings.playbackPitch, value => {
+    if (value !== playbackPitch.value) void setPitch(value)
+  })
+  watch(() => settings.vinylEffectEnabled, value => {
+    if (value !== vinylEffectEnabled.value) void setVinylEffect(value)
+  })
+  watch(() => settings.loudnessGainMb, value => {
+    if (value !== loudnessGainMb.value) void setLoudnessGain(value)
+  })
+  watch(() => [settings.equalizerEnabled, settings.equalizerPresetId, ...settings.equalizerBands], () => {
+    equalizerPresetId.value = settings.equalizerPresetId
+    if (settings.equalizerEnabled !== equalizerEnabled.value
+      || settings.equalizerBands.some((value, i) => value !== equalizerBands.value[i])
+      || settings.equalizerBands.length !== equalizerBands.value.length) {
+      void setEqualizer(settings.equalizerEnabled, settings.equalizerBands)
+    }
+  })
 
   // 取流按后端实际能解的编码挑选；查询失败或 FFmpeg 没加载上时只认内置解码器，
   // Opus、E-AC-3 这类流排到后面，选出来的流一定能播
@@ -2926,13 +3220,19 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   async function applyPersistedSettings() {
+    if (_speedInvokeTimer) clearTimeout(_speedInvokeTimer)
+    if (_pitchInvokeTimer) clearTimeout(_pitchInvokeTimer)
+    _speedInvokeTimer = null
+    _pitchInvokeTimer = null
     volume.value = Math.max(0, Math.min(1, settings.volume))
-    playbackSpeed.value = Math.max(0.25, Math.min(3, settings.playbackSpeed))
+    playbackSpeed.value = normalizePlaybackSpeed(settings.playbackSpeed)
+    playbackPitch.value = normalizePlaybackPitch(settings.playbackPitch)
+    vinylEffectEnabled.value = settings.vinylEffectEnabled === true
     loudnessGainMb.value = Math.round(Math.max(0, Math.min(1500, settings.loudnessGainMb)))
     equalizerEnabled.value = settings.equalizerEnabled
     equalizerPresetId.value = settings.equalizerPresetId
     equalizerBands.value = settings.equalizerBands.map(value => Math.round(Math.max(-1500, Math.min(1500, value))))
-    _interpSpeed = playbackSpeed.value
+    _interpSpeed = effectivePlaybackSpeed()
 
     const restored: Array<[string, Promise<unknown>]> = [
       ['volume', invoke('set_volume', { level: volume.value })],
@@ -2942,6 +3242,8 @@ export const usePlayerStore = defineStore('player', () => {
           return invoke('set_audio_output_device', { name: null })
         })],
       ['speed', invoke('set_speed', { speed: effectivePlaybackSpeed() })],
+      ['pitch', invoke('set_pitch', { pitch: playbackPitch.value })],
+      ['vinyl effect', setVinylEffect(vinylEffectEnabled.value)],
       ['loudness gain', invoke('set_loudness_gain', { gainMb: loudnessGainMb.value })],
       ['volume normalization', invoke('set_normalize_volume', { enabled: settings.normalizeVolume })],
       ['multichannel dynamic range compression', invoke('set_multichannel_drc', { enabled: settings.multichannelDrc })],
@@ -2952,6 +3254,8 @@ export const usePlayerStore = defineStore('player', () => {
     results.forEach((result, index) => {
       if (result.status === 'rejected') log.warn(`persisted ${restored[index][0]} not applied:`, result.reason)
     })
+    await refreshAudioEffectsStats().catch(error => log.warn('audio effects output unavailable:', error))
+    await applyNativeAudioEffects()
   }
 
   // 批量替换队列，并且只发起一次目标曲目的播放请求
@@ -3057,6 +3361,37 @@ export const usePlayerStore = defineStore('player', () => {
       }
     }
     savePlayerState()
+  }
+
+  function moveQueueItem(fromIndex: number, toIndex: number, expectedQueue?: readonly TrackInfo[]): boolean {
+    if (!Number.isInteger(fromIndex) || !Number.isInteger(toIndex)
+      || fromIndex < 0 || toIndex < 0
+      || fromIndex >= queue.value.length || toIndex >= queue.value.length
+      || fromIndex === toIndex) return false
+    if (expectedQueue && (expectedQueue.length !== queue.value.length
+      || expectedQueue.some((track, index) => track !== queue.value[index]))) return false
+    if (blockedByListenTogether('local')) return false
+
+    // 按槽位映射，重复歌曲也保留各自的播放索引和随机播放历史
+    function remapIndex(index: number): number {
+      if (index === fromIndex) return toIndex
+      if (fromIndex < toIndex && index > fromIndex && index <= toIndex) return index - 1
+      if (fromIndex > toIndex && index >= toIndex && index < fromIndex) return index + 1
+      return index
+    }
+
+    const nextQueue = [...queue.value]
+    const [moved] = nextQueue.splice(fromIndex, 1)
+    nextQueue.splice(toIndex, 0, moved)
+    queueIndex.value = remapIndex(queueIndex.value)
+    shuffleBag = shuffleBag.map(remapIndex)
+    shuffleHistory = shuffleHistory.map(remapIndex)
+    shuffleFuture = shuffleFuture.map(remapIndex)
+    queue.value = nextQueue
+    useListenTogetherStore().reportQueueReorder()
+    savePlayerState()
+    maybePrefetchNext()
+    return true
   }
 
   // 从队列移除指定索引
@@ -3254,20 +3589,25 @@ export const usePlayerStore = defineStore('player', () => {
     hasPlaybackSession, loadedPlaybackTrackKey,
     audioLevel, beatImpulse, audioInfo, isPlayingFromDownload, isPlayingFromCache,
     lastCommandSource, lastCommandSequence, lastSeekCommand, isRemoteSyncGuardActive,
-    playbackSpeed, currentStreamUrl, sleepTimerMode, sleepRemainingSeconds,
+    playbackSpeed, playbackPitch, vinylEffectEnabled, effectivePlaybackPitch, setVinylEffect,
+    currentStreamUrl, sleepTimerMode, sleepRemainingSeconds,
     loudnessGainMb, equalizerEnabled, equalizerPresetId, equalizerBands, hasActiveEffects,
+    audioEffects, audioEffectsProfile, audioEffectsOutputDevice, updateAudioEffects, updateAudioEffectsProfile,
+    listeningTuning, setListeningTuning, resetListeningTuning,
+    updateAudioEffectsSound, setAudioEffectsPreset, resetAudioEffectsSection, saveAudioEffectsPreset,
+    deleteAudioEffectsPreset, exportAudioEffectsPreset, importAudioEffectsPreset, importAutoEq, refreshAudioEffectsStats,
     progress, interpolatedPositionMs, interpolatedProgress, livePositionMs, effectivePlaybackSpeed,
     currentTimeFormatted, durationFormatted,
     play, togglePlayPause, pause, resume, seekTo, next, previous,
     flushPlayerState,
     toggleRepeatMode, toggleShuffle, cyclePlayMode, applyListenTogetherPlaybackMode,
-    playMode, setVolume, setSpeed, setListenTogetherSyncPlaybackRate, getCurrentStreamUrl, getCurrentStreamUrls,
+    playMode, setVolume, setSpeed, setPitch, setListenTogetherSyncPlaybackRate, getCurrentStreamUrl, getCurrentStreamUrls,
     resolveShareableStreamUrls,
     localPlaylistIdFor,
     setLoudnessGain, setEqualizer, setEqualizerPreset, resetAudioEffects,
     applyPersistedSettings, decoderCapabilities,
     startSleepTimer, startSleepTimerEndOfTrack, startSleepTimerEndOfQueue, cancelSleepTimer,
-    playAll, shufflePlay, addToQueueNext, addToQueueEnd, removeFromQueue, clearQueue,
+    playAll, shufflePlay, addToQueueNext, addToQueueEnd, moveQueueItem, removeFromQueue, clearQueue,
     prefetchPlaybackTracks, prefetchIntent, upcomingTrack: () => nextPrefetchTracks()[0] ?? null,
     updateCurrentTrackInfo, patchCurrentTrackSyncPayload, restoreOriginalTrackInfo, hasOriginalTrackInfo,
     handleDownloadedFileRemoved, withReleasedAudioFile, replayWithQuality,

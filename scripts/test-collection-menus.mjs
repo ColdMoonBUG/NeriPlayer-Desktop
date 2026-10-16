@@ -94,14 +94,14 @@ assert.equal(routed.at(-1).name, 'youtube-artist', 'artist shelf cards open the 
 assert.deepEqual(menus.at(-1).route, routed.at(-1), 'artist shelf clicks and menus share their destination')
 assert.equal(menus.at(-1).webUrl, 'https://music.youtube.com/channel/UCdemo')
 const explore = await functions('views/ExploreView.vue', ['collectionRoute', 'openCollection'], { router })
-explore.openCollection({ kind: 'playlist', platform: 'qq', id: '123456789012345678' })
-assert.deepEqual(routed.at(-1), { name: 'qq-playlist', params: { id: '123456789012345678' } })
+explore.openCollection({ kind: 'playlist', platform: 'qq', id: '123456789012345678', name: '搜索歌单', cover_url: 'https://qpic.y.qq.com/cover.jpg' })
+assert.deepEqual(routed.at(-1), { name: 'qq-playlist', params: { id: '123456789012345678' }, query: { name: '搜索歌单', cover: 'https://qpic.y.qq.com/cover.jpg' } })
 
 const detailFields = Object.fromEntries(['isLoading', 'error', 'playlistName', 'coverUrl', 'tracks', 'trackCount', 'playCount', 'description', 'creator'].map(key => [key, { value: null }]))
 const detailRequests = []
 const detail = await functions('views/NeteasePlaylistView.vue', ['loadDetail'], {
   ...detailFields, props: { isQq: true }, qqDetailRequest: 0,
-  route: { params: { id: '123456789012345678' } }, t: key => key,
+  route: { params: { id: '123456789012345678' }, query: { name: '搜索歌单', cover: 'https://qpic.y.qq.com/cover.jpg' } }, t: key => key,
   invoke: (command, args) => new Promise((resolve, reject) => detailRequests.push({ command, args, resolve, reject })),
 })
 const previousDetail = detail.loadDetail()
@@ -116,6 +116,7 @@ await previousDetail
 assert.equal(detailFields.playlistName.value, '当前账号', 'old account response cannot overwrite the new request')
 assert.deepEqual(detailFields.tracks.value, [qqTrack])
 assert.equal(detailFields.trackCount.value, 1)
+assert.equal(detailFields.coverUrl.value, 'https://qpic.y.qq.com/cover.jpg', 'detail metadata without a cover preserves the search cover')
 assert.equal(detailFields.isLoading.value, false)
 const brokenDetail = detail.loadDetail()
 detailRequests.at(-1).reject(new Error('playlist unavailable'))

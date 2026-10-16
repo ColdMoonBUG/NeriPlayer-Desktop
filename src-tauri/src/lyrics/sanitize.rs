@@ -27,7 +27,7 @@ const CREDIT_ROLES: &[&str] = &[
     "backingvocals", "backgroundvocals", "harmony", "harmonies", "guitar", "guitars", "acousticguitar", "electricguitar",
     "bass", "drum", "drums", "keyboard", "keyboards", "piano", "strings", "stringarrangement", "midiprogramming", "programming",
     "artist", "singer", "title", "album", "copyright", "publisher", "label", "distribution", "promotion", "credits",
-    "lyricby", "lyricsby", "wordby", "wordsby", "writtenby", "composedby", "arrangedby", "producedby", "performedby", "sungby",
+    "by", "lyricby", "lyricsby", "wordby", "wordsby", "writtenby", "composedby", "arrangedby", "producedby", "performedby", "sungby",
     "musicby", "mixedby", "masteredby", "recordedby", "publishedby", "distributedby",
 ];
 
@@ -54,6 +54,7 @@ fn is_contributor_list(value: &str) -> bool {
     let sentence_prefix = SENTENCE_PREFIX.get_or_init(|| Regex::new(
         r"(?i)^(?:i|you|he|she|it|we|they|me|us|my|your|his|her|its|our|their|a|an|the|this|that|these|those)\b|^(?:我|你|他|她|它|想|爱|愛|在|是|不|别|別|没|沒)",
     ).unwrap());
+    let value = value.trim_end_matches(|c: char| c.is_whitespace() || "/／&、,，+;；".contains(c));
     contributor_separator_re().split(value).all(|name| {
         let name = name.trim();
         let name = name.split(['(', '（']).next().unwrap_or("").trim();
@@ -144,14 +145,38 @@ fn artist_terms(artist: &str) -> Vec<String> {
     unique
 }
 
-fn is_song_identity_line(line: &LyricLine, context: &SanitizeContext) -> bool {
-    let normalized = normalize_text(&line.text);
-    if normalized.is_empty() || context.title.is_empty() || !line.text.contains(['-', '－', '–', '—', '/', '／', '|']) {
+fn title_is_missing_internal_function_word(title: &str, candidate: &str) -> bool {
+    let title_words: Vec<&str> = title.split_whitespace().collect();
+    let candidate_words: Vec<&str> = candidate.split_whitespace().collect();
+    if title_words.len() < 4 || title_words.len() != candidate_words.len() + 1
+        || !title_words.iter().all(|word| word.chars().all(|c| c.is_ascii_alphabetic())) {
         return false;
     }
-    context.artist_terms.iter().chain(std::iter::once(&context.album))
-        .filter(|term| !term.is_empty() && **term != context.title)
-        .any(|term| normalized == format!("{} {term}", context.title) || normalized == format!("{term} {}", context.title))
+    (1..title_words.len() - 1).any(|index| {
+        matches!(title_words[index], "a" | "an" | "the" | "in" | "on" | "at" | "of" | "to" | "for" | "and")
+            && title_words.iter().enumerate().filter_map(|(word_index, word)| (word_index != index).then_some(*word))
+                .eq(candidate_words.iter().copied())
+    })
+}
+
+fn is_song_identity_line(line: &LyricLine, context: &SanitizeContext) -> bool {
+    if context.title.is_empty() || !line.text.contains(['-', '－', '–', '—', '/', '／', '|']) {
+        return false;
+    }
+    // 平台标题偶尔漏掉介词，仅在分隔符另一侧精确匹配歌手时放宽
+    line.text.char_indices().filter(|(_, c)| matches!(c, '-' | '－' | '–' | '—' | '/' | '／' | '|')).any(|(index, c)| {
+        let left = normalize_text(&line.text[..index]);
+        let right = normalize_text(&line.text[index + c.len_utf8()..]);
+        if context.artist_terms.iter().chain(std::iter::once(&context.album))
+            .filter(|term| !term.is_empty() && **term != context.title)
+            .any(|term| (left == context.title && right == *term) || (right == context.title && left == *term)) {
+            return true;
+        }
+        context.artist_terms.iter().filter(|term| !term.is_empty() && **term != context.title).any(|term| {
+            (left == *term && title_is_missing_internal_function_word(&context.title, &right))
+                || (right == *term && title_is_missing_internal_function_word(&context.title, &left))
+        })
+    })
 }
 
 fn should_remove(line: &LyricLine, index: usize, count: usize, context: &SanitizeContext) -> bool {
@@ -252,6 +277,72 @@ mod tests {
             "",
         );
         assert_eq!(texts(&lines), vec!["Hello", "World"]);
+    }
+
+    #[test]
+    fn head_in_the_clouds_screenshot_metadata_is_removed() {
+        let mut lines = parse_auto("[12000,3000](12000,1500,0)I miss the days when (13500,1500,0)life was so simple\n\
+            [15000,2000](15000,1000,0)Felt like (16000,1000,0)the glass");
+        let mut metadata = parse_auto("[00:00.00]Hayd - Head The Clouds\n[00:04.00]by: Robert Hubers、\n[00:08.00]by: Robert Hubers");
+        metadata.append(&mut lines);
+        let verses = metadata[3..].to_vec();
+        let result = sanitize_matched_lines(metadata, "Head In The Clouds", "Hayd", "Changes EP");
+        assert_eq!(texts(&result), vec!["I miss the days when life was so simple", "Felt like the glass"]);
+        assert_eq!(result[0].start_ms, verses[0].start_ms);
+        assert_eq!(result[0].duration_ms, verses[0].duration_ms);
+        assert_eq!(result[0].words[1].start_ms, verses[0].words[1].start_ms);
+        assert_eq!(result[0].words[1].duration_ms, verses[0].words[1].duration_ms);
+    }
+
+    #[test]
+    fn an_internal_function_word_may_be_missing_from_an_artist_title_header() {
+        for header in ["Hayd - Head The Clouds", "Head The Clouds / Hayd"] {
+            let lrc = format!("[00:00.00]{header}\n[00:12.00]I miss the days");
+            assert_eq!(texts(&sanitize_matched_lines(parse_auto(&lrc), "Head In The Clouds", "Hayd", "")),
+                vec!["I miss the days"], "未过滤少介词的标题行：{header}");
+        }
+    }
+
+    #[test]
+    fn exact_title_identity_requires_a_separator_between_title_and_artist() {
+        for text in ["Hayd Head-In The Clouds", "Hayd Head In The Clouds-"] {
+            let lrc = format!("[00:00.00]{text}\n[00:12.00]I miss the days");
+            assert_eq!(texts(&sanitize_matched_lines(parse_auto(&lrc), "Head In The Clouds", "Hayd", "Changes EP")),
+                vec![text, "I miss the days"], "歌名内部或行尾分隔符不能变成身份行：{text}");
+        }
+        for header in [
+            "Hayd - Head In The Clouds", "Head In The Clouds / Hayd",
+            "Changes EP - Head In The Clouds", "Head In The Clouds | Changes EP",
+        ] {
+            let lrc = format!("[00:00.00]{header}\n[00:12.00]I miss the days");
+            assert_eq!(texts(&sanitize_matched_lines(parse_auto(&lrc), "Head In The Clouds", "Hayd", "Changes EP")),
+                vec!["I miss the days"], "明确歌名歌手或专辑标题行应过滤：{header}");
+        }
+    }
+
+    #[test]
+    fn title_header_tolerance_requires_an_exact_artist_and_only_one_internal_function_word() {
+        for header in [
+            "Hayd - Head Other Clouds", "Hayd - Head Clouds", "Hayd - In The Clouds",
+            "Someone - Head The Clouds", "Hayden - Head The Clouds", "Hayd - Head In The",
+            "Head The Clouds - Changes EP", "Hayd Head The Clouds", "Hayd Head-The Clouds",
+        ] {
+            let lrc = format!("[00:00.00]{header}\n[00:12.00]I miss the days");
+            assert_eq!(texts(&sanitize_matched_lines(parse_auto(&lrc), "Head In The Clouds", "Hayd", "Changes EP")),
+                vec![header, "I miss the days"], "不应过滤不满足标题规则的正文：{header}");
+        }
+        for (title, header) in [
+            ("Head In Clouds", "Hayd - Head Clouds"),
+            ("The Head Of Clouds", "Hayd - Head Of Clouds"),
+            ("Head In Clouds Of", "Hayd - Head In Clouds"),
+        ] {
+            let lrc = format!("[00:00.00]{header}\n[00:12.00]I miss the days");
+            assert_eq!(texts(&sanitize_matched_lines(parse_auto(&lrc), title, "Hayd", "")),
+                vec![header, "I miss the days"], "短标题和首尾词不能放宽：{header}");
+        }
+        let lrc = (0..20).map(|index| format!("[00:{:02}.00]{}", index * 2,
+            if index == 10 { "Hayd - Head The Clouds" } else { "正文" })).collect::<Vec<_>>().join("\n");
+        assert_eq!(sanitize_matched_lines(parse_auto(&lrc), "Head In The Clouds", "Hayd", "").len(), 20);
     }
 
     #[test]

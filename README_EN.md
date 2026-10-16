@@ -93,8 +93,8 @@ CI builds and Releases may correspond to different commits. When reporting issue
 | Explore | Separate search and discovery for NetEase, Bilibili and YouTube Music; optional search history; select a matching version from search results for playback |
 | Library | Local playlists, favorite playlists and artists, downloads, NetEase playlists/albums, Bilibili favorite folders and YouTube Music playlists; search within categories, pagination, multi-select, dragging and context menus |
 | Artists | NetEase, Bilibili and YouTube details and following; local artist grouping, detail search and playback of filtered results |
-| Playback | Queue, shuffle/repeat, remembered position and mode, long-audio resume, progressive buffering, Range streaming and fragmented-audio seeking |
-| Audio | Output device, channel balance, speed, loudness gain and normalization, pause/resume fades, track crossfades, 5-band EQ and a multichannel dynamic-range compression option |
+| Playback | Drag to reorder the queue while keeping the current track and position (Up/Down arrow keys also work on the reorder handle), shuffle/repeat, remembered position and mode, long-audio resume, progressive buffering, Range streaming and fragmented-audio seeking |
+| Audio | Output device, channel balance, independent speed and pitch, vinyl effect, loudness gain and normalization, 10-band graphic EQ, 10-band parametric EQ and AutoEQ, 29 presets, tone and space processing, compressor and limiter, speaker optimization, per-output memory, pause/resume fades, track crossfades and multichannel dynamic-range compression |
 | Lyrics | AMLL word-synced rendering, translation/romanization, automatic multi-source retrieval and manual matching, editing, local lyrics, per-source and per-track offsets, and a separate desktop lyrics window |
 | Desktop | System tray, close to tray, configurable global shortcuts, system media sessions, single instance and macOS menu bar lyrics |
 | Data | SQLite persistence, playlist and full-configuration import/export, GitHub / WebDAV metadata sync, playback stats and recent-play management |
@@ -114,6 +114,10 @@ CI builds and Releases may correspond to different commits. When reporting issue
 
 ### Playback sources and audio information
 
+- Audio Effects on the playback page provides speed, independent pitch, vinyl effect and presets. Vinyl effect makes pitch follow speed; turning it off restores the saved independent pitch. Speed ranges from **0.1x to 4x**, pitch from **0.25x to 2x**, with **0.95x / 1.05x** quick speed options.
+- Detailed Audio Settings opens Settings → Audio Effects & Speed, with collapsible sections for 10-band graphic EQ, up to 10 parametric filters of 7 types, AutoEQ / Equalizer APO text or file import, theoretical frequency response, tone and vocals, stereo and reverb, full compressor and limiter controls, speaker optimization and processing quality. All numeric parameters provide sliders and direct input; disabling a section keeps its settings, and the master switch supports A/B comparison with original sound.
+- 29 built-in presets are grouped by style, tone, scene and device. Save named user presets, delete them or import / export JSON; manual adjustments appear only as the current state. Sound profiles can follow actual output device names. The detailed page displays native DSP load and gain reduction; browser previews cannot report real native runtime status.
+- Sound presets appear as direct cards: Common offers quick starting points and All exposes every built-in preset. Simple tuning starts with bass, vocals, brightness, warmth and space, using finer control near neutral and automatic headroom and peak protection. Advanced tuning retains the full parameters. Headphone correction and other active processing are preserved; bypassed sections restart from neutral. Speaker sizes are labeled Small, Medium and Large. Speaker loudness, protection frequency and compressor makeup gain change smoothly in the native chain.
 - Settings → Playback Sources lets you select a preferred YouTube client: Auto, visionOS, Android VR, Web Remix, TV HTML5 or Web Creator. Other available clients are tried after a failure.
 - When NetEase does not allow full playback or only offers a preview, local-audio matching and Bilibili fallback audio can be enabled separately. Local matching takes priority; the original track's queue and sync identity are preserved, while downloads still use the original platform source.
 - New defaults show the actual bitrate and format. Channels, sample rate and bit depth can each be enabled in personalization settings. Unknown parameters are omitted, and existing display preferences are preserved.
@@ -157,7 +161,9 @@ Clearing the app cache does not delete audio you downloaded. Cloud sync does not
 
 Now Playing uses [applemusic-like-lyrics](https://github.com/amll-dev/applemusic-like-lyrics) for character/word highlighting, translation, romanization, blur and font-size adjustment, alongside a cover-colored WebGL fluid background, audio response or a blurred-cover background.
 
-Hover over the lyrics to reveal translation and romanization toggles at the bottom left. Each toggle appears only when its content is available; romanization includes both line and word annotations. Each can be enabled independently or together, sharing the display preferences in Settings → Lyrics. The controls also appear on keyboard focus and stay visible on touch devices.
+Settings → Appearance provides separate interface and Now Playing lyrics fonts, with common presets, custom installed font names and live previews. Defaults retain the original fonts, and the interface font does not affect lyrics. MiSans and Inter are bundled; other fonts require system installation and fall back to the default when unavailable. Desktop lyrics retain their independent font setting.
+
+Hover over the lyrics to reveal translation and romanization toggles at the bottom center. Each toggle appears only when its content is available; romanization includes both line and word annotations. Each can be enabled independently or together, sharing the display preferences in Settings → Lyrics. The controls also appear on keyboard focus and stay visible on touch devices. Right-click the controls and select the hide action. Right-click any lyric line to show or hide the controls from the existing copy and seek menu; dismissing the menu leaves their visibility unchanged.
 
 Settings → Lyrics → Long Note Animation Threshold allows values from 300 to 2000ms, with a default of 700ms. Lower values trigger the effect more often; advanced word animations must be enabled.
 
@@ -165,7 +171,7 @@ Automatic retrieval combines local lyrics, platform track IDs, caches and multi-
 
 When Kugou lyrics lack translation or romanization, background completion tries NetEase first, then QQ Music if translation is still missing. Only high-confidence results matching the title, artist and duration are used. Completion preserves Kugou's original lyrics, word timings and offset, updates the cache, and respects secondary tracks the user has confirmed or cleared.
 
-Lyric displays filter explicit Chinese and English production, instrument, distribution and promotion credits, including MIDI programming, backing vocals and multi-word English roles. Ambiguous short labels and ordinary lyric sentences are kept, along with their word timings, translations and romanization. Display filtering does not rewrite local files or existing stored lyrics.
+Lyric displays filter explicit Chinese and English production, instrument, distribution and promotion credits, including MIDI programming, backing vocals, multi-word English roles and `by:` uploader credits. Delimited title-and-artist lines at the start or end are also filtered against the current track, including cached, local and synced lyrics. Ambiguous short labels and ordinary lyric sentences are kept, along with their word timings, translations and romanization. Display filtering does not rewrite local files or existing stored lyrics.
 
 Offsets can be set per source or per track. Check the track version and duration when manually matching, editing or importing lyrics; live performances, covers and edited versions may need a new match.
 
@@ -242,6 +248,8 @@ Syncing local track metadata does not give another device the files. Download di
 4. Confirm the upgrade when an older format is detected. Update clients on other devices first and keep a remote backup.
 
 Current writes use **V4 ProtoBuf manifests + Zstd chunked archives**, with support for reading legacy JSON, GZIP and V3. The manifest is still named `neriplayer-sync-v3.manifest`; the filename does not mean its contents are V3. Merging retains deletion/clear markers to prevent older devices from restoring deleted content.
+
+Archive leaf chunks download in batches of up to four concurrent requests. GitHub reuses local objects after checking them against a fixed commit tree, publishes small changes with one conditional commit, and retains staged uploads for larger changes. WebDAV continues to verify remote content and protect writes with leases and conditions.
 
 Cross-platform use requires both clients to support the current protocol. The repository includes frozen Android test vectors and a [Kotlin interoperability validation script](./scripts/test-sync-android-interop.ps1). Codec checks do not replace testing real accounts, a shared remote and alternating sync across multiple devices.
 

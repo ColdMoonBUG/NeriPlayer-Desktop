@@ -2,8 +2,9 @@ import { defineStore } from 'pinia'
 import { ref, watch, type Ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { createLogger } from '@/utils/logger'
-import { normalizeDesktopLyricsStyle, type DesktopLyricsStyle } from '@/modules/desktopLyrics/style'
+import { normalizeDesktopLyricsStyle, sanitizeFontFamily, type DesktopLyricsStyle } from '@/modules/desktopLyrics/style'
 import { normalizeShortcutBindings, type ShortcutBindings } from '@/modules/shortcuts/bindings'
+import { migrateLegacyAudioEffects, normalizeAudioEffectsSettings, type AudioEffectsSettings } from '@/modules/audioEffects/model'
 
 const log = createLogger('settings')
 
@@ -25,6 +26,8 @@ export interface AppSettings {
   formatVersion: number
   darkMode: ThemeMode
   themeColor: string
+  appFontFamily: string
+  lyricFontFamily: string
   locale: string
   defaultScreen: string
   /** 关闭主窗口时收进托盘继续播放；关掉后关闭即退出 */
@@ -119,6 +122,9 @@ export interface AppSettings {
   volume: number
   audioOutputDevice: string
   playbackSpeed: number
+  playbackPitch: number
+  vinylEffectEnabled: boolean
+  audioEffects: AudioEffectsSettings
   loudnessGainMb: number
   equalizerEnabled: boolean
   equalizerPresetId: string
@@ -173,6 +179,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   formatVersion: SETTINGS_FORMAT_VERSION,
   darkMode: 'dark',
   themeColor: 'purple',
+  appFontFamily: '',
+  lyricFontFamily: '',
   locale: detectLocale(),
   defaultScreen: 'home',
   closeToTray: true,
@@ -259,6 +267,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   volume: 1,
   audioOutputDevice: '',
   playbackSpeed: 1,
+  playbackPitch: 1,
+  vinylEffectEnabled: false,
+  audioEffects: normalizeAudioEffectsSettings(undefined),
   loudnessGainMb: 0,
   equalizerEnabled: false,
   equalizerPresetId: 'flat',
@@ -272,6 +283,8 @@ const DEFAULT_SETTINGS: AppSettings = {
 const LEGACY_KEYS: Partial<Record<SettingKey, string>> = {
   darkMode: 'dark_mode',
   themeColor: 'theme_color',
+  appFontFamily: 'app_font_family',
+  lyricFontFamily: 'lyric_font_family',
   defaultScreen: 'default_screen',
   showCoverBadge: 'cover_badge',
   showNowPlayingTitle: 'np_title',
@@ -299,6 +312,7 @@ const LEGACY_KEYS: Partial<Record<SettingKey, string>> = {
   lyricBlur: 'lyric_blur',
   lyricBlurAmount: 'lyric_blur_amount',
   lyricEmphasisThresholdMs: 'lyric_emphasis_threshold_ms',
+  desktopLyrics: 'desktop_lyrics',
   cloudMusicOffset: 'cloud_offset',
   qqMusicOffset: 'qq_offset',
   coverStyle: 'cover_style',
@@ -339,6 +353,14 @@ const LEGACY_KEYS: Partial<Record<SettingKey, string>> = {
   ltAllowMemberControl: 'lt_allow_member_control',
   ltAutoPauseOnMemberChange: 'lt_auto_pause_on_change',
   ltShareAudioLinks: 'lt_share_audio_links',
+  playbackSpeed: 'playback_speed',
+  playbackPitch: 'playback_pitch',
+  vinylEffectEnabled: 'vinyl_effect_enabled',
+  audioEffects: 'audio_effects',
+  loudnessGainMb: 'loudness_gain_mb',
+  equalizerEnabled: 'equalizer_enabled',
+  equalizerPresetId: 'equalizer_preset_id',
+  equalizerBands: 'equalizer_bands',
 }
 
 function detectLocale(): string {
@@ -426,6 +448,8 @@ function normalizeSnapshot(input: unknown): AppSettings {
   }
 
   if (!['system', 'dark', 'light'].includes(result.darkMode)) result.darkMode = DEFAULT_SETTINGS.darkMode
+  result.appFontFamily = sanitizeFontFamily(result.appFontFamily)
+  result.lyricFontFamily = sanitizeFontFamily(result.lyricFontFamily)
   if (!['disc', 'card'].includes(result.coverStyle)) result.coverStyle = DEFAULT_SETTINGS.coverStyle
   // 旧版只有「封面动态取色」开关
   const legacyDynamicColor = (source as { dynamicColor?: unknown }).dynamicColor
@@ -490,11 +514,18 @@ function normalizeSnapshot(input: unknown): AppSettings {
   )
   result.volume = clamp(result.volume, 0, 1)
   result.audioOutputDevice = result.audioOutputDevice.trim()
-  result.playbackSpeed = clamp(result.playbackSpeed, 0.25, 3)
+  result.playbackSpeed = normalizePlaybackSpeed(result.playbackSpeed)
+  result.playbackPitch = normalizePlaybackPitch(result.playbackPitch)
   result.loudnessGainMb = clamp(Math.round(result.loudnessGainMb), 0, 1500)
   result.volumeBalance = normalizeVolumeBalance(result.volumeBalance)
   result.equalizerBands = result.equalizerBands.slice(0, 5).map(value => clamp(Math.round(value), -1500, 1500))
   while (result.equalizerBands.length < 5) result.equalizerBands.push(0)
+  const effects = source.audioEffects as { version?: unknown } | undefined
+  result.audioEffects = !Object.prototype.hasOwnProperty.call(source, 'audioEffects') || effects?.version === 0
+    ? migrateLegacyAudioEffects(result)
+    : normalizeAudioEffectsSettings(source.audioEffects)
+  // 旧 EQ 已转入 native DSP，关闭旧开关避免两套滤波器叠加
+  result.equalizerEnabled = false
   result.desktopLyrics = normalizeDesktopLyricsStyle(result.desktopLyrics)
   result.shortcutBindings = normalizeShortcutBindings(result.shortcutBindings)
   return result
@@ -544,6 +575,20 @@ function clampInteger(value: number, min: number, max: number): number {
   return clamp(Math.round(value), min, max)
 }
 
+// 与 Android 一样按 0.05 对齐，坏输入恢复原速和原调
+export function normalizePlaybackSpeed(value: unknown): number {
+  return normalizePlaybackParameter(value, 0.1, 4)
+}
+
+export function normalizePlaybackPitch(value: unknown): number {
+  return normalizePlaybackParameter(value, 0.25, 2)
+}
+
+function normalizePlaybackParameter(value: unknown, min: number, max: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 1
+  return Math.round(Math.min(max, Math.max(min, value)) * 20) / 20
+}
+
 function sameSnapshot(left: AppSettings, right: AppSettings): boolean {
   return JSON.stringify(left) === JSON.stringify(right)
 }
@@ -567,6 +612,8 @@ export const useSettingsStore = defineStore('settings', () => {
   const initial = normalizeSnapshot(readLegacySnapshot())
   const darkMode = ref<ThemeMode>(initial.darkMode)
   const themeColor = ref(initial.themeColor)
+  const appFontFamily = ref(initial.appFontFamily)
+  const lyricFontFamily = ref(initial.lyricFontFamily)
   const locale = ref(initial.locale)
   const defaultScreen = ref(initial.defaultScreen)
   const closeToTray = ref(initial.closeToTray)
@@ -653,6 +700,9 @@ export const useSettingsStore = defineStore('settings', () => {
   const volume = ref(initial.volume)
   const audioOutputDevice = ref(initial.audioOutputDevice)
   const playbackSpeed = ref(initial.playbackSpeed)
+  const playbackPitch = ref(initial.playbackPitch)
+  const vinylEffectEnabled = ref(initial.vinylEffectEnabled)
+  const audioEffects = ref(initial.audioEffects)
   const loudnessGainMb = ref(initial.loudnessGainMb)
   const equalizerEnabled = ref(initial.equalizerEnabled)
   const equalizerPresetId = ref(initial.equalizerPresetId)
@@ -663,7 +713,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const globalShortcutsEnabled = ref(initial.globalShortcutsEnabled)
 
   const settingRefs: SettingRefs = {
-    darkMode, themeColor, locale, defaultScreen, closeToTray, showCoverBadge,
+    darkMode, themeColor, appFontFamily, lyricFontFamily, locale, defaultScreen, closeToTray, showCoverBadge,
     showNowPlayingTitle, showToolbarDock, showQualitySwitch, showAudioCodec,
     showAudioSpec, lyricFontScale, crossfade, normalizeVolume, multichannelDrc, volumeBalance, fadeIn,
     showAudioBitrate, showAudioFormat, showAudioChannels, showAudioSampleRate, showAudioBitDepth,
@@ -683,7 +733,7 @@ export const useSettingsStore = defineStore('settings', () => {
     downloadFollowPlaybackQuality, downloadNeteaseQuality, downloadQqMusicQuality,
     downloadYoutubeQuality, downloadBiliQuality,
     ltAllowMemberControl, ltAutoPauseOnMemberChange, ltShareAudioLinks, volume, audioOutputDevice,
-    playbackSpeed, loudnessGainMb, equalizerEnabled, equalizerPresetId,
+    playbackSpeed, playbackPitch, vinylEffectEnabled, audioEffects, loudnessGainMb, equalizerEnabled, equalizerPresetId,
     equalizerBands, desktopLyrics, showMenuBarLyrics, shortcutBindings, globalShortcutsEnabled,
   }
 
@@ -760,7 +810,7 @@ export const useSettingsStore = defineStore('settings', () => {
 
   return {
     isHydrated, hydrate, snapshot, applySnapshot,
-    darkMode, themeColor, locale, coverStyle,
+    darkMode, themeColor, appFontFamily, lyricFontFamily, locale, coverStyle,
     defaultScreen, closeToTray, showCoverBadge, showNowPlayingTitle, showToolbarDock,
     showQualitySwitch, showAudioCodec, showAudioSpec, lyricFontScale,
     showAudioBitrate, showAudioFormat, showAudioChannels, showAudioSampleRate, showAudioBitDepth,
@@ -780,7 +830,7 @@ export const useSettingsStore = defineStore('settings', () => {
     downloadParallelism, downloadAutoFillMetadata, downloadEmbedLyrics,
     downloadFollowPlaybackQuality, downloadNeteaseQuality, downloadQqMusicQuality,
     downloadYoutubeQuality, downloadBiliQuality,
-    ltAutoPauseOnMemberChange, ltShareAudioLinks, volume, audioOutputDevice, playbackSpeed,
+    ltAutoPauseOnMemberChange, ltShareAudioLinks, volume, audioOutputDevice, playbackSpeed, playbackPitch, vinylEffectEnabled, audioEffects,
     loudnessGainMb, equalizerEnabled, equalizerPresetId, equalizerBands, desktopLyrics, showMenuBarLyrics,
     shortcutBindings, globalShortcutsEnabled,
   }

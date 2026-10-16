@@ -2,7 +2,7 @@
  * 歌词文本往返工具
  * 有逐字时间轴时导出 YRC，否则 LRC
  */
-import type { LyricLine, LyricWord } from '@/stores/player'
+import type { LyricLine, LyricWord, TrackInfo } from '@/stores/player'
 
 function pad2(n: number): string {
   return String(n).padStart(2, '0')
@@ -117,7 +117,7 @@ const LYRIC_CREDIT_METADATA_ROLES = new Set([
   'bass', 'drum', 'drums', 'keyboard', 'keyboards', 'piano', 'strings', 'stringarrangement', 'midiprogramming', 'programming',
   'artist', 'singer', 'title', 'album', 'copyright', 'publisher', 'label', 'distribution', 'promotion', 'credits',
   'lyricby', 'lyricsby', 'wordby', 'wordsby', 'writtenby', 'composedby', 'arrangedby', 'producedby', 'performedby', 'sungby',
-  'musicby', 'mixedby', 'masteredby', 'recordedby', 'publishedby', 'distributedby',
+  'musicby', 'mixedby', 'masteredby', 'recordedby', 'publishedby', 'distributedby', 'by',
 ])
 const AMBIGUOUS_CREDIT_ROLES = new Set([
   '词', '詞', '曲', '鼓', '吉他', '贝斯', '貝斯', '键盘', '鍵盤', '弦乐', '弦樂', '和声', '和聲', '和音', '口哨',
@@ -130,7 +130,8 @@ const ATTRIBUTION_CREDIT_RE = /^\s*((?:lyrics?|words?|written|composed|arranged|
 const CONTRIBUTOR_SENTENCE_PREFIX_RE = /^(?:i|you|he|she|it|we|they|me|us|my|your|his|her|its|our|their|a|an|the|this|that|these|those)\b|^(?:我|你|他|她|它|想|爱|愛|在|是|不|别|別|没|沒)/iu
 
 function isContributorList(value: string): boolean {
-  return value.split(/\s+and\s+|[/／&、,，+;；]/iu).every(name => {
+  const names = value.replace(/[/／&、,，+;；\s]+$/u, '').trim()
+  return names.split(/\s+and\s+|[/／&、,，+;；]/iu).every(name => {
     const plain = name.trim().split(/[（(]/u)[0].trim()
     const nameOnly = plain.startsWith('@') ? plain : plain.split('@')[0].trim()
     return !CONTRIBUTOR_SENTENCE_PREFIX_RE.test(nameOnly) && CONTRIBUTOR_NAME_RE.test(nameOnly)
@@ -171,12 +172,54 @@ function lyricCreditMetadataMask(texts: string[]): boolean[] {
   return credits
 }
 
+const LEADING_METADATA_SCAN_LINES = 8
+const TRAILING_METADATA_SCAN_LINES = 4
+const TITLE_FUNCTION_WORDS = new Set(['a', 'an', 'the', 'in', 'on', 'at', 'of', 'to', 'for', 'and'])
+
+function normalizeLyricIdentity(text: string): string {
+  return text.normalize('NFKC').toLowerCase().replace(/&/g, ' and ')
+    .replace(/\b(?:feat|ft|featuring)\.?\b/g, ' ')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ').trim().replace(/\s+/g, ' ')
+}
+
+function songIdentityContext(track: Pick<TrackInfo, 'title' | 'artist'> & Partial<Pick<TrackInfo, 'album'>>) {
+  const title = normalizeLyricIdentity(track.title)
+  const exact = new Set<string>()
+  const shortened = new Set<string>()
+  if (!title) return { exact, shortened }
+  const artists = new Set([track.artist, ...track.artist.split(/[/,，、&+]|\b(?:feat\.?|ft\.?|featuring)\b|\s+x\s+/iu)]
+    .map(normalizeLyricIdentity).filter(term => term && term !== title))
+  const addIdentity = (name: string, songTitle: string) => {
+    exact.add(`${name}\u0000${songTitle}`)
+    exact.add(`${songTitle}\u0000${name}`)
+  }
+  for (const name of artists) addIdentity(name, title)
+  const album = normalizeLyricIdentity(track.album || '')
+  if (album && album !== title) addIdentity(album, title)
+  // 漏掉一个内部功能词的长英文标题仍须精确匹配歌手，避免泛化到普通歌词
+  const words = title.split(' ')
+  if (words.length >= 4 && words.every(word => /^[a-z]+$/.test(word))) {
+    words.forEach((word, index) => {
+      if (index === 0 || index === words.length - 1 || !TITLE_FUNCTION_WORDS.has(word)) return
+      const songTitle = words.filter((_, wordIndex) => wordIndex !== index).join(' ')
+      for (const name of artists) {
+        shortened.add(`${name}\u0000${songTitle}`)
+        shortened.add(`${songTitle}\u0000${name}`)
+      }
+    })
+  }
+  return { exact, shortened }
+}
+
 /** 只生成显示结果，保留原始歌词及正文的逐字时间轴 */
-export function filterLyricCreditMetadataLines(lines: LyricLine[]): LyricLine[] {
+export function filterLyricCreditMetadataLines(
+  lines: LyricLine[],
+  track?: (Pick<TrackInfo, 'title' | 'artist'> & Partial<Pick<TrackInfo, 'album'>>) | null,
+): LyricLine[] {
   const credits = lyricCreditMetadataMask(lines.map(line => line.text.trim() || line.words.map(word => word.text).join('')))
   const translationCredits = lyricCreditMetadataMask(lines.map(line => line.translation || ''))
   const romanCredits = lyricCreditMetadataMask(lines.map(line => line.roman || ''))
-  return lines.flatMap((line, index) => {
+  const displayed = lines.flatMap((line, index) => {
     if (credits[index]) return []
     const hasCreditTranslation = translationCredits[index]
     const hasCreditRoman = romanCredits[index]
@@ -187,6 +230,21 @@ export function filterLyricCreditMetadataLines(lines: LyricLine[]): LyricLine[] 
       roman: hasCreditRoman ? undefined : line.roman,
     }]
   })
+  if (!track) return displayed
+  const identities = songIdentityContext(track)
+  const body = displayed.filter((line, index) => {
+    if (index >= LEADING_METADATA_SCAN_LINES && index + TRAILING_METADATA_SCAN_LINES < displayed.length) return true
+    const text = line.text.trim() || line.words.map(word => word.text).join('')
+    if (!/[-－–—/／|]/u.test(text)) return true
+    for (const separator of text.matchAll(/[-－–—/／|]/gu)) {
+      const left = normalizeLyricIdentity(text.slice(0, separator.index))
+      const right = normalizeLyricIdentity(text.slice(separator.index + 1))
+      const identity = `${left}\u0000${right}`
+      if (identities.exact.has(identity) || identities.shortened.has(identity)) return false
+    }
+    return true
+  })
+  return body.some(line => line.text.trim() || line.words.some(word => word.text.trim())) ? body : displayed
 }
 
 /** 「//」之类的未翻译占位，占住这一行但不显示 */

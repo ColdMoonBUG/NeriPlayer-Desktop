@@ -36,7 +36,7 @@ async function mount(overrides = {}) {
   let now = 1000, frameId = 0
   const frames = new Map()
   const document = Object.assign(new ListenerTarget(), {
-    visibilityState: 'visible', fonts: { status: 'loaded' },
+    visibilityState: 'visible', fonts: Object.assign(new ListenerTarget(), { status: 'loaded' }),
   })
   Object.defineProperty(document, 'hidden', { get: () => document.visibilityState === 'hidden' })
   const window = new ListenerTarget()
@@ -53,6 +53,7 @@ async function mount(overrides = {}) {
     resumes = 0
     pauses = 0
     updates = 0
+    layouts = 0
     element = { clientWidth: 700, clientHeight: 600 }
     constructor() { super(); players.push(this) }
     setOptimizeOptions() {}
@@ -64,7 +65,7 @@ async function mount(overrides = {}) {
     setWordFadeWidth() {}
     setCurrentTime(time, seek = false) { this.times.push([time, seek]) }
     update() { this.updates++ }
-    calcLayout() {}
+    calcLayout() { this.layouts++ }
     resetScroll() {}
     resume() { this.resumes++ }
     pause() { this.pauses++ }
@@ -122,7 +123,7 @@ async function mount(overrides = {}) {
   const clearCalls = () => { player.times = []; player.resumes = 0; player.pauses = 0 }
   clearCalls()
   return {
-    props, player, document, window, host, frames, frame, clearCalls,
+    props, settings, player, document, window, host, frames, frame, clearCalls,
     queueFrame(callback) { const id = ++frameId; frames.set(id, callback); return id },
     async setProps(patch) { now += 100; Object.assign(props, patch); await vue.nextTick() },
     async emit(target, type) { target.dispatch(type); await vue.nextTick(); frame(); await vue.nextTick() },
@@ -136,6 +137,43 @@ async function test(name, run) {
   try { await run(); console.log(`PASS ${name}`) }
   catch (error) { failed++; console.error(`FAIL ${name}: ${error.stack}`) }
 }
+
+await test('changing the lyric font reflows the existing player at the current time', async () => {
+  const r = await mount({ isPlaying: false, currentTimeMs: 5400, lyricOffsetMs: 700 })
+  try {
+    const layouts = r.player.layouts
+    const lines = r.player.lines
+    let maskRefreshes = 0
+    const group = {
+      element: { parentElement: r.host, clientWidth: 600, clientHeight: 80 },
+      onLineSizeChange() { maskRefreshes++ },
+    }
+    r.player.currentLyricGroups = [group]
+    r.player.lyricGroupSize.set(group, [600, 80])
+    r.settings.lyricFontFamily = 'KaiTi'
+    await vue.nextTick()
+    for (let index = 0; index < 6; index++) r.frame()
+    assert.ok(r.player.layouts > layouts, 'font changes must remeasure lyric line geometry')
+    assert.ok(maskRefreshes > 0, 'font changes must refresh word masks even when the line box keeps its dimensions')
+    assert.equal(r.player.lines, lines, 'font changes retain the existing lyric timeline')
+    assert.ok(r.player.times.length > 0)
+    assert.ok(r.player.times.every(([time]) => time === 6100), 'font reflow retains the current time and offset')
+    assert.equal(r.player.resumes, 0, 'paused playback stays paused')
+  } finally { r.stop() }
+})
+
+await test('a font that loads after the initial layout triggers another reflow', async () => {
+  const r = await mount({ isPlaying: false, currentTimeMs: 5400 })
+  try {
+    const layouts = r.player.layouts
+    await r.emit(r.document.fonts, 'loadingdone')
+    for (let index = 0; index < 6; index++) r.frame()
+    assert.ok(r.player.layouts > layouts, 'first-use font loading must update cached lyric dimensions')
+    assert.ok(r.player.times.every(([time]) => time === 5400))
+    r.stop()
+    assert.equal(r.document.fonts.listenerCount(), 0, 'font loading listeners must be removed on unmount')
+  } finally { if (!r.player.disposed) r.stop() }
+})
 
 await test('visible restoration seeks even when the background watcher already consumed the current time', async () => {
   const r = await mount()
