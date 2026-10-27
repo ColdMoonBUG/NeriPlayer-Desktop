@@ -49,6 +49,7 @@
   },
   "explore": {
     "qq_hint": "搜尋 QQ 音樂歌曲；登入後依帳號權益取得音源。",
+    "qq_discovery_hint": "推薦歌單、新歌與官方榜單，無需登入",
     "title": "探索",
     "search_placeholder": "搜尋歌曲、藝人、專輯...",
     "tab_link": "連結",

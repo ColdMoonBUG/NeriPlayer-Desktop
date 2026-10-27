@@ -49,6 +49,7 @@
   },
   "explore": {
     "qq_hint": "Search QQ Music songs. Sign in to use your account's playback access.",
+    "qq_discovery_hint": "Recommended playlists, new releases and official charts, no sign-in needed",
     "title": "Explore",
     "search_placeholder": "Search songs, artists, albums...",
     "tab_link": "Links",

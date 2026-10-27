@@ -681,7 +681,7 @@ onMounted(() => {
           <span class="tab-icon large" :style="{ maskImage: 'url(/icons/ic_qq_music.svg)' }"></span>
           <div>
             <h2>{{ t('player.source_qq') }}</h2>
-            <p>{{ t('explore.qq_hint') }}</p>
+            <p>{{ t('explore.qq_hint') }} · {{ t('explore.qq_discovery_hint') }}</p>
           </div>
         </div>
 

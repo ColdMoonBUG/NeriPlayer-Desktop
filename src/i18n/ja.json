@@ -49,6 +49,7 @@
   },
   "explore": {
     "qq_hint": "QQ Music の楽曲を検索。ログインするとアカウントの権限で再生できます。",
+    "qq_discovery_hint": "おすすめプレイリスト・新曲・公式ランキング、ログイン不要",
     "title": "探索",
     "search_placeholder": "曲、アーティスト、アルバムを検索...",
     "tab_link": "リンク",

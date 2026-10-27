@@ -43,7 +43,7 @@ assert.match(exploreView, /@click="openCollection\(pl\)"/)
 assert.match(exploreView, /collectionWebUrl\('qq', 'playlist', pl\.id\)/)
 
 // 四语言都要有新 shelf 文案，否则切语言会露出 key 原文
-const keys = ['qq_shelf_newsongs_title', 'qq_shelf_newsongs_subtitle']
+const keys = ['qq_shelf_newsongs_title', 'qq_shelf_newsongs_subtitle', 'qq_discovery_hint']
 for (const locale of ['en', 'ja', 'zh-CN', 'zh-TW']) {
   const messages = JSON.parse(await read(`../src/i18n/${locale}.json`))
   for (const key of keys) {
