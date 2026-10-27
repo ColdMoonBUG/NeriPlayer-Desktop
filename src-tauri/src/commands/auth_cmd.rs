@@ -1016,13 +1016,40 @@ pub async fn login_qq(
         now_ms: chrono::Utc::now().timestamp_millis() as u64,
     }, qqmusic_api::CancellationToken::new()).await
         .map_err(|_| AppError::Api("QQ Music login exchange failed; please retry authorization".into()))?;
-    let profile = api.user.get_homepage(&session.credential.encrypt_uin, Some(&session.credential)).await.ok();
+    persist_qq_login(
+        &app,
+        state.inner(),
+        &api,
+        session.credential,
+        session.expires_at_ms,
+        generation,
+    )
+    .await
+}
+
+/// 把一次成功的 QQ 登录落盘：取昵称头像，并确认期间没有更新的登录尝试把它顶掉。
+async fn persist_qq_login(
+    app: &AppHandle,
+    state: &AppState,
+    api: &qqmusic_api::Client,
+    credential: qqmusic_api::Credential,
+    expires_at_ms: u64,
+    generation: u64,
+) -> AppResult<AuthInfo> {
+    let profile = api
+        .user
+        .get_homepage(&credential.encrypt_uin, Some(&credential))
+        .await
+        .ok();
     let qq_auth = crate::auth::state::QqAuth {
-        nickname: profile.as_ref().map(|p| p.base_info.name.clone()).filter(|s| !s.is_empty())
-            .or_else(|| Some(session.credential.str_musicid())),
-        avatar_url: profile.map(|p| p.base_info.avatar).filter(|s| !s.is_empty()),
-        credential: session.credential,
-        expires_at_ms: session.expires_at_ms,
+        nickname: profile
+            .as_ref()
+            .map(|p| p.base_info.name.clone())
+            .filter(|name| !name.is_empty())
+            .or_else(|| Some(credential.str_musicid())),
+        avatar_url: profile.map(|p| p.base_info.avatar).filter(|url| !url.is_empty()),
+        credential,
+        expires_at_ms,
     };
     let info = qq_auth.info();
     let mut auth = state.auth.lock();
@@ -1030,8 +1057,104 @@ pub async fn login_qq(
         return Err(AppError::Other("QQ Music login cancelled".into()));
     }
     auth.qq = Some(qq_auth);
-    cookies::save_auth(&app, &auth);
+    cookies::save_auth(app, &auth);
     Ok(info)
+}
+
+/// musicKey 只有十几分钟寿命，进入这个窗口就用 refresh_key/refresh_token 续期。
+const QQ_REFRESH_MARGIN_MS: u64 = 10 * 60 * 1000;
+/// 服务端没给有效期时沿用 crate 的兜底寿命，保证下一轮仍然会重试。
+const QQ_REFRESH_FALLBACK_MS: u64 = 24 * 60 * 60 * 1000;
+
+/// Renewed credentials carry their own lifetime, but unlike the OAuth exchange
+/// nothing wraps them in a session, so the deadline is recomputed here.
+fn qq_credential_expires_at_ms(credential: &qqmusic_api::Credential, now_ms: u64) -> u64 {
+    let from_key_window = match (
+        u64::try_from(credential.musickey_create_time),
+        u64::try_from(credential.key_expires_in),
+    ) {
+        (Ok(created), Ok(lifetime)) if created > 0 && lifetime > 0 => {
+            let created = if created >= 1_000_000_000_000 {
+                created
+            } else {
+                created.saturating_mul(1000)
+            };
+            Some(created.saturating_add(lifetime.saturating_mul(1000)))
+        }
+        _ => None,
+    };
+    let from_server = u64::try_from(credential.expired_at)
+        .ok()
+        .filter(|secs| *secs > 0)
+        .map(|secs| {
+            if secs >= 1_000_000_000_000 {
+                secs
+            } else {
+                secs.saturating_mul(1000)
+            }
+        });
+    from_key_window
+        .into_iter()
+        .chain(from_server)
+        .filter(|at| *at > now_ms)
+        .max()
+        .unwrap_or_else(|| now_ms.saturating_add(QQ_REFRESH_FALLBACK_MS))
+}
+
+/// 续期由 main.rs 的 300s 循环驱动，失败按同一节奏自然重试，不另设闸门。
+pub async fn maybe_refresh_qq_credential(app: &AppHandle, state: &AppState) {
+    let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+    let Some(current) = state.auth.lock().qq.clone() else {
+        return;
+    };
+    if current.expires_at_ms.saturating_sub(now_ms) > QQ_REFRESH_MARGIN_MS {
+        return;
+    }
+    if current.credential.refresh_token.is_empty() && current.credential.refresh_key.is_empty() {
+        return;
+    }
+    let generation = state.qq_auth_generation.load(Ordering::Acquire);
+    let previous = current.credential.clone();
+    let api = match state.qq().with_credential(Some(previous.clone())).api() {
+        Ok(api) => api,
+        Err(error) => {
+            log::warn!(target: "qq-refresh", "client unavailable: {error}");
+            return;
+        }
+    };
+    match api.login.refresh_credential(Some(&previous)).await {
+        Ok(updated) => {
+            let expires_at_ms = qq_credential_expires_at_ms(&updated, now_ms);
+            let mut auth = state.auth.lock();
+            if state.qq_auth_generation.load(Ordering::Acquire) != generation {
+                return;
+            }
+            // 续期期间登出或换号，结果不能覆盖新状态
+            if !auth
+                .qq
+                .as_ref()
+                .is_some_and(|saved| saved.credential.str_musicid() == previous.str_musicid())
+            {
+                return;
+            }
+            let saved = auth.qq.as_mut().expect("QQ auth present");
+            saved.credential = updated;
+            saved.expires_at_ms = expires_at_ms;
+            cookies::save_auth(app, &auth);
+            log::info!(
+                target: "qq-refresh",
+                "credential renewed, valid for another {}s",
+                expires_at_ms.saturating_sub(now_ms) / 1000
+            );
+        }
+        Err(error) => {
+            log::warn!(
+                target: "qq-refresh",
+                "renewal failed: {}",
+                crate::api::qq::client::qq_api_error("credential refresh", &error)
+            );
+        }
+    }
 }
 
 #[tauri::command]

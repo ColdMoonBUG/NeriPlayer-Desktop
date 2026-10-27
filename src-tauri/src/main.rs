@@ -183,6 +183,20 @@ fn main() {
                 });
             }
 
+            // QQ musicKey 寿命只有十几分钟：首次 tick 立即执行，把应用关闭期间
+            // 过期的凭证先续上，之后每 300s 在到期前续期
+            {
+                let handle_qq = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut interval = tokio::time::interval(Duration::from_secs(300));
+                    loop {
+                        interval.tick().await;
+                        let state = handle_qq.state::<AppState>();
+                        auth_cmd::maybe_refresh_qq_credential(&handle_qq, state.inner()).await;
+                    }
+                });
+            }
+
             // 启动时迁移同步 Token 和 WebDAV 密码到当前构建的凭据存储
             sync_cmd::initialize_secure_storage(&handle);
 

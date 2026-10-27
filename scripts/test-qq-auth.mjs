@@ -9,6 +9,11 @@ import * as vue from 'vue'
 const nativeAuth = await readFile(new URL('../src-tauri/src/commands/auth_cmd.rs', import.meta.url), 'utf8')
 assert.match(nativeAuth, /WebviewWindowBuilder::new\(&app, "qq-oauth", WebviewUrl::External\(authorize\)\)\s*\.main_browser_args\(&app\)/)
 
+// musicKey 只有几天寿命，必须在到期前自动续期，否则挂机一段时间就只能重新登录
+const mainRs = await readFile(new URL('../src-tauri/src/main.rs', import.meta.url), 'utf8')
+assert.match(nativeAuth, /api\s*\.\s*login\s*\.\s*refresh_credential\(Some\(&previous\)\)/)
+assert.match(mainRs, /auth_cmd::maybe_refresh_qq_credential\(&handle_qq, state\.inner\(\)\)\.await/)
+
 const source = await readFile(new URL('../src/stores/auth.ts', import.meta.url), 'utf8')
 const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
