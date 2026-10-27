@@ -172,6 +172,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
   { section: 'playback_sources', title: 'settings.youtube_playback_source', desc: 'settings.youtube_playback_source_desc' },
   { section: 'playback_sources', title: 'settings.netease_local_source_fallback', desc: 'settings.netease_local_source_fallback_desc' },
   { section: 'playback_sources', title: 'settings.netease_auto_source_switch', desc: 'settings.netease_auto_source_switch_desc' },
+  { section: 'playback_sources', title: 'settings.qq_auto_source_switch', desc: 'settings.qq_auto_source_switch_desc' },
   { section: 'quality', title: 'settings.netease_quality' },
   { section: 'quality', title: 'settings.qq_quality' },
   { section: 'quality', title: 'settings.youtube_quality' },

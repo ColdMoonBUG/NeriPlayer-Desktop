@@ -19,6 +19,7 @@ export interface PlaybackSourceSettings {
   youtubeQuality: string
   youtubePlaybackSource?: string
   neteaseAutoSourceSwitch?: boolean
+  qqAutoSourceSwitch?: boolean
   neteaseLocalSourceFallback?: boolean
 }
 
@@ -306,6 +307,10 @@ export function playbackPrefetchCacheId(
   }
   if (source === 'netease' && (settings.neteaseLocalSourceFallback || settings.neteaseAutoSourceSwitch)) {
     return `${base}|fallback:${Number(!!settings.neteaseLocalSourceFallback)}:${Number(!!settings.neteaseAutoSourceSwitch)}`
+  }
+  // 兜底开关改变解析结果，缓存键必须跟着变，否则改设置后仍会命中旧的解析缓存
+  if (source === 'qq' && settings.qqAutoSourceSwitch) {
+    return `${base}|qq-fallback:1`
   }
   return base
 }
@@ -844,52 +849,68 @@ async function resolveNeteaseFallback(
     }
   }
   if (settings.neteaseAutoSourceSwitch) {
-    ensurePlaybackResolutionActive(options)
-    const candidates = await invoke<FallbackTrack[]>('find_netease_bili_sources', {
-      ...identity, requestGeneration: options.requestGeneration,
-    }).catch(error => {
-      if (/superseded/i.test(String(error))) throw error
-      return []
-    })
-    ensurePlaybackResolutionActive(options)
-    let primary: ResolvedPlaybackSource | null = null
-    const alternates: PlaybackCandidateDetails[] = []
-    for (const candidate of candidates) {
-      ensurePlaybackResolutionActive(options)
-      try {
-        const alternate = await resolveBilibili({
-          ...track, ...candidate, durationMs: candidate.duration_ms, audioUrl: '',
-          source: 'bilibili', syncPayload: undefined,
-        }, settings, options)
-        ensurePlaybackResolutionActive(options)
-        if (!alternate) continue
-        if (!primary) {
-          primary = { ...alternate, durationMs: candidate.duration_ms || track.durationMs }
-        } else {
-          for (const index of [0, ...alternate.candidateUrls.map((_, index) => index + 1)]) {
-            const selected = selectPlaybackCandidate(alternate, index)
-            alternates.push({
-              url: index === 0 ? alternate.url : alternate.candidateUrls[index - 1]!,
-              qualityKey: selected.qualityKey, cacheKey: selected.cacheKey,
-              durationMs: candidate.duration_ms || track.durationMs,
-              audioInfo: selected.audioInfo ?? createAudioInfo('bilibili', selected.qualityKey),
-              mimeType: selected.mimeType, bitrate: selected.bitrate, codec: selected.codec,
-              expectedContentLength: selected.expectedContentLength,
-              biliVideoSkipTarget: selected.biliVideoSkipTarget,
-            })
-          }
-        }
-      } catch (error) {
-        if (/superseded/i.test(String(error))) throw error
-      }
-    }
-    if (primary) return {
-      ...primary,
-      candidateUrls: [...primary.candidateUrls, ...alternates.map(candidate => candidate.url)],
-      candidateDetails: [...(primary.candidateDetails ?? []), ...alternates],
-    }
+    return resolveBiliAutoSourceFallback(track, settings, options)
   }
   return null
+}
+
+/// 按标题/艺术家/时长去 Bilibili 找同名资源。检索本身与来源平台无关，
+/// 网易云和 QQ 音乐的兜底共用这一段。
+async function resolveBiliAutoSourceFallback(
+  track: TrackInfo,
+  settings: PlaybackSourceSettings,
+  options: PlaybackResolveOptions,
+): Promise<ResolvedPlaybackSource | null> {
+  ensurePlaybackResolutionActive(options)
+  const identity = {
+    title: syncPayloadString(track, 'originalName', 'original_name') ?? track.title,
+    artist: syncPayloadString(track, 'originalArtist', 'original_artist') ?? track.artist,
+    durationMs: track.durationMs || 0,
+  }
+  const candidates = await invoke<FallbackTrack[]>('find_netease_bili_sources', {
+    ...identity, requestGeneration: options.requestGeneration,
+  }).catch(error => {
+    if (/superseded/i.test(String(error))) throw error
+    return []
+  })
+  ensurePlaybackResolutionActive(options)
+  let primary: ResolvedPlaybackSource | null = null
+  const alternates: PlaybackCandidateDetails[] = []
+  for (const candidate of candidates) {
+    ensurePlaybackResolutionActive(options)
+    try {
+      const alternate = await resolveBilibili({
+        ...track, ...candidate, durationMs: candidate.duration_ms, audioUrl: '',
+        source: 'bilibili', syncPayload: undefined,
+      }, settings, options)
+      ensurePlaybackResolutionActive(options)
+      if (!alternate) continue
+      if (!primary) {
+        primary = { ...alternate, durationMs: candidate.duration_ms || track.durationMs }
+      } else {
+        for (const index of [0, ...alternate.candidateUrls.map((_, index) => index + 1)]) {
+          const selected = selectPlaybackCandidate(alternate, index)
+          alternates.push({
+            url: index === 0 ? alternate.url : alternate.candidateUrls[index - 1]!,
+            qualityKey: selected.qualityKey, cacheKey: selected.cacheKey,
+            durationMs: candidate.duration_ms || track.durationMs,
+            audioInfo: selected.audioInfo ?? createAudioInfo('bilibili', selected.qualityKey),
+            mimeType: selected.mimeType, bitrate: selected.bitrate, codec: selected.codec,
+            expectedContentLength: selected.expectedContentLength,
+            biliVideoSkipTarget: selected.biliVideoSkipTarget,
+          })
+        }
+      }
+    } catch (error) {
+      if (/superseded/i.test(String(error))) throw error
+    }
+  }
+  if (!primary) return null
+  return {
+    ...primary,
+    candidateUrls: [...primary.candidateUrls, ...alternates.map(candidate => candidate.url)],
+    candidateDetails: [...(primary.candidateDetails ?? []), ...alternates],
+  }
 }
 
 function resolveQq(
@@ -902,8 +923,13 @@ function resolveQq(
   return invoke<{ url: string | null; bitrate: number; format: string }>(
     'get_qq_song_url',
     { songMid, quality, requestGeneration: options.requestGeneration },
-  ).then(result => {
-    if (!result.url) return null
+  ).then(async result => {
+    if (!result.url) {
+      if (options.allowFallback !== false && settings.qqAutoSourceSwitch) {
+        return resolveBiliAutoSourceFallback(track, settings, options)
+      }
+      return null
+    }
     const mimeType = normalizeMimeType(result.format)
     const codec = deriveCodecLabel(mimeType) ?? normalizeCodecName(result.format)
     const audioInfo = createAudioInfo('qq', quality, codec, mimeType, result.bitrate)

@@ -118,6 +118,9 @@ interface DiscoveryShelf {
   key: string
   /** i18n key 前缀，渲染时取 `${labelKey}_title` / `${labelKey}_subtitle`，跟随语言切换 */
   labelKey: string
+  /** 平台侧专有名词标题（如 QQ 榜单名），给了它就不走 labelKey 翻译 */
+  title?: string
+  subtitle?: string
   platform: PlatformTab
   items: SearchResult[]
 }
@@ -159,6 +162,46 @@ async function loadDiscoveryShelves(platform: 'bilibili' | 'youtube') {
     target.value = results.filter(shelf => shelf.items.length > 0)
   } finally {
     loading.value = false
+  }
+}
+
+const qqPlaylists = ref<ExploreCollection[]>([])
+const qqDiscoveryShelves = ref<DiscoveryShelf[]>([])
+const isLoadingQqDiscovery = ref(false)
+
+interface QqChartShelf {
+  id: string
+  title: string
+  items: ExploreSong[]
+}
+
+// QQ 探索页的默认推荐：公开歌单、新歌和官方榜单，全部不要求登录。
+// 三路并发且各自吞错，一路挂了其余照常显示。
+async function loadQqExplore() {
+  if (isLoadingQqDiscovery.value) return
+  if (qqPlaylists.value.length > 0 && qqDiscoveryShelves.value.length > 0) return
+  isLoadingQqDiscovery.value = true
+  try {
+    const [playlists, newsongs, charts] = await Promise.all([
+      invoke<{ items: ExploreItem[] }>('get_qq_explore', { kind: 'playlists' }).catch(() => ({ items: [] as ExploreItem[] })),
+      invoke<{ items: ExploreItem[] }>('get_qq_explore', { kind: 'newsongs' }).catch(() => ({ items: [] as ExploreItem[] })),
+      invoke<QqChartShelf[]>('get_qq_explore_charts').catch(() => [] as QqChartShelf[]),
+    ])
+    const songsOf = (items: ExploreItem[]) => items.filter((item): item is ExploreSong => item.kind === 'song')
+    qqPlaylists.value = playlists.items.filter((item): item is ExploreCollection => item.kind === 'playlist')
+    const shelves: DiscoveryShelf[] = [
+      {
+        key: 'qq-newsongs', labelKey: 'explore.qq_shelf_newsongs', platform: 'qq',
+        items: songsOf(newsongs.items),
+      },
+      ...charts.map(chart => ({
+        key: `qq-chart-${chart.id}`, labelKey: '', platform: 'qq' as const,
+        title: chart.title, items: chart.items as SearchResult[],
+      })),
+    ]
+    qqDiscoveryShelves.value = shelves.filter(shelf => shelf.items.length > 0)
+  } finally {
+    isLoadingQqDiscovery.value = false
   }
 }
 
@@ -339,6 +382,7 @@ watch(activeTab, (tab) => {
     return
   }
   if (tab === 'bilibili') void loadDiscoveryShelves('bilibili')
+  if (tab === 'qq') void loadQqExplore()
   if (tab === 'youtube') {
     void loadDiscoveryShelves('youtube')
     void loadYoutubeHomeFeedIfAvailable()
@@ -450,6 +494,7 @@ onMounted(() => {
     loadQualityByTag('tag_all')
   }
   if (activeTab.value === 'bilibili') void loadDiscoveryShelves('bilibili')
+  if (activeTab.value === 'qq') void loadQqExplore()
   if (activeTab.value === 'youtube') {
     void loadDiscoveryShelves('youtube')
     void loadYoutubeHomeFeedIfAvailable()
@@ -630,17 +675,66 @@ onMounted(() => {
         </div>
       </template>
 
-      <!-- 链接 Tab：粘贴分享链接识别 -->
+      <!-- QQ 音乐 Tab：推荐歌单 + 新歌 + 官方榜单 -->
       <template v-else-if="activeTab === 'qq'">
-        <div class="platform-hero">
+        <div class="platform-hero qq">
           <span class="tab-icon large" :style="{ maskImage: 'url(/icons/ic_qq_music.svg)' }"></span>
           <div>
             <h2>{{ t('player.source_qq') }}</h2>
             <p>{{ t('explore.qq_hint') }}</p>
           </div>
         </div>
+
+        <div v-if="isLoadingQqDiscovery" class="loading-state">
+          <span class="material-symbols-rounded spinning">progress_activity</span>
+        </div>
+
+        <template v-else>
+          <div v-if="qqPlaylists.length > 0" class="playlist-grid">
+            <div
+              v-for="pl in qqPlaylists"
+              :key="pl.id"
+              class="playlist-card"
+              @click="openCollection(pl)"
+              @contextmenu="collectionMenuRef?.open($event, { route: collectionRoute(pl), webUrl: collectionWebUrl('qq', 'playlist', pl.id) })"
+            >
+              <div class="playlist-cover">
+                <BilibiliCoverImage v-if="pl.cover_url" :src="pl.cover_url" loading="lazy">
+                  <span class="material-symbols-rounded filled">queue_music</span>
+                </BilibiliCoverImage>
+                <span v-else class="material-symbols-rounded filled">queue_music</span>
+              </div>
+              <div class="playlist-name">{{ pl.name }}</div>
+              <div v-if="pl.subtitle" class="playlist-count">{{ pl.subtitle }}</div>
+            </div>
+          </div>
+
+          <div v-if="qqDiscoveryShelves.length > 0" class="discovery-stack">
+            <section v-for="shelf in qqDiscoveryShelves" :key="shelf.key" class="discovery-shelf">
+              <div class="discovery-header">
+                <div>
+                  <h2 class="section-title">{{ shelf.title || t(`${shelf.labelKey}_title`) }}</h2>
+                  <p v-if="!shelf.title">{{ t(`${shelf.labelKey}_subtitle`) }}</p>
+                </div>
+              </div>
+              <div class="discovery-row">
+                <div v-for="item in shelf.items" :key="item.id" class="discovery-card" @click="playDiscoveryItem(item)" @contextmenu="trackMenuRef?.open($event, discoveryTrack(item))">
+                  <div class="discovery-cover">
+                    <BilibiliCoverImage v-if="item.cover_url" :src="item.cover_url" loading="lazy">
+                      <span class="material-symbols-rounded filled">music_note</span>
+                    </BilibiliCoverImage>
+                    <span v-else class="material-symbols-rounded filled">music_note</span>
+                  </div>
+                  <div class="discovery-title">{{ item.title }}</div>
+                  <div class="discovery-meta">{{ item.artist }}</div>
+                </div>
+              </div>
+            </section>
+          </div>
+        </template>
       </template>
 
+      <!-- 链接 Tab：粘贴分享链接识别 -->
       <template v-else-if="activeTab === 'link'">
         <div class="platform-hero link">
           <span class="material-symbols-rounded hero-symbol">link</span>
@@ -1126,6 +1220,7 @@ onMounted(() => {
 
   &.bilibili { --platform-color: #00a1d6; }
   &.youtube { --platform-color: #ff0033; }
+  &.qq { --platform-color: #31c27c; }
   &.link { --platform-color: var(--md-primary); }
 
   .tab-icon { background: var(--platform-color); }

@@ -88,6 +88,7 @@ export interface AppSettings {
   biliQuality: string
   youtubePlaybackSource: YouTubePlaybackSource
   neteaseAutoSourceSwitch: boolean
+  qqAutoSourceSwitch: boolean
   neteaseLocalSourceFallback: boolean
   bypassProxy: boolean
   internationalizationEnabled: boolean
@@ -241,6 +242,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   biliQuality: 'high',
   youtubePlaybackSource: 'automatic',
   neteaseAutoSourceSwitch: false,
+  qqAutoSourceSwitch: false,
   neteaseLocalSourceFallback: false,
   bypassProxy: true,
   internationalizationEnabled: false,
@@ -335,6 +337,7 @@ const LEGACY_KEYS: Partial<Record<SettingKey, string>> = {
   biliQuality: 'bili_quality',
   youtubePlaybackSource: 'youtube_playback_source',
   neteaseAutoSourceSwitch: 'netease_auto_source_switch',
+  qqAutoSourceSwitch: 'qq_auto_source_switch',
   neteaseLocalSourceFallback: 'netease_local_source_fallback',
   bypassProxy: 'bypass_proxy',
   internationalizationEnabled: 'intl_enabled',
@@ -682,6 +685,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const biliQuality = ref(initial.biliQuality)
   const youtubePlaybackSource = ref(initial.youtubePlaybackSource)
   const neteaseAutoSourceSwitch = ref(initial.neteaseAutoSourceSwitch)
+  const qqAutoSourceSwitch = ref(initial.qqAutoSourceSwitch)
   const neteaseLocalSourceFallback = ref(initial.neteaseLocalSourceFallback)
   const bypassProxy = ref(initial.bypassProxy)
   const internationalizationEnabled = ref(initial.internationalizationEnabled)
@@ -739,6 +743,7 @@ export const useSettingsStore = defineStore('settings', () => {
     coverBlurAmount, coverBlurDarken, neteaseQuality, qqMusicQuality,
     youtubeQuality, biliQuality, bypassProxy, internationalizationEnabled, exploreSearchHistoryEnabled,
     youtubePlaybackSource, neteaseAutoSourceSwitch, neteaseLocalSourceFallback,
+    qqAutoSourceSwitch,
     backgroundImageUri, backgroundImageBlur, backgroundImageAlpha, backgroundImageDim, enhancedAdvancedBlur,
     enhancedAdvancedBlurRadius, devModeEnabled,
     logToFile, logLevel,
@@ -837,6 +842,7 @@ export const useSettingsStore = defineStore('settings', () => {
     colorMode, audioReactive, coverBlurBg, coverBlurAmount, coverBlurDarken,
     neteaseQuality, qqMusicQuality, youtubeQuality, biliQuality, bypassProxy,
     youtubePlaybackSource, neteaseAutoSourceSwitch, neteaseLocalSourceFallback,
+    qqAutoSourceSwitch,
     internationalizationEnabled, exploreSearchHistoryEnabled, backgroundImageUri, backgroundImageBlur,
     backgroundImageAlpha, backgroundImageDim, enhancedAdvancedBlur, enhancedAdvancedBlurRadius,
     devModeEnabled, logToFile, logLevel, maxCacheSize, downloadNameTemplate,

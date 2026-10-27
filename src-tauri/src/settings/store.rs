@@ -117,6 +117,7 @@ pub struct AppSettings {
     pub bili_quality: String,
     pub youtube_playback_source: String,
     pub netease_auto_source_switch: bool,
+    pub qq_auto_source_switch: bool,
     pub netease_local_source_fallback: bool,
     pub bypass_proxy: bool,
     pub internationalization_enabled: bool,
@@ -291,6 +292,7 @@ impl Default for AppSettings {
             bili_quality: "high".into(),
             youtube_playback_source: "automatic".into(),
             netease_auto_source_switch: false,
+            qq_auto_source_switch: false,
             netease_local_source_fallback: false,
             bypass_proxy: true,
             internationalization_enabled: false,
@@ -1097,17 +1099,20 @@ mod tests {
         let old: AppSettings = serde_json::from_str("{}").expect("old settings");
         assert_eq!(old.youtube_playback_source, "automatic");
         assert!(!old.netease_auto_source_switch);
+        assert!(!old.qq_auto_source_switch);
         assert!(!old.netease_local_source_fallback);
 
         let settings: AppSettings = serde_json::from_value(serde_json::json!({
             "youtubePlaybackSource": " Web_Remix ",
             "neteaseAutoSourceSwitch": true,
+            "qqAutoSourceSwitch": true,
             "neteaseLocalSourceFallback": true,
         }))
         .expect("playback source settings");
         let json = serde_json::to_value(settings.normalized()).expect("settings");
         assert_eq!(json["youtubePlaybackSource"], "web_remix");
         assert_eq!(json["neteaseAutoSourceSwitch"], true);
+        assert_eq!(json["qqAutoSourceSwitch"], true);
         assert_eq!(json["neteaseLocalSourceFallback"], true);
     }
 

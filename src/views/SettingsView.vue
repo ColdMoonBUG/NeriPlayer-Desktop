@@ -117,7 +117,7 @@ const {
   advancedLyrics, preferWordTimedLyrics, defaultLyricSource, dynamicBackground, colorMode, audioReactive,
   coverBlurBg, coverBlurAmount, coverBlurDarken,
   neteaseQuality, qqMusicQuality, youtubeQuality, biliQuality,
-  youtubePlaybackSource, neteaseAutoSourceSwitch, neteaseLocalSourceFallback,
+  youtubePlaybackSource, neteaseAutoSourceSwitch, neteaseLocalSourceFallback, qqAutoSourceSwitch,
   bypassProxy, internationalizationEnabled, exploreSearchHistoryEnabled,
   backgroundImageUri, backgroundImageBlur, backgroundImageAlpha, backgroundImageDim,
   enhancedAdvancedBlur, enhancedAdvancedBlurRadius,
@@ -2878,6 +2878,18 @@ useEscapeClose(
       <label class="m3-switch">
         <input type="checkbox" v-model="neteaseAutoSourceSwitch" :aria-label="t('settings.netease_auto_source_switch')" />
         <span class="track"><span class="thumb"><span v-if="neteaseAutoSourceSwitch" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span>
+      </label>
+    </div>
+
+    <div class="setting-card">
+      <div class="setting-icon-wrap"><span class="material-symbols-rounded">music_note</span></div>
+      <div class="setting-info">
+        <div class="setting-title">{{ t('settings.qq_auto_source_switch') }}</div>
+        <div class="setting-desc">{{ t('settings.qq_auto_source_switch_desc') }}</div>
+      </div>
+      <label class="m3-switch">
+        <input type="checkbox" v-model="qqAutoSourceSwitch" :aria-label="t('settings.qq_auto_source_switch')" />
+        <span class="track"><span class="thumb"><span v-if="qqAutoSourceSwitch" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span>
       </label>
     </div>
         </div>

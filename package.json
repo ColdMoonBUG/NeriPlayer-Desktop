@@ -64,6 +64,7 @@
     "test:library-navigation": "node scripts/test-library-navigation.mjs",
     "test:search-store": "node scripts/test-search-store.mjs",
     "test:qq-auth": "node scripts/test-qq-auth.mjs",
+    "test:qq-explore": "node scripts/test-qq-explore.mjs",
     "test:escape-close": "node scripts/test-escape-close.mjs",
     "test:settings-integrity": "node scripts/test-settings-integrity.mjs",
     "test:font-settings": "node scripts/test-font-settings.mjs",

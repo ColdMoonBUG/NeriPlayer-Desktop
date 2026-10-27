@@ -852,6 +852,7 @@ export const usePlayerStore = defineStore('player', () => {
       youtubeQuality: settings.youtubeQuality,
       youtubePlaybackSource: settings.youtubePlaybackSource,
       neteaseAutoSourceSwitch: settings.neteaseAutoSourceSwitch,
+      qqAutoSourceSwitch: settings.qqAutoSourceSwitch,
       neteaseLocalSourceFallback: settings.neteaseLocalSourceFallback,
     }
   }

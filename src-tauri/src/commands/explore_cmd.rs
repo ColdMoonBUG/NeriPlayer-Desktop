@@ -8,6 +8,9 @@ use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
 const NETEASE_PAGE_SIZE: u32 = 30;
+const QQ_EXPLORE_PLAYLIST_LIMIT: u32 = 20;
+const QQ_EXPLORE_CHART_LIMIT: usize = 2;
+const QQ_EXPLORE_CHART_SONG_LIMIT: u32 = 20;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -46,23 +49,136 @@ pub struct ExplorePage {
     pub has_more: bool,
 }
 
-/// QQ's public new-song feed: real recommendations, not search placeholders.
-#[tauri::command]
-pub async fn get_qq_recommendations(state: State<'_, AppState>) -> AppResult<Vec<ExploreItem>> {
-    let songs = state.qq().api()?.recommend.get_web_newsongs(1).await
+fn qq_song_items(songs: Vec<qqmusic_api::Song>) -> Vec<ExploreItem> {
+    songs
+        .into_iter()
+        .take(30)
+        .map(|song| {
+            // 取封面要早于下面对 singer/album 的移动，否则是部分移动后再借用
+            let cover_url = https(&song.cover_url(300));
+            ExploreItem::Song {
+                id: format!("qq:{}", song.mid),
+                title: if song.title.is_empty() { song.name } else { song.title },
+                artist: song.singer.into_iter().map(|s| s.name).collect::<Vec<_>>().join(" / "),
+                album: song.album.name,
+                duration_ms: song.interval.max(0) as u64 * 1_000,
+                source: "qq".into(),
+                cover_url,
+            }
+        })
+        .collect()
+}
+
+async fn qq_new_song_items(api: &qqmusic_api::Client) -> AppResult<Vec<ExploreItem>> {
+    let songs = api
+        .recommend
+        .get_web_newsongs(1)
+        .await
         .map_err(|error| crate::api::qq::client::qq_api_error("recommendations", &error))?;
-    Ok(songs.into_iter().take(30).map(|song| {
-        let cover_url = https(&song.cover_url(300));
-        ExploreItem::Song {
-            id: format!("qq:{}", song.mid),
-            title: if song.title.is_empty() { song.name } else { song.title },
-            artist: song.singer.into_iter().map(|s| s.name).collect::<Vec<_>>().join(" / "),
-            album: song.album.name,
-            duration_ms: song.interval.max(0) as u64 * 1_000,
-            source: "qq".into(),
-            cover_url,
+    Ok(qq_song_items(songs))
+}
+
+/// 探索页 QQ 分栏的默认推荐。两个来源都不依赖登录账号，
+/// 与网易云的「无需登录」精品歌单同级。
+#[tauri::command]
+pub async fn get_qq_explore(
+    kind: String,
+    state: State<'_, AppState>,
+) -> AppResult<ExplorePage> {
+    let api = state.qq().api()?;
+    match kind.as_str() {
+        "playlists" => {
+            let lists = api
+                .recommend
+                .get_web_songlists(0, QQ_EXPLORE_PLAYLIST_LIMIT)
+                .await
+                .map_err(|error| {
+                    crate::api::qq::client::qq_api_error("playlist recommendations", &error)
+                })?;
+            Ok(ExplorePage {
+                items: lists
+                    .into_iter()
+                    .map(|list| ExploreItem::Playlist {
+                        platform: "qq".into(),
+                        id: list.id.to_string(),
+                        name: list.title,
+                        cover_url: https(&list.cover_url),
+                        track_count: 0,
+                        subtitle: if list.creator.is_empty() {
+                            list.description
+                        } else {
+                            list.creator
+                        },
+                    })
+                    .collect(),
+                has_more: false,
+            })
         }
-    }).collect())
+        "newsongs" => Ok(ExplorePage {
+            items: qq_new_song_items(&api).await?,
+            has_more: false,
+        }),
+        other => Err(AppError::Api(format!(
+            "Unsupported QQ Music explore kind: {other}"
+        ))),
+    }
+}
+
+/// 官方榜单。榜名和 topId 都来自 QQ 的分类接口，不写死榜单编号，
+/// 免得 QQ 调整榜单后拿到空数据却仍然显示旧榜名。
+#[derive(Debug, Serialize)]
+pub struct QqChartShelf {
+    pub id: String,
+    pub title: String,
+    pub items: Vec<ExploreItem>,
+}
+
+#[tauri::command]
+pub async fn get_qq_explore_charts(
+    state: State<'_, AppState>,
+) -> AppResult<Vec<QqChartShelf>> {
+    let api = state.qq().api()?;
+    let category = api
+        .top
+        .get_category()
+        .await
+        .map_err(|error| crate::api::qq::client::qq_api_error("chart list", &error))?;
+    let mut shelves = Vec::new();
+    for chart in category
+        .group
+        .into_iter()
+        .flat_map(|group| group.toplist)
+        .take(QQ_EXPLORE_CHART_LIMIT)
+    {
+        if chart.id <= 0 {
+            continue;
+        }
+        let top_id = chart.id as u64;
+        let detail = match api
+            .top
+            .get_web_detail(top_id, 0, QQ_EXPLORE_CHART_SONG_LIMIT, &chart.period)
+            .await
+        {
+            Ok(detail) => detail,
+            // 单个榜单失败不影响其他榜单，探索页要能部分可用
+            Err(_) => continue,
+        };
+        let items = qq_song_items(detail.songs);
+        if items.is_empty() {
+            continue;
+        }
+        let title = if chart.name.is_empty() {
+            chart.title_detail
+        } else {
+            chart.name
+        };
+        shelves.push(QqChartShelf {
+            id: top_id.to_string(),
+            title,
+            items,
+        });
+    }
+    Ok(shelves)
 }
 
 fn https(url: &str) -> Option<String> {
