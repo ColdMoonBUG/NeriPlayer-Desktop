@@ -9,10 +9,13 @@ import type {
   LyricLine as PlayerLyricLine,
   LyricWord as PlayerLyricWord,
 } from '@/stores/player'
+import { cancelFrame, scheduleFrame } from '@/utils/frameLoop'
 import { useSettingsStore } from '@/stores/settings'
 import { useI18n } from 'vue-i18n'
+import { visibleLyricTranslation } from '@/modules/lyrics/lyricsFormat'
 import { writeText } from '@tauri-apps/plugin-clipboard-manager'
 import ContextMenu from '@/components/ui/ContextMenu.vue'
+import LyricShareDialog from '@/components/LyricShareDialog.vue'
 import {
   createContextMenuItem,
   type ContextMenuActionItem,
@@ -30,15 +33,24 @@ const props = withDefaults(defineProps<{
   isPlaying: boolean
   lyricOffsetMs?: number
   seekSeq?: number
+  /** Suspended while a full-screen overlay covers the lyrics in low performance mode
+   * (the per-word masks and inline blur are recomputed every frame) */
+  suspended?: boolean
 }>(), {
   currentTimeMs: 0,
   previewTimeMs: null,
   isPlaying: false,
   lyricOffsetMs: undefined,
   seekSeq: 0,
+  suspended: false,
 })
 
 const emit = defineEmits<{ seek: [timeMs: number] }>()
+
+/** 歌词分享弹窗：右键菜单打开，勾选要导出的句子 */
+const shareOpen = ref(false)
+const shareLineIndex = ref(-1)
+const shareLines = computed(() => props.lyrics.map((line, index) => ({ index, text: displayText(line) })))
 
 const hostRef = ref<HTMLDivElement>()
 const isLayoutReady = ref(false)
@@ -83,7 +95,9 @@ type RichPlayerLyricWord = PlayerLyricWord & {
   ruby?: PlayerRubyWord[]
 }
 
-const hasTranslation = computed(() => props.lyrics.some(line => line.translation?.trim()))
+const translations = computed(() => props.lyrics.map(visibleLyricTranslation))
+const hasTranslation = computed(() => translations.value.some(Boolean))
+const translationNotice = ref(false)
 const hasRomanization = computed(() => props.lyrics.some(line =>
   line.roman?.trim() || line.words?.some(word => (word as RichPlayerLyricWord).romanWord?.trim()),
 ))
@@ -103,6 +117,33 @@ const effectiveTimeMs = computed(() => {
 })
 
 const amllTimeMs = computed(() => Math.max(0, effectiveTimeMs.value + offsetMs.value))
+
+const currentLineIndex = computed(() => {
+  let left = 0, right = props.lyrics.length
+  while (left < right) {
+    const middle = (left + right) >>> 1
+    if (props.lyrics[middle]!.startMs <= amllTimeMs.value) left = middle + 1
+    else right = middle
+  }
+  return left - 1
+})
+const currentTranslation = computed(() => {
+  const index = currentLineIndex.value
+  const line = props.lyrics[index]
+  if (!line || (line.durationMs > 0 && amllTimeMs.value >= line.startMs + line.durationMs)) return ''
+  return translations.value[index] ?? ''
+})
+
+/** Toggle source-provided translations and explain gaps without changing playback time. */
+function toggleTranslation() {
+  settings.showTranslation = !settings.showTranslation
+  translationNotice.value = settings.showTranslation && !currentTranslation.value
+}
+
+watch([currentLineIndex, () => props.lyrics], () => {
+  translationNotice.value = false
+})
+watch(() => settings.showTranslation, enabled => { if (!enabled) translationNotice.value = false })
 
 function displayText(line: PlayerLyricLine): string {
   if (line.text) return line.text
@@ -259,6 +300,7 @@ function buildTimedWords(line: PlayerLyricLine): AmllLyricWord[] {
     .map(toAmllWord)
 }
 
+/** Adapt one lyric row to AMLL timing and the effective translation/romanization preferences. */
 function toAmllLine(line: PlayerLyricLine): AmllLyricLine {
   const startTime = Math.max(0, Math.round(line.startMs))
   const fallbackEndTime = Math.max(startTime + 1, Math.round(line.startMs + line.durationMs))
@@ -279,7 +321,7 @@ function toAmllLine(line: PlayerLyricLine): AmllLyricLine {
 
   return {
     words,
-    translatedLyric: settings.showTranslation ? (line.translation || '') : '',
+    translatedLyric: settings.showTranslation ? visibleLyricTranslation(line) : '',
     romanLyric: settings.showRomanization ? (line.roman || '') : '',
     startTime,
     endTime,
@@ -405,6 +447,7 @@ const lyricMenuItems = computed<ContextMenuItem[]>(() => {
   const items: ContextMenuItem[] = lyricMenu.value.index >= 0 ? [
     createContextMenuItem(t('lyrics.copy_line'), { id: 'copy-line', icon: 'content_copy' }),
     createContextMenuItem(t('lyrics.copy_all'), { id: 'copy-all', icon: 'copy_all' }),
+    createContextMenuItem(t('lyrics.select_lines'), { id: 'select-lines', icon: 'checklist' }),
     createContextMenuItem(t('lyrics.seek_here'), { id: 'seek', icon: 'play_arrow' }),
   ] : []
   if (hasTranslation.value || hasRomanization.value) {
@@ -418,6 +461,11 @@ const lyricMenuItems = computed<ContextMenuItem[]>(() => {
 async function handleLyricMenuClick(item: ContextMenuActionItem): Promise<void> {
   const index = lyricMenu.value.index
   lyricMenu.value.show = false
+  if (item.id === 'select-lines') {
+    shareLineIndex.value = index
+    shareOpen.value = true
+    return
+  }
   if (item.id === 'hide-display-controls') {
     displayControlsHidden.value = true
     return
@@ -477,9 +525,11 @@ function onVisibilityChange(): void {
 }
 
 function startFrameLoop(): void {
-  if (rafId || document.hidden) return
+  if (rafId || document.hidden || props.suspended) return
   lastFrameAt = performance.now()
-  rafId = requestAnimationFrame(function tick(now) {
+  // Runs on the shared frame loop: the same rAF as the background shader and the waveform,
+  // which is where low performance mode caps the frame rate
+  rafId = scheduleFrame(function tick(now) {
     const delta = Math.min(64, now - lastFrameAt)
     lastFrameAt = now
     if (needsForegroundSync) {
@@ -492,13 +542,20 @@ function startFrameLoop(): void {
       rafId = 0
       return
     }
-    rafId = requestAnimationFrame(tick)
+    rafId = scheduleFrame(tick)
   })
 }
 
+// Restart after the overlay closes and let the first frame resync the position, which may
+// have moved far ahead while the loop was suspended
+watch(() => props.suspended, suspended => {
+  if (suspended) stopFrameLoop()
+  else syncForeground()
+})
+
 function stopFrameLoop(): void {
   if (!rafId) return
-  cancelAnimationFrame(rafId)
+  cancelFrame(rafId)
   rafId = 0
 }
 
@@ -722,7 +779,12 @@ watch([() => settings.lyricBlur, () => settings.lyricBlurAmount], () => {
   syncLyricOptions()
 })
 
-watch([() => settings.lyricFontScale, () => settings.lyricFontFamily], () => {
+watch([
+  () => settings.lyricFontScale,
+  () => settings.lyricTranslationScale,
+  () => settings.lyricFontFamily,
+  () => settings.uiScale,
+], () => {
   scheduleLayoutSync(false, true)
 }, { flush: 'post' })
 
@@ -744,7 +806,10 @@ watch(() => props.seekSeq, (seq, oldSeq) => {
 </script>
 
 <template>
-  <div class="lyrics-view" :style="{ '--lyric-font-scale': settings.lyricFontScale }">
+  <div class="lyrics-view" :style="{
+    '--lyric-font-scale': settings.lyricFontScale,
+    '--lyric-translation-scale': settings.lyricTranslationScale,
+  }">
     <div
       ref="hostRef"
       class="lyrics-scroll"
@@ -768,13 +833,13 @@ watch(() => props.seekSeq, (seq, oldSeq) => {
         type="button"
         class="lyrics-display-toggle"
         :class="{ active: settings.showTranslation }"
-        :title="t('settings.show_translation')"
+        :title="t('lyrics.translation_source_hint')"
         :aria-label="t('settings.show_translation')"
         :aria-pressed="settings.showTranslation"
-        @click.stop="settings.showTranslation = !settings.showTranslation"
+        @click.stop="toggleTranslation"
       >
         <span class="material-symbols-rounded" aria-hidden="true">translate</span>
-        <span>{{ t('player.lyrics_editor_translation') }}</span>
+        <span>{{ t(settings.showTranslation ? 'lyrics.hide_translation' : 'settings.show_translation') }}</span>
       </button>
       <button
         v-if="hasRomanization"
@@ -789,6 +854,7 @@ watch(() => props.seekSeq, (seq, oldSeq) => {
         <span class="material-symbols-rounded" aria-hidden="true">record_voice_over</span>
         <span>{{ t('player.lyrics_editor_romanization') }}</span>
       </button>
+      <span v-if="translationNotice" class="translation-notice" role="status">{{ t('lyrics.translation_unavailable_here') }}</span>
     </div>
   </div>
   <ContextMenu
@@ -799,11 +865,17 @@ watch(() => props.seekSeq, (seq, oldSeq) => {
     @update:open="lyricMenu.show = $event"
     @click="handleLyricMenuClick"
   />
+  <LyricShareDialog
+    v-model:open="shareOpen"
+    :lines="shareLines"
+    :initial-index="shareLineIndex"
+  />
 </template>
 
 <style scoped lang="scss">
 .lyrics-view {
-  --amll-lp-font-size: calc(max(max(5vh, 2.5vw), 12px) * var(--lyric-font-scale, 1));
+  // 页面缩放会缩小 CSS 视口，补回比例以让歌词跟随整页一起缩放
+  --amll-lp-font-size: calc(max(5vh * var(--app-ui-scale, 1), 2.5vw * var(--app-ui-scale, 1), 12px) * var(--lyric-font-scale, 1));
   position: relative;
   width: 100%;
   height: 100%;
@@ -830,6 +902,22 @@ watch(() => props.seekSeq, (seq, oldSeq) => {
   pointer-events: none;
   transform: translate(-50%, 6px);
   transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.translation-notice {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: min(340px, 70vw);
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: rgba(20, 20, 24, 0.9);
+  color: white;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
 }
 
 .lyrics-view:hover .lyrics-display-controls {
@@ -952,6 +1040,8 @@ watch(() => props.seekSeq, (seq, oldSeq) => {
 :deep(.amll-lyric-player [class*="lyricMainLine"]) {
   font-weight: 850;
   font-variation-settings: 'wght' 850;
+  // 跟随字体度量，避免固定行高让词遮罩裁掉字母下伸部
+  line-height: normal;
   letter-spacing: -0.025em;
   overflow-wrap: anywhere;
 }
@@ -967,6 +1057,11 @@ watch(() => props.seekSeq, (seq, oldSeq) => {
   font-weight: 650;
   font-variation-settings: 'wght' 650;
   overflow-wrap: anywhere;
+}
+
+// AMLL 的第二个子节点固定是翻译，第三个音译节点保留原字号
+:deep(.amll-lyric-player [class*="lyricSubLine"]:nth-child(2)) {
+  font-size: calc(max(0.5em, 10px) * var(--lyric-translation-scale, 1));
 }
 
 </style>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { writeClipboardText } from '@/utils/clipboard'
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { isTauri } from '@tauri-apps/api/core'
@@ -171,7 +172,7 @@ async function importPresetFile(event: Event) {
 }
 async function copyShareCode() {
   try {
-    await navigator.clipboard.writeText(player.exportAudioEffectsPreset(currentUserPreset.value?.id))
+    await writeClipboardText(player.exportAudioEffectsPreset(currentUserPreset.value?.id))
     copied.value = true
     clearTimeout(copiedTimer)
     copiedTimer = setTimeout(() => { copied.value = false }, 2000)
@@ -191,7 +192,6 @@ async function readAutoEqFile(event: Event) {
 
 <template>
   <div ref="root" class="audio-effects-settings">
-    <p class="effects-intro">{{ t('settings.audio_effects_desc') }}</p>
     <div class="setting-card effects-master">
       <div class="effects-heading">
         <div class="setting-info"><div class="setting-title">{{ t('dsp.enabled') }}</div><div class="setting-desc">{{ t('dsp.enabled_help') }}</div></div>
@@ -359,7 +359,6 @@ async function readAutoEqFile(event: Event) {
 
 <style scoped lang="scss">
 .audio-effects-settings { min-width: 0; }
-.effects-intro { margin: 0 4px 14px; color: var(--md-on-surface-variant); font-size: 12px; line-height: 1.6; }
 .setting-card { padding: 16px; border-radius: var(--radius-md); background: var(--md-surface-container); }
 .setting-title { font-size: 14px; font-weight: 500; }
 .setting-desc { margin: 4px 0 0; color: var(--md-on-surface-variant); font-size: 12px; line-height: 1.6; }

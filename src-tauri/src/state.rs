@@ -68,6 +68,7 @@ pub struct AppState {
     /// 三平台登录状态
     pub auth: Mutex<AuthState>,
     pub qq_auth_generation: AtomicU64,
+    pub auth_operations: Mutex<crate::auth::coordination::AuthOperations>,
     /// 一起听会话
     pub lt_session: Mutex<LtSession>,
     /// 后台下载任务
@@ -125,6 +126,7 @@ impl AppState {
             cookie_jar: jar,
             auth: Mutex::new(AuthState::default()),
             qq_auth_generation: AtomicU64::new(0),
+            auth_operations: Mutex::new(crate::auth::coordination::AuthOperations::default()),
             lt_session: Mutex::new(LtSession::new()),
             download_tasks: Mutex::new(HashMap::new()),
             youtube_refresh: Mutex::new(crate::api::youtube::refresh::YouTubeRefreshGate::default()),
@@ -191,6 +193,12 @@ impl AppState {
         )
     }
 
+    pub fn subtitle_transport(&self) -> crate::api::transport::FallbackHttp {
+        crate::api::transport::FallbackHttp::with_fallback(
+            &self.sync_http(), &self.sync_alt_http.read().clone(), "bilibili_subtitle",
+        )
+    }
+
     /// 代理设置与 http() 相反的备用客户端
     pub fn alt_http(&self) -> reqwest::Client {
         self.alt_http.read().clone()
@@ -205,6 +213,16 @@ impl AppState {
             &self.alt_http(),
             target,
         )
+    }
+
+    pub fn auth_http_clients(&self, jar: Arc<reqwest::cookie::Jar>) -> crate::error::AppResult<(reqwest::Client, reqwest::Client)> {
+        let bypass_proxy = self.bypasses_system_proxy();
+        let build = |bypass_proxy: bool| {
+            let mut builder = api_client_builder(jar.clone());
+            if bypass_proxy { builder = builder.no_proxy(); }
+            builder.build()
+        };
+        Ok((build(bypass_proxy)?, build(!bypass_proxy)?))
     }
 
     pub fn netease(&self) -> crate::api::netease::client::NeteaseClient {

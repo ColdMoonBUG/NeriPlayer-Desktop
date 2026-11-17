@@ -251,6 +251,11 @@ fn advance_playback_request(state: &State<'_, AppState>) -> u64 {
     state.playback_generation.fetch_add(1, Ordering::AcqRel) + 1
 }
 
+// Tauri 命令的参数与前端 invoke 字段一一对应；把布尔项打包成结构体会改变 IPC
+// 形状，并破坏与 Android 端播放请求字段的对齐。保持扁平签名。
+// Tauri command parameters map 1:1 to frontend invoke fields; grouping them would
+// change the IPC shape and break alignment with Android's playback request fields.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn begin_playback_request(
     request_generation: u64,
@@ -1114,6 +1119,35 @@ pub async fn list_audio_output_devices() -> AppResult<Vec<crate::audio::player::
 
 #[tauri::command]
 pub async fn set_audio_output_device(name: Option<String>, state: State<'_, AppState>) -> AppResult<()> {
+    // Linux sound server sinks: playback already goes through the server's default
+    // node, so selecting a sink means making it the server default and reopening
+    // that stream at the current position.
+    #[cfg(target_os = "linux")]
+    if let Some(sink) = name.clone() {
+        // pactl is blocking and has no timeout; keep both the lookup and the
+        // set-default call off the Tokio worker thread.
+        let pactl_sink = sink.clone();
+        let switched = tokio::task::spawn_blocking(move || {
+            let known = crate::audio::system_sinks::list()
+                .is_some_and(|sinks| sinks.iter().any(|item| item.name == pactl_sink));
+            if known {
+                crate::audio::system_sinks::set_default(&pactl_sink).map(|_| true)
+            } else {
+                Ok(false)
+            }
+        })
+        .await
+        .map_err(|error| AppError::Other(error.to_string()))?
+        .map_err(AppError::Audio)?;
+        if switched {
+            // The sink is now the server default, but the ALSA profile name is still
+            // `default`; force a rebuild so the running stream follows the new route.
+            let request = state.player.lock().request_output_device_force(None, Some(sink))?;
+            return tokio::task::spawn_blocking(move || request.wait())
+                .await
+                .map_err(|error| AppError::Other(error.to_string()))?;
+        }
+    }
     let request = state.player.lock().request_output_device(name)?;
     tokio::task::spawn_blocking(move || request.wait())
         .await.map_err(|error| AppError::Other(error.to_string()))?

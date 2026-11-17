@@ -76,6 +76,7 @@ export function installDesktopLyricsBridge(options: DesktopLyricsBridgeOptions =
     offset: number
     styleKey: string
     accent: string | null
+    locale: string
     anchor: PlaybackAnchor
   } | null = null
 
@@ -124,9 +125,13 @@ export function installDesktopLyricsBridge(options: DesktopLyricsBridgeOptions =
     const currentStyle = style()
     const styleKey = JSON.stringify(currentStyle)
     const accent = currentStyle.theme === 'accent' ? readAccent() : null
+    const locale = settings.locale
     const index = desktopLyricsLineIndex(lyrics.lines, positionMs, offset)
     const trackId = track?.id ?? ''
-    const anchor: PlaybackAnchor = { positionMs, anchorAt: now, rate, isPlaying: player.isPlaying }
+    const anchor: PlaybackAnchor = {
+      positionMs, anchorAt: now, rate, isPlaying: player.isPlaying,
+      clockRunning: player.isPlaybackClockAdvancing(),
+    }
     const previous = published
     const due = force
       || !previous
@@ -135,21 +140,25 @@ export function installDesktopLyricsBridge(options: DesktopLyricsBridgeOptions =
       || previous.offset !== offset
       || previous.styleKey !== styleKey
       || previous.accent !== accent
+      || previous.locale !== locale
       || previous.anchor.isPlaying !== anchor.isPlaying
+      || previous.anchor.clockRunning !== anchor.clockRunning
       || previous.anchor.rate !== anchor.rate
       || Math.abs(anchoredPositionMs(previous.anchor, now) - positionMs) > DRIFT_TOLERANCE_MS
       || now - previous.anchor.anchorAt > ANCHOR_REFRESH_MS
     if (!due) return
-    published = { trackId, index, offset, styleKey, accent, anchor }
+    published = { trackId, index, offset, styleKey, accent, locale, anchor }
     pending = { sessionId, frame: buildDesktopLyricsFrame({
       track,
       lines: lyrics.lines,
       positionMs,
       lyricOffsetMs: offset,
       isPlaying: anchor.isPlaying,
+      clockRunning: anchor.clockRunning,
       rate,
       now,
       accent,
+      locale,
       style: currentStyle,
     }) }
     void drain()

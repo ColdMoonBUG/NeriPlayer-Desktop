@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises'
 import * as vue from 'vue'
 import { compileScript, parse } from 'vue/compiler-sfc'
 import ts from 'typescript'
+import { format } from './bili-subtitle-test-loader.mjs'
 
 const source = await readFile(new URL('../src/components/LyricsView.vue', import.meta.url), 'utf8')
 const script = compileScript(parse(source).descriptor, {
@@ -59,6 +60,10 @@ const richLyrics = [{
 async function mount({ lyrics = richLyrics, settingOverrides = {} } = {}) {
   let now = 1000, frameId = 0
   const frames = new Map()
+  // The component now uses the shared frame loop (@/utils/frameLoop); wire it to the same
+  // fake frame table here
+  const scheduleFrame = callback => { const id = ++frameId; frames.set(id, callback); return id }
+  const cancelFrame = id => frames.delete(id)
   const document = Object.assign(new ListenerTarget(), { hidden: false, fonts: { status: 'loaded' } })
   const window = new ListenerTarget()
   const players = []
@@ -67,6 +72,7 @@ async function mount({ lyrics = richLyrics, settingOverrides = {} } = {}) {
     currentLyricGroups = []
     lyricGroupSize = new WeakMap()
     times = []
+    layoutCalls = 0
     element = element('amll-player')
     constructor() { super(); players.push(this) }
     setLyricLines(lines, time) { this.lines = lines; this.initialTime = time }
@@ -78,7 +84,7 @@ async function mount({ lyrics = richLyrics, settingOverrides = {} } = {}) {
     setBlurAmount() {}
     setWordFadeWidth() {}
     update() {}
-    calcLayout() {}
+    calcLayout() { this.layoutCalls++ }
     resetScroll() {}
     resume() {}
     pause() {}
@@ -86,12 +92,15 @@ async function mount({ lyrics = richLyrics, settingOverrides = {} } = {}) {
   }
   const settings = vue.reactive({
     advancedLyrics: true, showTranslation: false, showRomanization: false,
-    lyricBlur: true, lyricBlurAmount: 1, lyricFontScale: 1, lyricEmphasisThresholdMs: 1000,
+    lyricBlur: true, lyricBlurAmount: 1, lyricFontScale: 1, lyricTranslationScale: 1,
+    uiScale: 100, lyricEmphasisThresholdMs: 1000,
     ...settingOverrides,
   })
   const clipboardWrites = []
   const menu = {}
+  const share = {}
   const dependencies = {
+    '@/modules/lyrics/lyricsFormat': format,
     vue,
     '@amll-core/lyric-player/dom/index.ts': { DomLyricPlayer: FakeDomLyricPlayer },
     '@/stores/settings': { useSettingsStore: () => settings },
@@ -106,7 +115,12 @@ async function mount({ lyrics = richLyrics, settingOverrides = {} } = {}) {
         return () => null
       },
     } },
+    '@/utils/frameLoop': { scheduleFrame, cancelFrame },
     '@/utils/contextMenu': { createContextMenuItem: (label, options) => ({ label, ...options }) },
+    '@/components/LyricShareDialog.vue': { default: {
+      props: ['open', 'lines', 'initialIndex'], emits: ['update:open'], inheritAttrs: false,
+      setup(props) { share.props = props; return () => null },
+    } },
   }
   const component = new Function(
     'require', 'exports', 'document', 'window', 'performance', 'requestAnimationFrame',
@@ -114,11 +128,7 @@ async function mount({ lyrics = richLyrics, settingOverrides = {} } = {}) {
   )(name => {
     assert.ok(name in dependencies, `unexpected dependency: ${name}`)
     return dependencies[name]
-  }, {}, document, window, { now: () => now }, callback => {
-    const id = ++frameId
-    frames.set(id, callback)
-    return id
-  }, id => frames.delete(id), undefined)
+  }, {}, document, window, { now: () => now }, scheduleFrame, cancelFrame, undefined)
   const clock = vue.ref(4200)
   const seekEvents = []
   const props = vue.reactive({ lyrics, currentTimeMs: () => clock.value, isPlaying: true, lyricOffsetMs: 700 })
@@ -156,7 +166,7 @@ async function mount({ lyrics = richLyrics, settingOverrides = {} } = {}) {
   }
   return {
     settings, player, props, clock, seekEvents, settle, button, findButton, findControls,
-    host, menu, clipboardWrites,
+    host, menu, share, clipboardWrites, find,
     async controlsContextMenu() {
       const controls = findControls()
       assert.ok(controls, 'available controls must exist before hiding')
@@ -249,6 +259,7 @@ function assertLyricMenu(menu, x, y, displayItem = null) {
   assertMenu(menu, x, y, [
     { id: 'copy-line', label: 'lyrics.copy_line' },
     { id: 'copy-all', label: 'lyrics.copy_all' },
+    { id: 'select-lines', label: 'lyrics.select_lines' },
     { id: 'seek', label: 'lyrics.seek_here' },
     ...(displayItem ? [displayItem] : []),
   ])
@@ -260,6 +271,26 @@ async function test(name, run) {
   try { await run(); console.log(`PASS ${name}`) }
   catch (error) { failed++; console.error(`FAIL ${name}: ${error.stack}`) }
 }
+
+await test('translation sizing reflows paused lyrics independently and preserves the playback position', async () => {
+  const r = await mount({ settingOverrides: { showTranslation: true, showRomanization: true } })
+  try {
+    r.props.isPlaying = false
+    await r.settle()
+    const view = r.find(node => node.props?.class === 'lyrics-view')
+    assert.equal(view.props.style['--lyric-translation-scale'], 1)
+    const lines = r.player.lines
+    const layoutCalls = r.player.layoutCalls
+    r.settings.lyricTranslationScale = 2
+    await r.settle()
+    assert.equal(view.props.style['--lyric-translation-scale'], 2)
+    assert.equal(view.props.style['--lyric-font-scale'], 1, 'translation sizing must leave main text sizing unchanged')
+    assert.ok(r.player.layoutCalls > layoutCalls, 'paused lyrics must reflow when translation size changes')
+    assert.equal(r.player.lines, lines, 'sizing must not rebuild the lyric timeline')
+    assertAuxiliaryLyrics(r.player, 'Translated lyric', 'ge ci', ['ge', 'ci'])
+    r.assertPlaybackUnchanged()
+  } finally { r.stop() }
+})
 
 await test('display buttons independently toggle translation and line and word romanization', async () => {
   const r = await mount()
@@ -283,6 +314,33 @@ await test('display buttons independently toggle translation and line and word r
     assertAuxiliaryLyrics(r.player, '', '', ['', ''])
     r.assertPressed(false, false)
     r.assertPlaybackUnchanged()
+  } finally { r.stop() }
+})
+
+await test('enabling translations explains missing segments and clears the notice on a translated line or song switch', async () => {
+  const r = await mount({ lyrics: [
+    { startMs: 0, durationMs: 6000, text: 'Original only', words: [] },
+    { startMs: 6000, durationMs: 2000, text: 'Bilingual', translation: '双语', words: [] },
+  ] })
+  const notice = () => r.find(node => node.props?.role === 'status')
+  try {
+    r.props.isPlaying = false; await r.settle()
+    await r.click('show_translation')
+    assert.ok(notice())
+    assert.equal(r.player.lines[0].translatedLyric, '')
+    assert.equal(r.player.lines[1].translatedLyric, '双语')
+    r.assertPlaybackUnchanged()
+    await r.click('show_translation'); assert.equal(notice(), undefined)
+    await r.click('show_translation'); assert.ok(notice())
+    r.clock.value = 6000; await r.settle(); assert.equal(notice(), undefined)
+    await r.click('show_translation'); await r.click('show_translation')
+    assert.equal(notice(), undefined)
+    r.clock.value = 9000; await r.settle()
+    await r.click('show_translation'); await r.click('show_translation'); assert.ok(notice())
+    r.props.lyrics = [{ startMs: 0, durationMs: 30000, text: 'New song', words: [] }]
+    await r.settle()
+    assert.equal(notice(), undefined)
+    r.assertAvailable(false, false)
   } finally { r.stop() }
 })
 
@@ -314,6 +372,9 @@ const wordRomanLine = {
 
 for (const [name, lyrics, translation, romanization] of [
   ['translation only', [{ ...plainLine, translation: ' Translation ' }], true, false],
+  ['duplicate translation', [{ ...plainLine, translation: ' PLAIN, lyric! ' }], false, false],
+  ['punctuation placeholder', [{ ...plainLine, translation: ' / … ♪ ' }], false, false],
+  ['duplicate word-only translation', [{ ...wordRomanLine, text: '', translation: '歌词' }], false, true],
   ['line romanization only', [{ ...plainLine, roman: ' Romanization ' }], false, true],
   ['word romanization only', [wordRomanLine], false, true],
   ['no auxiliary lyrics', [plainLine], false, false],
@@ -482,6 +543,22 @@ await test('host context menus restore hidden controls only when the show action
     r.assertAvailable(true, true)
     assert.equal(r.menu.props.open, false)
     r.assertPlaybackUnchanged()
+  } finally { r.stop() }
+})
+
+await test('select-lines menu action opens the share dialog on the right-clicked line only', async () => {
+  const r = await mount({ lyrics: [plainLine, plainLine, plainLine] })
+  try {
+    assert.equal(r.share.props.open, false, 'dialog stays closed until the action is chosen')
+    await r.lineContextMenu({ lineIndex: 1 })
+    assertLyricMenu(r.menu, 240, 320)
+    await r.selectMenu('select-lines')
+    assert.equal(r.share.props.open, true)
+    assert.equal(r.share.props.initialIndex, 1)
+    assert.deepEqual(r.share.props.lines.map(line => line.index), [0, 1, 2])
+    assert.deepEqual(r.clipboardWrites, [], 'opening the picker must not touch the clipboard')
+    assert.deepEqual(r.seekEvents, [], 'opening the picker must not seek')
+    assert.equal(r.menu.props.open, false, 'the lyric menu closes after the action')
   } finally { r.stop() }
 })
 

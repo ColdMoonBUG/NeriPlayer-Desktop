@@ -2,20 +2,31 @@
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { hyperBackgroundVertexShader, hyperBackgroundFragmentShader } from '@/shaders/hyperBackground'
 import { createLogger } from '@/utils/logger'
+import { cancelFrame, scheduleFrame } from '@/utils/frameLoop'
 
 const log = createLogger('hyper-background')
 
 const props = withDefaults(defineProps<{
-  musicLevel?: number
-  beatImpulse?: number
+  /** Readers are evaluated inside the frame loop only, so the parent does not re-render
+   * every 200ms when the level or beat impulse changes */
+  musicLevel?: number | (() => number)
+  beatImpulse?: number | (() => number)
   colors?: [number[], number[], number[], number[], number[]]
   isDark?: boolean
   lightOffset?: number
   saturateOffset?: number
   /** 暂停时律动和调色过渡收敛后停表，画面停在最后一帧 */
   playing?: boolean
+  /** Low performance mode: no quality adaptation, pinned to the lowest internal
+   * resolution tier (the shared frame loop caps the frame rate) */
+  lowPerformance?: boolean
+  /** Suspended while a full-screen overlay covers the canvas in low performance mode:
+   * the picture stays on its last frame and continues once the overlay closes */
+  suspended?: boolean
 }>(), {
   playing: true,
+  lowPerformance: false,
+  suspended: false,
   musicLevel: 0,
   beatImpulse: 0,
   colors: () => [
@@ -60,7 +71,7 @@ const QUALITY_FPS_TIERS = [60, 30, 20]
 let scaleTier = 0
 let fpsTier = 0
 let lastQualityCheckAt = 0
-let lastRenderedAt = 0
+let nextRenderAt = 0
 let lastTickAt = 0
 let avgFrameInterval = 0
 let healthyChecks = 0
@@ -68,6 +79,12 @@ let qualityDowns = 0
 
 function rendererIsSoftware(renderer: string): boolean {
   return /llvmpipe|softpipe|swiftshader|software/i.test(renderer)
+}
+
+/** Level and beat impulse accept either a value or a reader; the reader keeps the parent
+ * from re-rendering on every 200ms event */
+function readLevel(value: number | (() => number)): number {
+  return typeof value === 'function' ? value() : value
 }
 
 function sampleFrameInterval(nowMs: number): void {
@@ -78,6 +95,15 @@ function sampleFrameInterval(nowMs: number): void {
 }
 
 function adjustQuality(nowMs: number): void {
+  // Low performance mode skips adaptation entirely and pins the lowest tier, so the
+  // global frame cap and the tier gate cannot stack into two layers of throttling
+  if (props.lowPerformance) {
+    scaleTier = QUALITY_SCALES.length - 1
+    // The shared frame loop already caps to 30fps; leaving an adapted 20fps tier here
+    // would stack and render at ~15fps.
+    fpsTier = 0
+    return
+  }
   if (nowMs - lastQualityCheckAt < QUALITY_ADJUST_INTERVAL_MS) return
   lastQualityCheckAt = nowMs
   if (!avgFrameInterval) return
@@ -275,20 +301,29 @@ function initGL() {
   targetSaturate = props.saturateOffset
 
   lastFrameMs = performance.now()
+  nextRenderAt = 0
   render()
 }
 
-function render() {
+// Runs on the shared frame loop: the same rAF as the lyrics and the waveform, which is
+// where low performance mode caps the frame rate for all three
+function render(nowMs = performance.now()) {
   if (!gl || !program) return
-  const nowMs = performance.now()
+  // In low performance mode the overlay covers the whole canvas: stop the loop and let the
+  // watcher start it again once the overlay closes
+  if (props.suspended || document.hidden) {
+    animFrame = 0
+    return
+  }
   sampleFrameInterval(nowMs)
   adjustQuality(nowMs)
 
-  // 帧率档位低于满速时按目标帧间隔跳过绘制（保留 rAF 保证恢复及时）；
+  // 每档都遵守渲染预算，避免高刷屏重复绘制；累积截止时间保留余量，避免 144Hz 被量化成 48fps
   // 留 2ms 余量吸收 vsync 抖动，否则 30fps 档会被量化成 20fps
   const qualityFps = QUALITY_FPS_TIERS[fpsTier]
-  if (fpsTier > 0 && nowMs - lastRenderedAt < 1000 / qualityFps - 2) {
-    animFrame = requestAnimationFrame(render)
+  const qualityIntervalMs = 1000 / qualityFps
+  if (nowMs < nextRenderAt - 2) {
+    animFrame = scheduleFrame(render)
     return
   }
 
@@ -337,8 +372,8 @@ function render() {
   gl.uniform1f(uTime, shaderTime)
 
   // 音乐律动第二级非对称平滑（帧率无关）
-  const targetLevel = props.playing ? Math.min(Math.max(props.musicLevel, 0), 1) : 0
-  const targetBeat = props.playing ? Math.min(Math.max(props.beatImpulse * BEAT_SCALE, 0), 1) : 0
+  const targetLevel = props.playing ? Math.min(Math.max(readLevel(props.musicLevel), 0), 1) : 0
+  const targetBeat = props.playing ? Math.min(Math.max(readLevel(props.beatImpulse) * BEAT_SCALE, 0), 1) : 0
   const levelRate = frameIndependentRate(
     targetLevel > smoothLevel ? LEVEL_ATTACK : LEVEL_RELEASE, dt)
   const beatRate = frameIndependentRate(
@@ -358,7 +393,9 @@ function render() {
   gl.uniform1f(uSaturateOffset, smoothSaturateOffset)
 
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
-  lastRenderedAt = nowMs
+  nextRenderAt = nextRenderAt > 0 && nowMs - nextRenderAt < qualityIntervalMs
+    ? nextRenderAt + qualityIntervalMs
+    : nowMs + qualityIntervalMs
 
   const settled = !transitioning
     && smoothLevel < SETTLED_EPSILON
@@ -367,22 +404,23 @@ function render() {
     animFrame = 0
     return
   }
-  animFrame = requestAnimationFrame(render)
+  animFrame = scheduleFrame(render)
 }
 
 /// 停表后由播放态、调色板、律动、尺寸变化重新拉起；窗口不可见时不拉
 function wake() {
-  if (!gl || !program || animFrame || document.hidden) return
+  if (!gl || !program || animFrame || document.hidden || props.suspended) return
   // 重置帧时钟，避免 dt 巨大导致平滑量跳变
   lastFrameMs = performance.now()
   lastTickAt = 0
-  animFrame = requestAnimationFrame(render)
+  nextRenderAt = 0
+  animFrame = scheduleFrame(render)
 }
 
 // 窗口不可见时暂停 rAF（全屏 shader 是主要功耗项），可见时恢复
 function handleVisibilityChange() {
   if (document.hidden) {
-    cancelAnimationFrame(animFrame)
+    cancelFrame(animFrame)
     animFrame = 0
   } else {
     wake()
@@ -392,7 +430,7 @@ function handleVisibilityChange() {
 // 睡眠唤醒、显卡驱动重置会丢上下文；不接管的话背景会一直是空白
 function handleContextLost(event: Event) {
   event.preventDefault()
-  cancelAnimationFrame(animFrame)
+  cancelFrame(animFrame)
   animFrame = 0
   program = null
   quadBuffer = null
@@ -403,7 +441,7 @@ function handleContextRestored() {
 }
 
 watch(
-  () => [props.playing, props.colors, props.isDark, props.lightOffset, props.saturateOffset],
+  () => [props.playing, props.suspended, props.colors, props.isDark, props.lightOffset, props.saturateOffset],
   wake,
 )
 
@@ -424,7 +462,7 @@ onUnmounted(() => {
   canvas.value?.removeEventListener('webglcontextrestored', handleContextRestored)
   resizeObserver?.disconnect()
   resizeObserver = null
-  cancelAnimationFrame(animFrame)
+  cancelFrame(animFrame)
   animFrame = 0
   // 释放 WebGL 资源并主动丢弃 context，防止反复开关正在播放页耗尽 context 配额
   if (gl) {

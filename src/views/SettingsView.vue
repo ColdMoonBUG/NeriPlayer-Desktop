@@ -5,6 +5,8 @@ import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { SUPPORTED_LOCALES, setLocaleWithTransition } from '@/i18n'
 import DesktopLyricsStage from '@/components/desktopLyrics/DesktopLyricsStage.vue'
+import BiliSubtitleSettings from '@/components/BiliSubtitleSettings.vue'
+import { invalidateBiliSubtitleCache } from '@/modules/lyrics/biliSubtitleLoader'
 import { closeDesktopLyricsWindow, desktopLyricsOpen, openDesktopLyricsWindow } from '@/modules/desktopLyrics/bridge'
 import type { DesktopLyricsFrameLine } from '@/modules/desktopLyrics/frame'
 import {
@@ -48,6 +50,9 @@ import {
   LYRIC_FONT_SCALE_MAX,
   LYRIC_FONT_SCALE_MIN,
   LYRIC_FONT_SCALE_STEP,
+  LYRIC_TRANSLATION_SCALE_MIN,
+  LYRIC_TRANSLATION_SCALE_MAX,
+  LYRIC_TRANSLATION_SCALE_STEP,
   normalizeLyricDefaultOffset,
   normalizeLyricEmphasisThresholdMs,
   MAX_COVER_BLUR_AMOUNT,
@@ -93,6 +98,10 @@ import { isMacPlatform } from '@/modules/shortcuts/platform'
 import { filterAndRank, searchValue } from '@/modules/search/textMatcher'
 import { useEscapeClose } from '@/composables/useEscapeClose'
 import { createLogger } from '@/utils/logger'
+import { isLinuxDesktop } from '@/utils/linuxNotice'
+import M3Dialog from '@/components/ui/M3Dialog.vue'
+import CookieLoginDialog from '@/components/settings/CookieLoginDialog.vue'
+import ConfigTransferDialogs from '@/components/settings/ConfigTransferDialogs.vue'
 
 const log = createLogger('settings-view')
 
@@ -108,14 +117,14 @@ const toast = useToastStore()
 const {
   darkMode, themeColor: selectedColor, coverStyle, appFontFamily, lyricFontFamily, uiScale,
   defaultScreen, closeToTray, showMenuBarLyrics, showCoverBadge, showNowPlayingTitle, showToolbarDock,
-  showQualitySwitch, lyricFontScale,
+  showQualitySwitch, lyricFontScale, lyricTranslationScale,
   normalizeVolume, multichannelDrc, volumeBalance, audioOutputDevice,
   fadeIn, fadeInDuration, fadeOutDuration,
   crossfadeNext, crossfadeInDuration, crossfadeOutDuration,
-  keepProgress, rememberLongFormProgress, keepPlaybackMode,
+  keepProgress, rememberLongFormProgress, keepPlaybackMode, doubleClickPlay,
   showTranslation, showRomanization, lyricBlur, lyricBlurAmount, lyricEmphasisThresholdMs,
   advancedLyrics, preferWordTimedLyrics, defaultLyricSource, dynamicBackground, colorMode, audioReactive,
-  coverBlurBg, coverBlurAmount, coverBlurDarken,
+  lowPerformanceMode, coverBlurBg, coverBlurAmount, coverBlurDarken,
   neteaseQuality, qqMusicQuality, youtubeQuality, biliQuality,
   youtubePlaybackSource, neteaseAutoSourceSwitch, neteaseLocalSourceFallback, qqAutoSourceSwitch,
   bypassProxy, internationalizationEnabled, exploreSearchHistoryEnabled,
@@ -184,13 +193,53 @@ function changeYouTubePlaybackSource(value: string) {
   if (source) youtubePlaybackSource.value = source
 }
 
-const audioOutputDevices = ref<Array<{ name: string; isDefault: boolean }>>([])
+interface AudioOutputDeviceOption {
+  name: string
+  /** Fallback display name from the backend: alsa-lib description or PCM name */
+  label: string
+  /** `sink` for a sound server output, `device` for a cpal/ALSA device */
+  kind?: string | null
+  /** Card display name, matching KDE */
+  card?: string | null
+  /** Role key composed into `<card> <role>`; absent for sound server sinks */
+  role?: string | null
+  detail?: string | null
+  isDefault: boolean
+}
+
+const audioOutputDevices = ref<AudioOutputDeviceOption[]>([])
 const audioOutputSwitching = ref(false)
+
+/** KDE-style `<card> <role>` for ALSA devices; the server's own text for sinks */
+function audioOutputLabel(device: AudioOutputDeviceOption): string {
+  const base = device.role
+    ? (() => {
+        const role = t(`settings.audio_output_role_${device.role}`, { detail: device.detail ?? '' }).trim()
+        return device.card ? `${device.card} ${role}` : role
+      })()
+    : device.label || device.name
+  // A sound server sink can stop being the active output when another desktop
+  // changes it, so mark the one the server currently routes to
+  return device.kind === 'sink' && device.isDefault
+    ? `${base} ${t('settings.audio_output_system_default')}`
+    : base
+}
+
 const audioOutputOptions = computed(() => {
   const devices = audioOutputDevices.value.map(device => ({
     value: device.name,
-    label: device.name,
+    label: audioOutputLabel(device),
   }))
+  // The same card can expose several PCMs with the same role (e.g. front and
+  // surround aliases). Keep the short label when unique, but disambiguate with
+  // the PCM name when two entries would otherwise be indistinguishable.
+  const labelCounts = new Map<string, number>()
+  for (const device of devices) {
+    labelCounts.set(device.label, (labelCounts.get(device.label) ?? 0) + 1)
+  }
+  for (const device of devices) {
+    if ((labelCounts.get(device.label) ?? 0) > 1) device.label = `${device.label} (${device.value})`
+  }
   if (audioOutputDevice.value && !devices.some(device => device.value === audioOutputDevice.value)) {
     devices.unshift({ value: audioOutputDevice.value, label: t('settings.audio_output_unavailable', { name: audioOutputDevice.value }) })
   }
@@ -414,6 +463,59 @@ watch(dynamicBackground, on => {
 watch(coverBlurBg, on => {
   if (on && dynamicBackground.value) dynamicBackground.value = false
 })
+
+// 动态背景（WebGL 着色器）在 Linux 下切换背景或页面时会闪烁，对光敏性癫痫用户有风险。
+// 首次运行的提示在 App.vue（会顺带把它默认关掉），这里只负责一件事：用户手动开启时
+// 先拒绝、弹严重警告，确认后才真正写入设置。
+// The WebGL shader background flickers on Linux when the background or page changes, a
+// risk for photosensitive epilepsy. The first-run notice lives in App.vue (which also
+// turns it off by default); this component only handles one path: a manual enable is
+// rejected first, a severe warning is shown, and the setting is written after confirming.
+const dynamicBackgroundAcknowledged = ref(false)
+const dynamicBackgroundDialogOpen = ref(false)
+
+// 只在用户真正要开的时候才改状态：被拒绝的开启不会落到 dynamicBackground 上，
+// 所以下面那个“动态背景与封面模糊互斥”的 watcher 不会先把 coverBlurBg 清掉，
+// 用户取消时也就不会连原来的封面模糊背景一起丢掉。
+// Only change state when the user is actually allowed to enable it: a rejected
+// enable never reaches `dynamicBackground`, so the mutual-exclusion watcher below
+// cannot clear `coverBlurBg` first and cancelling keeps the previous background.
+//
+// Linux 端一律警告：闪烁是 WebKitGTK 的呈现路径问题，与显卡厂商无关（实测核显渲染时
+// 同样会闪）。这里先回弹复选框、确认后才真正写入设置。
+// Warn on every Linux desktop: the flicker comes from WebKitGTK's presentation path, not
+// from the GPU vendor (it reproduced while rendering on the integrated GPU). Bounce the
+// checkbox first and only write the setting after confirmation.
+function onDynamicBackgroundToggle(event: Event) {
+  const input = event.target as HTMLInputElement
+  if (!input.checked) {
+    dynamicBackground.value = false
+    return
+  }
+  input.checked = false
+  if (isLinuxDesktop() && !dynamicBackgroundAcknowledged.value) {
+    dynamicBackgroundDialogOpen.value = true
+    return
+  }
+  dynamicBackground.value = true
+}
+
+function confirmDynamicBackgroundWarning() {
+  dynamicBackgroundAcknowledged.value = true
+  dynamicBackgroundDialogOpen.value = false
+  dynamicBackground.value = true
+}
+
+// 手动开启被拒时开关本来就是关的，再置一次无害；进入设置页那次提示对应的是“原本开着”，
+// 取消就是把动态背景关掉。
+// After a rejected manual toggle the switch is already off, so setting it again is
+// harmless; the mount-time prompt corresponds to "already on", where cancelling means
+// turning the dynamic background off.
+function cancelDynamicBackgroundWarning() {
+  dynamicBackgroundDialogOpen.value = false
+  dynamicBackground.value = false
+}
+
 
 // 文件日志开关仅在下次启动生效（受插件限制）：用户切换时提示需重启。
 // 用 @change 而非 watch，避免启动 hydrate 时误触发提示
@@ -845,17 +947,10 @@ function handleLtNicknameChange(event: Event) {
   input.value = value
 }
 
-const showConfigExportWarning = ref(false)
-
-async function confirmConfigExport() {
-  showConfigExportWarning.value = false
-  await syncStore.exportConfig()
-}
+const configTransferMode = ref<'export' | 'import' | null>(null)
 
 // 导入只写回了设置值：主题、强调色和播放引擎（均衡器、响度、倍速等）要按新值重新应用
-async function importConfig() {
-  const result = await syncStore.importConfig()
-  if (!result?.success) return
+async function applyImportedConfig() {
   applyTheme(darkMode.value, false)
   // 三态取色：仅「默认取色」需要按预设主题色重刷，system/cover 由动态取色路径接管
   if (colorMode.value === 'default') applyThemeColor(selectedColor.value, undefined, false)
@@ -1032,6 +1127,7 @@ async function clearStorageCache(options: StorageCacheClearOptions) {
       { options, downloadDir: downloadDir.value || null },
     )
     clearBrowserCache(options)
+    if (options.lyricsCache) invalidateBiliSubtitleCache()
     const mb = ((result.clearedBytes || 0) / 1024 / 1024).toFixed(1)
     if (result.failedCount > 0) {
       toast.show(t('settings.storage_cache_partial', { mb, count: result.failedCount }), 'info')
@@ -1166,6 +1262,7 @@ const lyricOffsetSettings = [
   { key: 'kugouOffset', label: 'settings.kugou_offset', defaultMs: DEFAULT_LYRIC_OFFSET_MS.kugou, iconSvg: '/icons/ic_kugou.svg' },
   { key: 'lrclibOffset', label: 'settings.lrclib_offset', defaultMs: DEFAULT_LYRIC_OFFSET_MS.lrclib, iconSvg: '/icons/ic_lrclib.svg' },
   { key: 'amllTtmlOffset', label: 'settings.amll_ttml_offset', defaultMs: DEFAULT_LYRIC_OFFSET_MS.amll_ttml, iconSvg: '/icons/ic_amll.svg' },
+  { key: 'biliCcSubtitleOffset', label: 'bili_subtitle.offset', defaultMs: DEFAULT_LYRIC_OFFSET_MS.bilibili_cc, iconSvg: '/icons/ic_bilibili.svg' },
 ] as const
 
 const lyricOffsetsChanged = computed(() => lyricOffsetSettings.some(item => settings[item.key] !== item.defaultMs))
@@ -1367,12 +1464,14 @@ const platformAccounts = computed(() => [
   { key: 'netease', label: t('settings.netease_account'), iconSvg: '/icons/ic_netease.svg', auth: auth.netease, login: auth.loginNetease },
   { key: 'bilibili', label: t('settings.bilibili_account'), iconSvg: '/icons/ic_bilibili.svg', auth: auth.bilibili, login: auth.loginBilibili },
   { key: 'youtube', label: t('settings.youtube_account'), iconSvg: '/icons/ic_youtube.svg', auth: auth.youtube, login: auth.loginYoutube },
-])
+] as const)
 
 // 退出登录确认对话框
 const showLogoutConfirm = ref(false)
 const logoutTargetKey = ref('')
 const logoutTargetLabel = ref('')
+const showCookieLogin = ref(false)
+const cookieLoginPlatform = ref<'netease' | 'bilibili' | 'youtube'>('netease')
 
 function requestLogout(key: string, label: string) {
   logoutTargetKey.value = key
@@ -1406,7 +1505,6 @@ for (const dialog of [
   showLogoutConfirm,
   showClearGitHubConfirm,
   showResetLtIdentityConfirm,
-  showConfigExportWarning,
   showDownloadTemplateDialog,
 ]) {
   useEscapeClose(() => dialog.value, () => { dialog.value = false })
@@ -1551,6 +1649,11 @@ useEscapeClose(
           {{ t('settings.qq_wechat_login') }}
         </button>
       </template>
+      <button v-if="account.key !== 'qq'"
+        class="account-login-btn"
+        :disabled="auth.loggingIn !== null"
+        @click="cookieLoginPlatform = account.key; showCookieLogin = true"
+      >{{ t('settings.cookie_login') }}</button>
     </div>
         </div>
 
@@ -2041,6 +2144,15 @@ useEscapeClose(
       </template>
 
       <div class="setting-card">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">ads_click</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.double_click_play') }}</div>
+          <div class="setting-desc">{{ t('settings.double_click_play_desc') }}</div>
+        </div>
+        <label class="m3-switch"><input type="checkbox" v-model="doubleClickPlay" /><span class="track"><span class="thumb"><span v-if="doubleClickPlay" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
+      </div>
+
+      <div class="setting-card">
         <div class="setting-icon-wrap"><span class="material-symbols-rounded">history</span></div>
         <div class="setting-info">
           <div class="setting-title">{{ t('settings.keep_progress') }}</div>
@@ -2374,6 +2486,28 @@ useEscapeClose(
     <div class="setting-card">
       <div class="setting-icon-wrap"><span class="material-symbols-rounded">translate</span></div>
       <div class="setting-info">
+        <div class="setting-title">{{ t('settings.lyric_translation_size') }}</div>
+        <div class="setting-desc">{{ t('settings.lyric_translation_size_desc') }}</div>
+        <EditableRangeValue
+          v-model="lyricTranslationScale"
+          class="setting-desc"
+          :min="LYRIC_TRANSLATION_SCALE_MIN"
+          :max="LYRIC_TRANSLATION_SCALE_MAX"
+          :step="LYRIC_TRANSLATION_SCALE_STEP"
+          :display-value="`${Math.round(lyricTranslationScale * 100)}%`"
+          :input-scale="100"
+          input-suffix="%"
+          :aria-label="t('settings.lyric_translation_size')"
+        />
+      </div>
+      <input type="range" class="m3-slider" v-model.number="lyricTranslationScale"
+        :min="LYRIC_TRANSLATION_SCALE_MIN" :max="LYRIC_TRANSLATION_SCALE_MAX" :step="LYRIC_TRANSLATION_SCALE_STEP"
+        :aria-label="t('settings.lyric_translation_size')" />
+    </div>
+
+    <div class="setting-card">
+      <div class="setting-icon-wrap"><span class="material-symbols-rounded">translate</span></div>
+      <div class="setting-info">
         <div class="setting-title">{{ t('settings.show_translation') }}</div>
         <div class="setting-desc">{{ t('settings.show_translation_desc') }}</div>
       </div>
@@ -2409,6 +2543,8 @@ useEscapeClose(
       <CustomSelect class="settings-select" :model-value="defaultLyricSource" :options="defaultLyricSourceOptions"
         :label="t('settings.default_lyric_source')" @update:model-value="changeDefaultLyricSource" />
     </div>
+
+    <BiliSubtitleSettings variant="settings" :show-offset="false" />
 
     <div class="setting-card">
       <div class="setting-icon-wrap"><span class="material-symbols-rounded">graphic_eq</span></div>
@@ -2778,8 +2914,18 @@ useEscapeClose(
         <div class="setting-title">{{ t('settings.dynamic_bg') }}</div>
         <div class="setting-desc">{{ t('settings.dynamic_bg_desc') }}</div>
       </div>
-      <label class="m3-switch"><input type="checkbox" v-model="dynamicBackground" /><span class="track"><span class="thumb"><span v-if="dynamicBackground" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
+      <label class="m3-switch"><input type="checkbox" :checked="dynamicBackground" @change="onDynamicBackgroundToggle" /><span class="track"><span class="thumb"><span v-if="dynamicBackground" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
     </div>
+
+    <M3Dialog
+      :open="dynamicBackgroundDialogOpen"
+      icon="warning"
+      :title="t('settings.dynamic_bg_warning_title')"
+      :confirm-text="t('settings.dynamic_bg_warning_confirm')"
+      :confirm-danger="true"
+      @cancel="cancelDynamicBackgroundWarning"
+      @confirm="confirmDynamicBackgroundWarning"
+    >{{ t('settings.dynamic_bg_warning_body') }}</M3Dialog>
 
     <Transition @enter="onExpandEnter" @after-enter="onExpandAfterEnter" @leave="onExpandLeave" @after-leave="onExpandAfterLeave"><div v-if="isExpanded('effects')">
       <div v-if="dynamicBackground" class="setting-card sub-card">
@@ -2837,6 +2983,15 @@ useEscapeClose(
         </div>
       </template>
     </div></Transition>
+
+    <div class="setting-card">
+      <div class="setting-icon-wrap"><span class="material-symbols-rounded">speed</span></div>
+      <div class="setting-info">
+        <div class="setting-title">{{ t('settings.low_performance_mode') }}</div>
+        <div class="setting-desc">{{ t('settings.low_performance_mode_desc') }}</div>
+      </div>
+      <label class="m3-switch"><input type="checkbox" v-model="lowPerformanceMode" /><span class="track"><span class="thumb"><span v-if="lowPerformanceMode" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
+    </div>
         </div>
 
     <!-- 播放源 -->
@@ -3166,7 +3321,7 @@ useEscapeClose(
         <span class="material-symbols-rounded" style="font-size: 20px; opacity: 0.3">chevron_right</span>
       </div>
 
-      <div class="setting-card" style="cursor: pointer" @click="showConfigExportWarning = true">
+      <div class="setting-card" style="cursor: pointer" @click="configTransferMode = 'export'">
         <div class="setting-icon-wrap"><span class="material-symbols-rounded">settings_backup_restore</span></div>
         <div class="setting-info">
           <div class="setting-title">{{ t('settings.export_config') }}</div>
@@ -3175,7 +3330,7 @@ useEscapeClose(
         <span class="material-symbols-rounded" style="font-size: 20px; opacity: 0.3">chevron_right</span>
       </div>
 
-      <div class="setting-card" style="cursor: pointer" @click="importConfig">
+      <div class="setting-card" style="cursor: pointer" @click="configTransferMode = 'import'">
         <div class="setting-icon-wrap"><span class="material-symbols-rounded">restore</span></div>
         <div class="setting-info">
           <div class="setting-title">{{ t('settings.import_config') }}</div>
@@ -3478,29 +3633,8 @@ useEscapeClose(
       </Transition>
     </Teleport>
 
-    <!-- 配置导出敏感信息确认 -->
-    <Teleport to="body">
-      <Transition name="settings-dialog">
-      <div v-if="showConfigExportWarning" class="dialog-overlay" @click.self="showConfigExportWarning = false">
-        <div class="dialog-card config-warning-dialog">
-          <div class="dialog-icon danger">
-            <span class="material-symbols-rounded">warning</span>
-          </div>
-          <h3 class="dialog-title">{{ t('settings.export_config_warning_title') }}</h3>
-          <p class="dialog-desc">{{ t('settings.export_config_warning_desc') }}</p>
-          <div class="warning-list">
-            <div><span class="material-symbols-rounded">key</span>{{ t('settings.export_config_warning_credentials') }}</div>
-            <div><span class="material-symbols-rounded">cloud_sync</span>{{ t('settings.export_config_warning_sync') }}</div>
-            <div><span class="material-symbols-rounded">lock</span>{{ t('settings.export_config_warning_private') }}</div>
-          </div>
-          <div class="dialog-actions">
-            <button class="dialog-btn" @click="showConfigExportWarning = false">{{ t('settings.cancel') }}</button>
-            <button class="dialog-btn danger" @click="confirmConfigExport">{{ t('settings.export_config_warning_confirm') }}</button>
-          </div>
-        </div>
-      </div>
-      </Transition>
-    </Teleport>
+    <CookieLoginDialog v-model:open="showCookieLogin" :platform="cookieLoginPlatform" />
+    <ConfigTransferDialogs v-model:mode="configTransferMode" @imported="applyImportedConfig" />
 
     <!-- 下载文件名格式编辑对话框 -->
     <Teleport to="body">
@@ -3683,7 +3817,7 @@ useEscapeClose(
 .settings-result-enter-from { opacity: 0; transform: translateY(6px); }
 .settings-result-move { transition: transform 220ms var(--ease-emphasized-decel); }
 
-.setting-card.search-highlight {
+:deep(.setting-card.search-highlight) {
   animation: settings-search-flash 1.6s var(--ease-standard);
 }
 

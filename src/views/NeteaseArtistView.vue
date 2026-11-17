@@ -5,6 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { invoke } from '@tauri-apps/api/core'
 import { usePlayerStore, type TrackInfo } from '@/stores/player'
+import { useTrackActivation } from '@/composables/useTrackActivation'
 import BilibiliCoverImage from '@/components/BilibiliCoverImage.vue'
 import TrackContextMenu from '@/components/TrackContextMenu.vue'
 import CollectionContextMenu from '@/components/CollectionContextMenu.vue'
@@ -15,7 +16,7 @@ import {
   writePlaylistDetailCache,
 } from '@/modules/library/playlistDetailCache'
 import { formatTrackDuration as formatDuration } from '@/utils/timeFormat'
-import { resolveNeteaseCover } from '@/utils/neteaseCover'
+import { resolveNeteaseCover, resolveNeteaseCoverSized } from '@/utils/neteaseCover'
 import { createLogger } from '@/utils/logger'
 import { useToastStore } from '@/stores/toast'
 import { useArtistFavorite } from '@/modules/library/favoriteArtistState'
@@ -25,6 +26,7 @@ const log = createLogger('netease-artist-view')
 const route = useRoute()
 const router = useRouter()
 const player = usePlayerStore()
+const { onTrackClick, onTrackDoubleClick } = useTrackActivation()
 const { t } = useI18n()
 const toast = useToastStore()
 
@@ -104,8 +106,8 @@ function parseHeader(raw: any): ArtistHeader {
   return {
     name: String(artist.name || route.query.name || ''),
     alias: aliasList.join(' / ') || String(route.query.subtitle || ''),
-    coverUrl: resolveNeteaseCover(artist.cover, artist.picUrl) || String(route.query.cover || ''),
-    avatarUrl: resolveNeteaseCover(artist.avatar, artist.img1v1Url),
+    coverUrl: resolveNeteaseCoverSized('detail', artist.cover, artist.picUrl) || String(route.query.cover || ''),
+    avatarUrl: resolveNeteaseCoverSized('list', artist.avatar, artist.img1v1Url),
     briefDesc: String(artist.briefDesc || ''),
     musicSize: Number(artist.musicSize) || 0,
     albumSize: Number(artist.albumSize) || 0,
@@ -330,7 +332,8 @@ onUnmounted(() => { generation++ })
           :key="track.id"
           class="track-item"
           :class="{ active: player.currentTrack?.id === track.id }"
-          @click="playTrack(track)"
+          @click="onTrackClick($event, () => playTrack(track))"
+          @dblclick="onTrackDoubleClick($event, () => playTrack(track))"
           @contextmenu="trackMenuRef?.open($event, track)"
           @pointerenter="player.prefetchIntent(track)"
           @focusin="player.prefetchIntent(track)"

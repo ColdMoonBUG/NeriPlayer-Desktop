@@ -96,6 +96,112 @@ const RUST_INTEGER_KEYS = [...rustStruct.matchAll(/pub (\w+): (?:i32|u32),/g)]
   .map(match => camel(match[1]))
   .filter(key => key !== 'formatVersion')
 
+await regression('old settings preserve single-click playback and the default local library order', store => {
+  store.applySnapshot({})
+  assert.equal(store.doubleClickPlay, false)
+  assert.equal(store.localLibrarySortBy, 'default')
+  assert.equal(store.localLibrarySortDescending, false)
+})
+
+await regression('library interaction preferences normalize malformed snapshots', store => {
+  store.applySnapshot({ doubleClickPlay: 'true', localLibrarySortBy: 'invalid', localLibrarySortDescending: 1 })
+  assert.equal(store.doubleClickPlay, false)
+  assert.equal(store.localLibrarySortBy, 'default')
+  assert.equal(store.localLibrarySortDescending, false)
+  for (const mode of ['default', 'modified', 'title', 'artist', 'album', 'duration']) {
+    store.applySnapshot({ doubleClickPlay: true, localLibrarySortBy: mode, localLibrarySortDescending: true })
+    assert.equal(store.snapshot().doubleClickPlay, true)
+    assert.equal(store.snapshot().localLibrarySortBy, mode)
+    assert.equal(store.snapshot().localLibrarySortDescending, true)
+  }
+})
+
+await regression('library interaction preferences survive hydration, IPC save and legacy reload', async store => {
+  loadResult = { settings: { doubleClickPlay: true, localLibrarySortBy: 'modified', localLibrarySortDescending: true }, persisted: true }
+  await store.hydrate()
+  assert.equal(store.doubleClickPlay, true)
+  assert.equal(store.localLibrarySortBy, 'modified')
+  assert.equal(store.localLibrarySortDescending, true)
+  store.localLibrarySortBy = 'title'
+  await flushPersist()
+  assert.equal(saved.at(-1).doubleClickPlay, true)
+  assert.equal(saved.at(-1).localLibrarySortBy, 'title')
+  assert.equal(saved.at(-1).localLibrarySortDescending, true)
+  loadResult = { settings: {}, persisted: false }
+  const reloadedInstance = pinia.createPinia()
+  pinia.setActivePinia(reloadedInstance)
+  try {
+    const reloaded = settingsModule.useSettingsStore()
+    await reloaded.hydrate()
+    assert.equal(reloaded.doubleClickPlay, true)
+    assert.equal(reloaded.localLibrarySortBy, 'title')
+    assert.equal(reloaded.localLibrarySortDescending, true)
+  } finally {
+    pinia.disposePinia(reloadedInstance)
+  }
+})
+
+await regression('translation scale defaults preserve the existing size and independent lyric settings', store => {
+  store.applySnapshot({ lyricFontScale: 1.25, showTranslation: false, showRomanization: true })
+  assert.equal(store.lyricTranslationScale, 1)
+  assert.equal(store.snapshot().lyricTranslationScale, 1)
+  assert.equal(store.lyricFontScale, 1.25)
+  assert.equal(store.showTranslation, false)
+  assert.equal(store.showRomanization, true)
+  assert.equal(settingsModule.LYRIC_TRANSLATION_SCALE_DEFAULT, 1)
+  assert.equal(settingsModule.LYRIC_TRANSLATION_SCALE_MIN, 0.5)
+  assert.equal(settingsModule.LYRIC_TRANSLATION_SCALE_MAX, 2)
+  assert.equal(settingsModule.LYRIC_TRANSLATION_SCALE_STEP, 0.05)
+})
+
+await regression('translation scale clamps numbers and defaults invalid snapshots without altering lyric size', store => {
+  for (const [value, expected] of [
+    [-1, 0.5], [0.5, 0.5], [1.234, 1.234], [2, 2], [3, 2],
+    [NaN, 1], [Infinity, 1], [-Infinity, 1], ['1.5', 1], [null, 1],
+    [undefined, 1], [true, 1], [[], 1], [{}, 1],
+  ]) {
+    store.applySnapshot({ lyricTranslationScale: value, lyricFontScale: 1.25 })
+    assert.equal(store.lyricTranslationScale, expected, String(value))
+    assert.equal(store.snapshot().lyricTranslationScale, expected, String(value))
+    assert.equal(store.lyricFontScale, 1.25)
+  }
+})
+
+await regression('translation scale survives hydration, IPC save, and legacy browser reload', async store => {
+  loadResult = { settings: { lyricTranslationScale: 1.25, lyricFontScale: 1.1 }, persisted: true }
+  await store.hydrate()
+  assert.equal(store.lyricTranslationScale, 1.25)
+  store.lyricTranslationScale = 1.75
+  await flushPersist()
+  assert.equal(saved.at(-1).lyricTranslationScale, 1.75)
+  assert.equal(saved.at(-1).lyricFontScale, 1.1)
+  assert.equal(JSON.parse(storage.get('neri:lyric_translation_scale')), 1.75)
+  loadResult = { settings: {}, persisted: false }
+  const reloadedInstance = pinia.createPinia()
+  pinia.setActivePinia(reloadedInstance)
+  try {
+    const reloaded = settingsModule.useSettingsStore()
+    await reloaded.hydrate()
+    assert.equal(reloaded.lyricTranslationScale, 1.75)
+    assert.equal(reloaded.snapshot().lyricTranslationScale, 1.75)
+    assert.equal(saved.at(-1).lyricTranslationScale, 1.75)
+  } finally {
+    pinia.disposePinia(reloadedInstance)
+  }
+})
+
+await regression('translation scale survives config export and import and resets with old configs', store => {
+  store.applySnapshot({ lyricTranslationScale: 1.5, lyricFontScale: 1.25 })
+  const exported = JSON.parse(JSON.stringify({ settings: store.snapshot() }))
+  store.applySnapshot({ lyricTranslationScale: 0.75 })
+  store.applySnapshot(exported.settings)
+  assert.equal(store.lyricTranslationScale, 1.5)
+  assert.equal(store.lyricFontScale, 1.25)
+  store.applySnapshot({ lyricFontScale: 1.1 })
+  assert.equal(store.lyricTranslationScale, 1)
+  assert.equal(store.snapshot().lyricTranslationScale, 1)
+})
+
 await regression('old settings keep the default app and lyric fonts', store => {
   store.applySnapshot({ showTranslation: false })
   assert.equal(store.appFontFamily, '')
@@ -332,4 +438,24 @@ for (const [value, step, min, max, expected] of [
 cases++
 console.log('ok - typed values are rounded to the step precision and clamped')
 
+await regression('CC subtitle preferences normalize and survive hydration, persistence and config replacement', async store => {
+  assert.equal(store.biliCcSubtitleEnabled, true)
+  assert.equal(store.biliCcSubtitleAiFallback, true)
+  assert.equal(store.biliCcSubtitleOffset, 0)
+  loadResult = { settings: { biliCcSubtitleEnabled: false, biliCcSubtitleLanguage: ' ai-zh ', biliCcSubtitleAiFallback: false, biliCcSubtitleOffset: -75 }, persisted: true }
+  await store.hydrate()
+  assert.equal(store.biliCcSubtitleLanguage, 'ai-zh')
+  assert.equal(store.biliCcSubtitleOffset, -50)
+  store.biliCcSubtitleEnabled = true
+  await flushPersist()
+  const savedSettings = saved.at(-1)
+  assert.equal(savedSettings.biliCcSubtitleEnabled, true)
+  assert.equal(savedSettings.biliCcSubtitleAiFallback, false)
+  assert.equal(savedSettings.biliCcSubtitleLanguage, 'ai-zh')
+  store.applySnapshot(JSON.parse(JSON.stringify(savedSettings)))
+  assert.equal(store.snapshot().biliCcSubtitleOffset, -50)
+  store.applySnapshot({ biliCcSubtitleLanguage: 'invalid language', biliCcSubtitleOffset: Infinity })
+  assert.equal(store.biliCcSubtitleLanguage, '')
+  assert.equal(store.biliCcSubtitleOffset, 0)
+})
 console.log(`Settings integrity regressions: ${cases} passed`)

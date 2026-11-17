@@ -28,6 +28,7 @@ globalThis.window = { dispatchEvent: event => events.push(event) }
 new Function('require', 'exports', compiled)(name => {
   if (name === 'pinia') return pinia
   if (name === 'vue') return vue
+  if (name === '@tauri-apps/api/event') return { listen: async () => () => {} }
   if (name === '@tauri-apps/api/core') return { invoke: async (command, args) => {
     calls.push({ command, args })
     if (command === 'check_auth_status') return { qq: connected, netease: {}, bilibili: {}, youtube: {} }

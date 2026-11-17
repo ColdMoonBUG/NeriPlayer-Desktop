@@ -16,19 +16,23 @@ import { syncFrequencyDelayMs, useSyncStore } from '@/stores/sync'
 import { useAuthStore } from '@/stores/auth'
 import { useRecommendStore } from '@/stores/recommend'
 import { useSettingsStore } from '@/stores/settings'
+import { claimFirstRunLinuxNotice } from '@/utils/linuxNotice'
+import M3Dialog from '@/components/ui/M3Dialog.vue'
+import { useI18n } from 'vue-i18n'
 import { applyFontSettings } from '@/modules/settings/fonts'
+import { LOW_PERFORMANCE_INTERVAL_MS, setFrameInterval } from '@/utils/frameLoop'
 import { HISTORY_CHANGED_EVENT } from '@/stores/history'
 import { useLikedSongsStore } from '@/stores/likedSongs'
 import { useDownloadStore } from '@/stores/download'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { invoke } from '@tauri-apps/api/core'
-import { convertFileSrc } from '@tauri-apps/api/core'
+import { convertFileSrc, invoke, isTauri } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import AppBackgroundImage from '@/components/AppBackgroundImage.vue'
 import MiniPlayer from '@/components/MiniPlayer.vue'
 import NowPlaying from '@/components/NowPlaying.vue'
 import SideNav from '@/components/SideNav.vue'
 import AppToast from '@/components/AppToast.vue'
+import BiliVideoPartsDialog from '@/components/BiliVideoPartsDialog.vue'
 import TitleBar from '@/components/TitleBar.vue'
 import i18n, { setLocale } from '@/i18n'
 import { useToastStore } from '@/stores/toast'
@@ -58,6 +62,15 @@ watch(
   ([appFontFamily, lyricFontFamily]) => applyFontSettings(appFontFamily, lyricFontFamily),
   { immediate: true },
 )
+// Low performance mode is a global rendering preference, applied as soon as the main
+// window mounts instead of waiting for the settings page to be opened. The three per-frame
+// animations (background shader, lyrics, waveform) share one scheduler, so capping the
+// frame rate is a single call here.
+watch(
+  () => settingsStore.lowPerformanceMode,
+  on => setFrameInterval(on ? LOW_PERFORMANCE_INTERVAL_MS : 0),
+  { immediate: true },
+)
 const likedSongs = useLikedSongsStore()
 const route = useRoute()
 const router = useRouter()
@@ -77,6 +90,12 @@ const flipOverlayStyle = ref<Record<string, string> | null>(null)
 const flipTransitionMode = ref<'opening' | 'closing' | null>(null)
 const isFlipAnimating = ref(false)
 const nowPlayingMotionState = ref<'opening' | 'closing' | null>(null)
+// NVIDIA + WebKitGTK：整页滑入/滑出会重绘巨大图层并闪烁，改为瞬时切换
+// NVIDIA + WebKitGTK: sliding the full-screen layer repaints a huge area and
+// flickers, so switch instantly instead.
+const nvidiaCompat = ref(false)
+const linuxNoticeOpen = ref(false)
+const { t } = useI18n()
 const lastCoverSnapshot = ref<{ trackId: string; src: string } | null>(null)
 
 const hasMiniPlayer = computed(() => hasVisiblePlaybackSession(
@@ -111,7 +130,7 @@ function resetFlipState() {
   flipOverlayStyle.value = null
 }
 
-function scheduleNowPlayingMotionCleanup(delay = 520) {
+function scheduleNowPlayingMotionCleanup(delay = nvidiaCompat.value ? 0 : 520) {
   if (nowPlayingMotionTimer) {
     clearTimeout(nowPlayingMotionTimer)
   }
@@ -162,7 +181,7 @@ async function openNowPlaying() {
   // 动画进行中允许打断，避免连点卡住
   resetFlipState()
   nowPlayingMotionState.value = 'opening'
-  scheduleNowPlayingMotionCleanup(520)
+  scheduleNowPlayingMotionCleanup()
   playerTransitionPulse.value = Date.now()
   isNowPlayingOpen.value = true
 }
@@ -201,7 +220,7 @@ async function closeNowPlaying() {
   }
   resetFlipState()
   nowPlayingMotionState.value = 'closing'
-  scheduleNowPlayingMotionCleanup(520)
+  scheduleNowPlayingMotionCleanup()
   skipMiniEnter.value = true
   isNowPlayingOpen.value = false
   await nextTick()
@@ -428,6 +447,34 @@ watch(
 
 // 启动时初始化：加载同步配置 + 检查登录状态 + 自动同步
 onMounted(async () => {
+  // NVIDIA + WebKitGTK 下整页 opacity/transform 过渡会触发大面积重绘并闪烁；
+  // 后端确认是 NVIDIA 后加类，让 CSS 把路由切换降为瞬时切换（不动画整页）。
+  // Full-page opacity/transform transitions repaint a large area and flicker on
+  // WebKitGTK + NVIDIA; after the backend confirms NVIDIA, add a class that makes
+  // route switches instant instead of animating the whole page.
+  if (detectPlatform() === 'linux') {
+    void invoke<{ nvidia: boolean }>('get_linux_graphics_compat')
+      .then((compat) => {
+        if (compat.nvidia) {
+          nvidiaCompat.value = true
+          document.documentElement.classList.add('nvidia-compat')
+        }
+      })
+      .catch(() => { /* 旧后端或非 Linux：保持默认过渡 */ })
+
+    // Linux 端整条渲染栈都建立在 WebKitGTK 上（2.54 起还整体换过合成器）：页面切换可能
+    // 闪一下、性能也可能明显差，动态背景的闪烁更是光敏性癫痫风险。首次运行给一次总
+    // 提示，并把动态背景默认关掉——它不是“体验问题”，是安全默认。
+    // The whole Linux rendering stack sits on WebKitGTK (which swapped its compositor in
+    // 2.54): page switches can flash, performance can be poor, and the dynamic
+    // background's flicker is a photosensitivity risk. The first run shows one notice and
+    // starts with the background off — a safety default, not a cosmetic one.
+    void claimFirstRunLinuxNotice().then((firstRun) => {
+      if (!firstRun) return
+      settingsStore.dynamicBackground = false
+      linuxNoticeOpen.value = true
+    })
+  }
   uninstallDesktopLyrics = installDesktopLyricsBridge({
     openSettings: () => {
       if (isNowPlayingOpen.value) closeNowPlaying()
@@ -443,6 +490,9 @@ onMounted(async () => {
   const authStore = useAuthStore()
   window.addEventListener('beforeunload', handleBeforeUnload)
   window.addEventListener('pagehide', handleBeforeUnload)
+  // 播放统计和媒体键在首曲之前接入，托盘也可以启动刚恢复的队列
+  usePlaybackStatsStore().attach()
+  if (isTauri()) player.initEvents()
   try {
     unlistenCloseRequested = await getCurrentWindow().onCloseRequested(handleCloseRequested)
   } catch {
@@ -450,8 +500,6 @@ onMounted(async () => {
   }
 
   // Rust 配置是启动后的规范来源，本地影子只负责首屏快速显示
-  // 播放统计要在任何播放发生之前接上，否则首曲不计数
-  usePlaybackStatsStore().attach()
   const shortcutActions: ShortcutActions = {
     togglePlay: () => void player.togglePlayPause(),
     next: () => void player.next(),
@@ -494,7 +542,7 @@ onMounted(async () => {
     toggleShuffle: () => player.toggleShuffle(),
     cycleRepeat: () => player.toggleRepeatMode(),
     toggleLike: () => {
-      if (player.currentTrack) void likedSongs.toggleTrack(player.currentTrack)
+      likedSongs.requestToggleTrack(player.currentTrack)
     },
     toggleDesktopLyrics: () => {
       const toggle = desktopLyricsOpen.value ? closeDesktopLyricsWindow() : openDesktopLyricsWindow()
@@ -664,6 +712,7 @@ onUnmounted(() => {
     <TitleBar
       :force-light="isNowPlayingOpen"
       :now-playing="isNowPlayingOpen"
+      :show-now-playing-title="settingsStore.showNowPlayingTitle"
       :has-playback-session="player.hasPlaybackSession"
       :track-name="player.hasPlaybackSession ? player.currentTrack?.title : ''"
       :album-name="player.hasPlaybackSession && player.currentTrack?.album ? displayAlbum(player.currentTrack.album) : ''"
@@ -687,7 +736,18 @@ onUnmounted(() => {
       </div>
     </Transition>
 
+    <M3Dialog
+      :open="linuxNoticeOpen"
+      icon="info"
+      :title="t('settings.linux_test_notice_title')"
+      :cancel-text="t('common.close')"
+      :confirm-text="t('settings.linux_test_notice_ack')"
+      @cancel="linuxNoticeOpen = false"
+      @confirm="linuxNoticeOpen = false"
+    >{{ t('settings.linux_test_notice_body') }}</M3Dialog>
+
     <AppToast />
+    <BiliVideoPartsDialog />
   </div>
 </template>
 

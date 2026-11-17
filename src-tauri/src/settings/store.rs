@@ -23,6 +23,34 @@ const UI_SCALE_MIN: i32 = 25;
 const UI_SCALE_MAX: i32 = 1000;
 const UI_SCALE_STEP: i32 = 5;
 
+#[cfg(test)]
+mod bili_subtitle_settings_tests {
+    use super::AppSettings;
+
+    #[test]
+    fn subtitle_preferences_round_trip_and_normalize_independently() {
+        let defaults: AppSettings = serde_json::from_str("{}").unwrap();
+        assert!(defaults.bili_cc_subtitle_enabled);
+        assert!(defaults.bili_cc_subtitle_ai_fallback);
+        assert_eq!(defaults.bili_cc_subtitle_offset, 0);
+        let mut settings: AppSettings = serde_json::from_value(serde_json::json!({
+            "biliCcSubtitleEnabled": false, "biliCcSubtitleAiFallback": false,
+            "biliCcSubtitleLanguage": " ai-zh ", "biliCcSubtitleOffset": -75
+        })).unwrap();
+        settings.normalize();
+        assert_eq!(settings.bili_cc_subtitle_language, "ai-zh");
+        assert_eq!(settings.bili_cc_subtitle_offset, -50);
+        assert_eq!(settings.cloud_music_offset, defaults.cloud_music_offset);
+        let restored: AppSettings = serde_json::from_value(serde_json::to_value(&settings).unwrap()).unwrap();
+        assert_eq!(restored, settings);
+        settings.bili_cc_subtitle_language = "invalid language".into();
+        settings.bili_cc_subtitle_offset = 9000;
+        settings.normalize();
+        assert!(settings.bili_cc_subtitle_language.is_empty());
+        assert_eq!(settings.bili_cc_subtitle_offset, 5000);
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsLoadResult {
@@ -56,6 +84,8 @@ pub struct AppSettings {
     pub show_audio_sample_rate: bool,
     pub show_audio_bit_depth: bool,
     pub lyric_font_scale: f32,
+    #[serde(deserialize_with = "deserialize_lyric_translation_scale")]
+    pub lyric_translation_scale: f32,
     /// 旧版「无缝切换」，已并入 crossfade_next；保留字段兼容旧配置，规整后恒为 false
     pub crossfade: bool,
     pub normalize_volume: bool,
@@ -77,6 +107,9 @@ pub struct AppSettings {
     /// 15 分钟以上内容记住播放位置并随同步续播（对齐 Android remember_long_form_playback_progress）
     pub remember_long_form_progress: bool,
     pub keep_playback_mode: bool,
+    pub double_click_play: bool,
+    pub local_library_sort_by: String,
+    pub local_library_sort_descending: bool,
     pub show_translation: bool,
     /// 罗马音等音译；与 Android 一样默认不显示
     pub show_romanization: bool,
@@ -95,6 +128,11 @@ pub struct AppSettings {
     pub lrclib_offset: i32,
     #[serde(deserialize_with = "lenient_i32")]
     pub amll_ttml_offset: i32,
+    #[serde(deserialize_with = "lenient_i32")]
+    pub bili_cc_subtitle_offset: i32,
+    pub bili_cc_subtitle_enabled: bool,
+    pub bili_cc_subtitle_language: String,
+    pub bili_cc_subtitle_ai_fallback: bool,
     pub cover_style: String,
     pub advanced_lyrics: bool,
     /// 有逐字结果时优先用；关闭后不再用 AMLL/酷狗补逐字（对齐 Android prefer_word_timed_lyrics）
@@ -108,6 +146,9 @@ pub struct AppSettings {
     pub dynamic_color: bool,
     pub dynamic_background: bool,
     pub audio_reactive: bool,
+    /// Low performance mode. Defaults stay visual-first; when enabled it caps the frame
+    /// rate and pauses background animation while a full-screen overlay is open.
+    pub low_performance_mode: bool,
     pub cover_blur_bg: bool,
     pub cover_blur_amount: f32,
     pub cover_blur_darken: f32,
@@ -201,6 +242,15 @@ fn normalize_ui_scale(value: f64) -> i32 {
     (clamped / f64::from(UI_SCALE_STEP)).round() as i32 * UI_SCALE_STEP
 }
 
+fn deserialize_lyric_translation_scale<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let scale = value.as_f64().unwrap_or(1.0);
+    Ok(if scale.is_finite() { scale.clamp(0.5, 2.0) as f32 } else { 1.0 })
+}
+
 /// 前端数字输入可能带小数：整数字段四舍五入接收，单个字段不能让整份设置被拒绝
 fn lenient_i32<'de, D>(deserializer: D) -> Result<i32, D::Error>
 where
@@ -252,6 +302,7 @@ impl Default for AppSettings {
             show_audio_sample_rate: false,
             show_audio_bit_depth: false,
             lyric_font_scale: 1.0,
+            lyric_translation_scale: 1.0,
             crossfade: false,
             normalize_volume: false,
             multichannel_drc: false,
@@ -265,6 +316,9 @@ impl Default for AppSettings {
             keep_progress: true,
             remember_long_form_progress: true,
             keep_playback_mode: true,
+            double_click_play: false,
+            local_library_sort_by: "default".into(),
+            local_library_sort_descending: false,
             show_translation: true,
             show_romanization: false,
             lyric_blur: true,
@@ -275,6 +329,10 @@ impl Default for AppSettings {
             kugou_offset: 0,
             lrclib_offset: 0,
             amll_ttml_offset: 0,
+            bili_cc_subtitle_offset: 0,
+            bili_cc_subtitle_enabled: true,
+            bili_cc_subtitle_language: String::new(),
+            bili_cc_subtitle_ai_fallback: true,
             cover_style: "card".into(),
             advanced_lyrics: true,
             prefer_word_timed_lyrics: true,
@@ -283,6 +341,7 @@ impl Default for AppSettings {
             dynamic_color: false,
             dynamic_background: true,
             audio_reactive: true,
+            low_performance_mode: false,
             cover_blur_bg: false,
             cover_blur_amount: 1.5,
             cover_blur_darken: 0.2,
@@ -341,6 +400,7 @@ impl Default for AppSettings {
 }
 
 impl AppSettings {
+    /// Normalize persisted preferences to the current format, supported choices and numeric bounds.
     pub fn normalize(&mut self) {
         self.format_version = SETTINGS_FORMAT_VERSION;
         self.dark_mode = normalize_choice(
@@ -363,6 +423,11 @@ impl AppSettings {
             "home",
         );
         self.cover_style = normalize_choice(&self.cover_style, &["disc", "card"], "card");
+        self.local_library_sort_by = normalize_choice(
+            &self.local_library_sort_by,
+            &["default", "modified", "title", "artist", "album", "duration"],
+            "default",
+        );
         self.default_lyric_source = normalize_choice(
             &self.default_lyric_source,
             &["automatic", "cloud_music", "kugou", "qq_music", "lrclib", "amll_ttml"],
@@ -379,6 +444,7 @@ impl AppSettings {
         }
 
         self.lyric_font_scale = clamp_f32(self.lyric_font_scale, 0.5, 1.6, 1.0);
+        self.lyric_translation_scale = clamp_f32(self.lyric_translation_scale, 0.5, 2.0, 1.0);
         self.fade_in_duration = self.fade_in_duration.clamp(0, 10_000);
         self.fade_out_duration = self.fade_out_duration.clamp(0, 10_000);
         self.crossfade_in_duration = self.crossfade_in_duration.clamp(0, 10_000);
@@ -392,9 +458,14 @@ impl AppSettings {
             &mut self.kugou_offset,
             &mut self.lrclib_offset,
             &mut self.amll_ttml_offset,
+            &mut self.bili_cc_subtitle_offset,
         ] {
             *offset = normalize_lyric_default_offset(*offset);
         }
+        let language = self.bili_cc_subtitle_language.trim();
+        self.bili_cc_subtitle_language = if language.len() <= 32
+            && language.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        { language.to_owned() } else { String::new() };
         self.cover_blur_amount = clamp_f32(self.cover_blur_amount, 0.0, 8.0, 1.5);
         self.cover_blur_darken = clamp_f32(self.cover_blur_darken, 0.0, 1.0, 0.2);
         self.background_image_blur = clamp_f32(self.background_image_blur, 0.0, 100.0, 20.0);
@@ -753,6 +824,46 @@ fn non_empty_or_default(value: &str, fallback: &str) -> String {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn library_interaction_preferences_default_for_old_settings() {
+        let settings: super::AppSettings = serde_json::from_str("{}").unwrap();
+        assert!(!settings.double_click_play);
+        assert_eq!(settings.local_library_sort_by, "default");
+        assert!(!settings.local_library_sort_descending);
+    }
+
+    #[test]
+    fn library_interaction_preferences_survive_json_round_trip() {
+        for sort_by in ["default", "modified", "title", "artist", "album", "duration"] {
+            let settings: super::AppSettings = serde_json::from_value(serde_json::json!({
+                "doubleClickPlay": true,
+                "localLibrarySortBy": sort_by,
+                "localLibrarySortDescending": true,
+            })).unwrap();
+            let serialized = serde_json::to_value(settings.normalized()).unwrap();
+            assert_eq!(serialized["doubleClickPlay"], true);
+            assert_eq!(serialized["localLibrarySortBy"], sort_by);
+            assert_eq!(serialized["localLibrarySortDescending"], true);
+            let reloaded: super::AppSettings = serde_json::from_value(serialized).unwrap();
+            assert!(reloaded.double_click_play);
+            assert_eq!(reloaded.local_library_sort_by, sort_by);
+            assert!(reloaded.local_library_sort_descending);
+        }
+    }
+
+    #[test]
+    fn invalid_local_library_sort_falls_back_without_resetting_other_preferences() {
+        let settings: super::AppSettings = serde_json::from_value(serde_json::json!({
+            "doubleClickPlay": true,
+            "localLibrarySortBy": "unsupported",
+            "localLibrarySortDescending": true,
+        })).unwrap();
+        let normalized = settings.normalized();
+        assert_eq!(normalized.local_library_sort_by, "default");
+        assert!(normalized.double_click_play);
+        assert!(normalized.local_library_sort_descending);
+    }
+
+    #[test]
     fn audio_effects_defaults_are_exported_as_typed_settings() {
         let value = serde_json::to_value(super::AppSettings::default()).unwrap();
         assert_eq!(value["audioEffects"]["version"], 2);
@@ -946,6 +1057,64 @@ mod tests {
     }
 
     use super::{AppSettings, MAX_MEDIA_CACHE_SIZE_MB, MIN_MEDIA_CACHE_SIZE_MB};
+
+    #[test]
+    fn lyric_translation_scale_defaults_and_normalizes_independently() {
+        let old: AppSettings = serde_json::from_str("{}").expect("old settings");
+        assert_eq!(old.lyric_translation_scale, 1.0);
+        for (value, expected) in [
+            (-1.0, 0.5), (0.5, 0.5), (1.25, 1.25), (2.0, 2.0), (3.0, 2.0),
+            (f32::NAN, 1.0), (f32::INFINITY, 1.0), (f32::NEG_INFINITY, 1.0),
+        ] {
+            let mut settings = AppSettings {
+                lyric_translation_scale: value,
+                lyric_font_scale: 1.25,
+                show_romanization: true,
+                ..AppSettings::default()
+            };
+            settings.normalize();
+            assert_eq!(settings.lyric_translation_scale, expected, "{value}");
+            assert_eq!(settings.lyric_font_scale, 1.25);
+            assert!(settings.show_romanization);
+        }
+    }
+
+    #[test]
+    fn lyric_translation_scale_bad_types_keep_other_settings() {
+        for value in [
+            serde_json::json!("1.5"), serde_json::Value::Null,
+            serde_json::json!(true), serde_json::json!([]), serde_json::json!({}),
+        ] {
+            let settings: AppSettings = serde_json::from_value(serde_json::json!({
+                "lyricTranslationScale": value, "lyricFontScale": 1.25, "locale": "ja",
+            })).expect("invalid translation scale must not discard the settings payload");
+            assert_eq!(settings.lyric_translation_scale, 1.0);
+            assert_eq!(settings.lyric_font_scale, 1.25);
+            assert_eq!(settings.locale, "ja");
+        }
+    }
+
+    #[test]
+    fn lyric_translation_scale_survives_save_and_config_round_trip() {
+        #[derive(serde::Deserialize, serde::Serialize)]
+        struct Config {
+            #[serde(deserialize_with = "super::deserialize_app_settings")]
+            settings: AppSettings,
+        }
+        for (value, expected) in [(-1.0, 0.5), (0.5, 0.5), (1.25, 1.25), (2.0, 2.0), (3.0, 2.0)] {
+            let config: Config = serde_json::from_value(serde_json::json!({
+                "settings": { "lyricTranslationScale": value, "lyricFontScale": 1.25 },
+            })).expect("translation scale config");
+            let settings = config.settings.normalized();
+            assert_eq!(settings.lyric_translation_scale, expected);
+            let saved = serde_json::to_value(&settings).expect("saved settings");
+            let restored: AppSettings = serde_json::from_value(saved.clone()).expect("restored settings");
+            assert_eq!(serde_json::to_value(restored.normalized()).expect("restored JSON"), saved);
+            let exported = serde_json::to_value(Config { settings }).expect("exported config");
+            let imported: Config = serde_json::from_value(exported.clone()).expect("imported config");
+            assert_eq!(serde_json::to_value(imported).expect("imported JSON"), exported);
+        }
+    }
 
     #[test]
     fn ui_scale_defaults_for_old_snapshots_and_normalizes_raw_numbers() {

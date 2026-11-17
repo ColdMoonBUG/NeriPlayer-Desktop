@@ -34,12 +34,6 @@ watch(() => props.src, (src) => {
   renderRetryCount = 0
   if (!src) return
 
-  if (cachedSrc) {
-    log.info('memory cache displayed:', {
-      source: describeSource(cachedSrc),
-      chars: cachedSrc.length,
-    })
-  }
 }, { immediate: true })
 
 function describeSource(src: string): string {
@@ -82,13 +76,6 @@ async function loadCover(src: string, forceRefresh: boolean) {
   }
 }
 
-function handleLoad(event: Event) {
-  const src = (event.currentTarget as HTMLImageElement).src
-  if (src.startsWith('data:')) {
-    log.info('proxied image loaded:', { source: describeSource(src), chars: src.length })
-  }
-}
-
 function handleError(event: Event) {
   const image = event.currentTarget as HTMLImageElement
   const failedSrc = image.getAttribute('src') || image.src
@@ -121,7 +108,6 @@ function handleError(event: Event) {
     loading="lazy"
     decoding="async"
     referrerpolicy="no-referrer"
-    @load="handleLoad"
     @error="handleError"
   />
   <slot v-else />

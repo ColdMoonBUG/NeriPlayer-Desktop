@@ -1,20 +1,30 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, nextTick, onBeforeUnmount, onMounted, onUnmounted } from 'vue'
 import { usePlayerStore, displayAlbum, type AudioInfo, type LyricLine, type TrackInfo } from '@/stores/player'
 import { AUDIO_EFFECT_PRESETS } from '@/modules/audioEffects/model'
 import { useLikedSongsStore } from '@/stores/likedSongs'
+import { useBiliVideoPartsStore } from '@/stores/biliVideoParts'
 import {
   COVER_BLUR_PX_PER_UNIT,
   LYRIC_FONT_SCALE_MAX,
   LYRIC_FONT_SCALE_MIN,
   LYRIC_FONT_SCALE_STEP,
+  LYRIC_TRANSLATION_SCALE_DEFAULT,
+  LYRIC_TRANSLATION_SCALE_MIN,
+  LYRIC_TRANSLATION_SCALE_MAX,
+  LYRIC_TRANSLATION_SCALE_STEP,
+  UI_SCALE_DEFAULT,
+  UI_SCALE_MIN,
+  UI_SCALE_STEP,
+  normalizeUiScale,
   useSettingsStore,
 } from '@/stores/settings'
+import { uiScaleSupported, uiScaleError, uiScaleMax } from '@/modules/settings/uiScale'
 import { useToastStore } from '@/stores/toast'
 import { useDownloadStore } from '@/stores/download'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import { invoke } from '@tauri-apps/api/core'
+import { invoke, isTauri } from '@tauri-apps/api/core'
 import { extractPalette, type PaletteResult } from '@/utils/paletteExtractor'
 import { shouldShowDynamicBackground } from '@/utils/nowPlayingBackground'
 import {
@@ -43,6 +53,7 @@ import {
   MAX_LYRIC_DEFAULT_OFFSET_MS,
   MIN_LYRIC_DEFAULT_OFFSET_MS,
   LYRIC_OFFSET_STEP_MS,
+  withUpdatedUserOffsetPayload,
 } from '@/modules/lyrics/lyricOffset'
 import {
   fetchLyrics,
@@ -64,10 +75,12 @@ import { resolveCommentTarget } from '@/modules/playback/commentTarget'
 import BilibiliCoverImage from './BilibiliCoverImage.vue'
 import WaveformSlider from './WaveformSlider.vue'
 import LyricsView from './LyricsView.vue'
+import BiliSubtitleSettings from './BiliSubtitleSettings.vue'
+import { biliSubtitleTarget } from '@/modules/lyrics/biliSubtitle'
 import QueuePanel from './QueuePanel.vue'
 import AddToPlaylistDialog from './AddToPlaylistDialog.vue'
 import BiliVideoSkipDialog from './BiliVideoSkipDialog.vue'
-import { resolveBiliVideoSkipBvid } from '@/modules/playback/biliVideoSkip'
+import { resolveBiliVideoSkipBvid, resolveBiliVideoSkipCid } from '@/modules/playback/biliVideoSkip'
 import ListenTogetherPanel from './ListenTogetherPanel.vue'
 import EditableRangeValue from './ui/EditableRangeValue.vue'
 import AudioEffectsPanel from './AudioEffectsPanel.vue'
@@ -84,8 +97,10 @@ import { writeClipboardText } from '@/utils/clipboard'
 import { playbackSessionTrackKey } from '@/modules/playback/playbackRequest'
 import { createLogger } from '@/utils/logger'
 import { getTrackCoverUrl } from '@/utils/trackCover'
+import { readImageBytes, safeFileName, saveImageWithDialog } from '@/utils/imageTransfer'
 import { summarizeLogError } from '@/utils/logSanitizer'
 import { neteaseSongArtists } from '@/modules/library/artistNavigation'
+import { artistNavigationTargetKey, artistSearchRoute, resolveBiliArtistUploader } from '@/modules/library/artistTrackNavigation'
 import { splitArtistNames } from '@/modules/library/localArtists'
 import { closeDesktopLyricsWindow, desktopLyricsOpen, openDesktopLyricsWindow } from '@/modules/desktopLyrics/bridge'
 import { normalizeDesktopLyricsStyle } from '@/modules/desktopLyrics/style'
@@ -108,6 +123,7 @@ const props = defineProps<{
 }>()
 const player = usePlayerStore()
 const likedSongs = useLikedSongsStore()
+const biliParts = useBiliVideoPartsStore()
 const settings = useSettingsStore()
 const toast = useToastStore()
 const downloadStore = useDownloadStore()
@@ -137,6 +153,9 @@ const coverUrl = ref('')
 const showVolumeSlider = ref(false)
 const showQueue = ref(false)
 const showAddToPlaylist = ref(false)
+const addToPlaylistTrack = ref<TrackInfo | null>(null)
+const addToPlaylistAbort = new AbortController()
+onBeforeUnmount(() => addToPlaylistAbort.abort())
 const showBiliVideoSkip = ref(false)
 const biliVideoSkipTrack = ref<TrackInfo | null>(null)
 const canManageBiliVideoSkip = computed(() => !!player.currentTrack && !!resolveBiliVideoSkipBvid(player.currentTrack))
@@ -148,6 +167,19 @@ const showMoreSheet = ref(false)
 const showLtPanel = ref(false)
 const isTrackSwitchAnimating = ref(false)
 const trackSwitchDirection = ref<'prev' | 'next' | 'neutral'>('neutral')
+
+// Low performance mode (opt-in, off by default): with a full-screen overlay open the
+// background shader, lyrics and waveform all sit underneath it, invisible yet still burning
+// CPU/GPU. While the mode is off every per-frame animation keeps running unchanged.
+const fullScreenOverlayOpen = computed(() =>
+  showComments.value
+  || showQueue.value
+  || showMoreSheet.value
+  || showLtPanel.value
+  || showAddToPlaylist.value
+  || !!biliParts.collection
+  || showBiliVideoSkip.value)
+const frameLoopSuspended = computed(() => settings.lowPerformanceMode && fullScreenOverlayOpen.value)
 const controlFeedbackPulse = ref(0)
 const lastControlDirection = ref<'prev' | 'next' | 'misc' | null>(null)
 let trackSwitchAnimTimer: ReturnType<typeof setTimeout> | null = null
@@ -225,11 +257,12 @@ async function commitLyricsToTrack(
   nextTranslated: string | null,
   source?: string | null,
   nextRomanized?: string | null,
+  resetOffset = false,
 ) {
   const track = player.currentTrack
   if (!track) return
   const nextPayload = withUpdatedLyricsPayload(
-    track.syncPayload,
+    resetOffset ? withUpdatedUserOffsetPayload(track.syncPayload, 0) : track.syncPayload,
     nextLyric,
     nextTranslated,
     source ?? 'LOCAL_EDIT',
@@ -240,6 +273,7 @@ async function commitLyricsToTrack(
   nextPayload.syncMetadataVersion = 1
   delete nextPayload.sync_metadata_version
   player.patchCurrentTrackSyncPayload(nextPayload)
+  if (resetOffset) lyricOffsetStore.clearLocalUserOffset(track)
   const updatedTrack = player.currentTrack
   if (updatedTrack) {
     await persistTrackSyncPayload(updatedTrack)
@@ -388,12 +422,15 @@ async function onLyricMatchPicked(result: LyricMatchResult) {
     goBackTo('lyrics-editor')
     return
   }
+  const track = player.currentTrack
+  if (!track) return
   try {
-    rememberLyricSource(player.currentTrack, source)
+    const resetOffset = lyricOffsetStore.shouldResetOffsetForMatch(track, result.source)
+    rememberLyricSource(track, source)
     currentLyrics.replace(result.lines)
-    cacheLyricsForTrack(player.currentTrack, result.lines)
+    cacheLyricsForTrack(track, result.lines)
     // 换了一份歌词：候选没有音译时清掉旧音译，免得挂到新歌词上
-    await commitLyricsToTrack(lyricText, translationText || null, source, romanizationText || null)
+    await commitLyricsToTrack(lyricText, translationText || null, source, romanizationText || null, resetOffset)
     toast.success(t('player.lyrics_fill_applied'))
     goBackToMain()
   } catch (e) {
@@ -541,7 +578,7 @@ function extractColorsFromCover(url: string): Promise<boolean> {
 watch(
   () => [
     player.hasPlaybackSession,
-    player.hasPlaybackSession ? getTrackCoverUrl(player.currentTrack) : '',
+    player.hasPlaybackSession ? getTrackCoverUrl(player.currentTrack, 'detail') : '',
     player.hasPlaybackSession ? player.currentTrack?.id || '' : '',
   ] as const,
   async ([, rawUrl], _, onCleanup) => {
@@ -633,7 +670,7 @@ async function handleNowPlayingCoverError(event: Event) {
   const image = event.currentTarget as HTMLImageElement
   const failedSrc = image.getAttribute('src') || image.src
   const track = player.currentTrack
-  const rawUrl = getTrackCoverUrl(track)
+  const rawUrl = getTrackCoverUrl(track, 'detail')
   const proxiedUrl = normalizeProxiedCoverUrl(rawUrl)
   if (
     !track
@@ -668,7 +705,7 @@ async function handleNowPlayingCoverError(event: Event) {
     const refreshedUrl = await resolveCoverImage(proxiedUrl, { forceRefresh: true })
     if (
       player.currentTrack?.id !== expectedTrackId
-      || getTrackCoverUrl(player.currentTrack) !== expectedRawUrl
+      || getTrackCoverUrl(player.currentTrack, 'detail') !== expectedRawUrl
     ) {
       log.info('cover refresh ignored: stale track')
       return
@@ -705,10 +742,18 @@ function onLyricSeek(ms: number) {
   player.seekTo(ms)
 }
 
-const isFavorite = computed(() => likedSongs.isTrackLiked(player.currentTrack))
+const isFavorite = computed(() => likedSongs.isTrackLiked(player.currentTrack, true))
 
-async function toggleFavorite() {
-  await likedSongs.toggleTrack(player.currentTrack)
+function toggleFavorite() {
+  likedSongs.requestToggleTrack(player.currentTrack)
+}
+
+function openAddToPlaylist() {
+  if (!player.currentTrack) return
+  void biliParts.requestCollection(player.currentTrack, track => {
+    addToPlaylistTrack.value = track
+    showAddToPlaylist.value = true
+  }, undefined, addToPlaylistAbort.signal)
 }
 
 // 睡眠定时器选项
@@ -793,7 +838,7 @@ function toggleToolbarPanel(panel: 'sleep' | 'volume' | 'audiofx' | 'add') {
   if (panel === 'sleep') showSleepMenu.value = true
   else if (panel === 'volume') showVolumeSlider.value = true
   else if (panel === 'audiofx') showAudioFxPanel.value = true
-  else showAddToPlaylist.value = true
+  else openAddToPlaylist()
 }
 
 function triggerControlFeedbackPulse(direction: 'prev' | 'next' | 'misc' = 'misc') {
@@ -886,6 +931,10 @@ const coverWrapRef = ref<HTMLDivElement>()
 // 逐帧变化的播放位置以读取函数交给进度条与歌词，本组件的模板不读它，播放时不会每帧整页重渲染
 const readInterpolatedProgress = () => player.interpolatedProgress
 const readInterpolatedPositionMs = () => player.interpolatedPositionMs
+// Level and beat impulse change with the 200ms audio-level event, so they are read inside
+// the background frame loop only
+const readAudioLevel = () => (settings.audioReactive ? player.audioLevel : 0)
+const readBeatImpulse = () => (settings.audioReactive ? player.beatImpulse : 0)
 
 function onVolumeWheel(event: WheelEvent) {
   const next = wheelAdjustedVolume(player.volume, event.deltaY)
@@ -945,14 +994,16 @@ const artistLinksLoading = ref(false)
 async function openArtistPage(event: MouseEvent) {
   const track = player.currentTrack
   if (!track?.artist.trim() || artistLinksLoading.value) return
+  const targetKey = artistNavigationTargetKey(track)
   const source = getPlaybackSourceKind(track)
-  if (source === 'qq') {
-    await router.push({ name: 'explore', query: { q: track.artist, platform: 'netease', kind: 'artists' } })
-    emit('collapse')
-    return
-  }
+  const searchRoute = artistSearchRoute(track)
   artistLinksLoading.value = true
   try {
+    if (searchRoute || source === 'qq') {
+      await router.push(searchRoute ?? { name: 'explore', query: { q: track.artist, platform: 'netease', kind: 'artists' } })
+      emit('collapse')
+      return
+    }
     let links: typeof artistLinks.value
     if (source === 'youtube') {
       // 对齐 Android resolveYouTubeMusicCreators：按名字精确匹配创作者，匹配不到再退回创作者搜索
@@ -962,17 +1013,23 @@ async function openArtistPage(event: MouseEvent) {
         route: { name: 'youtube-artist', params: { browseId: creator.id }, query: { name: creator.name, cover: creator.cover_url || '' } },
       }))
       if (!links.length) {
-        if (player.currentTrack?.id !== track.id) return
+        if (artistNavigationTargetKey(player.currentTrack) !== targetKey) return
         await router.push({ name: 'explore', query: { q: track.artist, platform: 'youtube', kind: 'creators' } })
         emit('collapse')
         return
       }
     } else if (source === 'bilibili') {
       // 对齐 Android resolveBiliUploader：B 站的「歌手」就是视频的 UP 主
-      const bvid = `${track.id} ${track.syncPayload?.audioId ?? track.syncPayload?.audio_id ?? ''}`.match(/BV[0-9A-Za-z]{10}/)?.[0]
-      const uploader = bvid ? await invoke<{ id: string; name: string; cover_url: string | null } | null>('resolve_bili_uploader', { bvid }) : null
+      const uploader = await resolveBiliArtistUploader(track)
+      if (artistNavigationTargetKey(player.currentTrack) !== targetKey) return
       if (!uploader) {
         toast.show(t('player.bili_uploader_unavailable'), 'info')
+        return
+      }
+      const sharedArtistRoute = artistSearchRoute(track, uploader.name)
+      if (sharedArtistRoute) {
+        await router.push(sharedArtistRoute)
+        emit('collapse')
         return
       }
       links = [{
@@ -993,7 +1050,7 @@ async function openArtistPage(event: MouseEvent) {
         id: name, name, route: { name: 'local-artist', params: { name } },
       }))
     }
-    if (player.currentTrack?.id !== track.id) return
+    if (artistNavigationTargetKey(player.currentTrack) !== targetKey) return
     if (links.length === 1) {
       await router.push(links[0]!.route)
       emit('collapse')
@@ -1003,6 +1060,7 @@ async function openArtistPage(event: MouseEvent) {
       contextMenu.value = { show: true, x: event.clientX, y: event.clientY, type: 'artist-page' }
     }
   } catch (error) {
+    if (artistNavigationTargetKey(player.currentTrack) !== targetKey) return
     log.warn('failed to open artist page:', error)
     toast.error(t('player.artist_load_failed'))
   } finally {
@@ -1082,7 +1140,7 @@ function handleContextMenuClick(item: ContextMenuActionItem) {
     case 'copy-info': void copyText(track ? `${track.title} - ${track.artist}` : ''); break
     case 'copy-artist': void copyText(track?.artist || ''); break
     case 'share': closeContextMenu(); void shareSong(); break
-    case 'add-to-playlist': closeContextMenu(); showAddToPlaylist.value = true; break
+    case 'add-to-playlist': closeContextMenu(); openAddToPlaylist(); break
     case 'open-artist': closeContextMenu(); void openArtistPage(new MouseEvent('click', { clientX: x, clientY: y })); break
     case 'save-cover': void saveCoverArt(); break
     case 'cover-style-card': settings.coverStyle = 'card'; closeContextMenu(); break
@@ -1090,49 +1148,16 @@ function handleContextMenuClick(item: ContextMenuActionItem) {
   }
 }
 
-/** 网络封面走后端代理（带 Referer，绕开图床的跨域限制），本地封面直接读 asset 地址 */
-async function readCoverBytes(src: string): Promise<{ bytes: Uint8Array; extension: string }> {
-  let dataUrl = src.startsWith('data:') ? src : ''
-  if (!dataUrl && normalizeProxiedCoverUrl(src)) dataUrl = await resolveCoverImage(src)
-  const match = /^data:image\/([\w+.-]+);base64,(.*)$/is.exec(dataUrl)
-  if (match) {
-    const binary = atob(match[2])
-    const bytes = new Uint8Array(binary.length)
-    for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index)
-    return { bytes, extension: imageExtension(match[1]) }
-  }
-  const response = await fetch(src)
-  if (!response.ok) throw new Error(`cover request failed: ${response.status}`)
-  const blob = await response.blob()
-  return { bytes: new Uint8Array(await blob.arrayBuffer()), extension: imageExtension(blob.type.replace(/^image\//, '')) }
-}
-
-function imageExtension(subtype: string): string {
-  const normalized = subtype.toLowerCase()
-  if (normalized === 'jpeg' || normalized === 'pjpeg') return 'jpg'
-  return /^(png|webp|gif|avif|bmp)$/.test(normalized) ? normalized : 'jpg'
-}
-
 async function saveCoverArt() {
   closeContextMenu()
-  const src = coverUrl.value || player.currentTrack?.coverUrl
+  // Export the original artwork, not the detail-sized URL used for display.
+  const src = getTrackCoverUrl(player.currentTrack, 'original') || coverUrl.value || player.currentTrack?.coverUrl
   if (!src) return
 
   try {
-    const { bytes, extension } = await readCoverBytes(src)
-    const { save } = await import('@tauri-apps/plugin-dialog')
-    const baseName = (player.currentTrack?.title || 'cover').replace(/[\\/:*?"<>|]+/g, '_').trim() || 'cover'
-    const filePath = await save({
-      defaultPath: `${baseName}.${extension}`,
-      filters: [{ name: 'Image', extensions: [extension] }],
-    })
-    if (!filePath) return
-
-    await invoke('save_file_bytes', {
-      path: filePath,
-      data: Array.from(bytes),
-    })
-    toast.success(t('player.cover_saved'))
+    const { bytes, extension } = await readImageBytes(src)
+    const baseName = safeFileName(player.currentTrack?.title || '', 'cover')
+    if (await saveImageWithDialog(bytes, baseName, extension)) toast.success(t('player.cover_saved'))
   } catch (e) {
     log.error('Save cover failed:', e)
     toast.error(t('player.cover_save_failed'))
@@ -1144,7 +1169,7 @@ const displayLyrics = computed(() => currentLyrics.lines)
 // 更多选项面板子视图
 const moreSheetView = ref<
   'main' | 'offset' | 'fontsize' | 'effects' | 'search' | 'editinfo' |
-  'quality' | 'lyrics-editor' | 'lyrics-fill' | 'track-detail'
+  'quality' | 'lyrics-editor' | 'lyrics-fill' | 'track-detail' | 'bili-subtitles'
 >('main')
 const moreSheetTransition = ref('slide-left')
 
@@ -1482,6 +1507,7 @@ const currentLyricSourceLabel = computed(() => {
     case 'kugou': return t('player.lyric_source_kugou')
     case 'lrclib': return 'LRCLIB'
     case 'amll_ttml': return 'AMLL TTML'
+    case 'bilibili_cc': return t('bili_subtitle.title')
   }
   const raw = (lyricSourceOf(player.currentTrack) ?? '').toLowerCase().replace(/[^a-z]/g, '')
   if (raw === 'youtube') return t('player.source_youtube')
@@ -1738,10 +1764,21 @@ async function openCurrentAlbum() {
 }
 
 async function openCurrentArtist() {
-  const songId = currentNeteaseSongNumericId.value
-  if (!songId) return
+  const track = player.currentTrack
+  if (!track) return
+  const targetKey = artistNavigationTargetKey(track)
   try {
+    const searchRoute = artistSearchRoute(track)
+    if (searchRoute) {
+      hideMoreSheet()
+      emit('collapse')
+      await router.push(searchRoute)
+      return
+    }
+    const songId = currentNeteaseSongNumericId.value
+    if (!songId) return
     const detail = await invoke<any>('get_netease_song_detail', { songId })
+    if (artistNavigationTargetKey(player.currentTrack) !== targetKey) return
     const song = detail?.songs?.[0]
     const artist = (song?.ar || []).find((a: any) => a?.id)
     if (!artist?.id) {
@@ -1757,6 +1794,7 @@ async function openCurrentArtist() {
       query: { name: artist.name || primaryArtistName.value },
     })
   } catch (e) {
+    if (artistNavigationTargetKey(player.currentTrack) !== targetKey) return
     log.error('Open artist failed:', e)
     toast.error(String(e))
   }
@@ -1781,8 +1819,11 @@ async function shareSong() {
     const nid = track.id.replace('netease:', '')
     url = `https://music.163.com/song?id=${nid}`
   } else if (track.id.startsWith('bilibili:')) {
-    const bid = track.id.replace('bilibili:', '')
-    url = `https://www.bilibili.com/video/${bid}`
+    const bid = resolveBiliVideoSkipBvid(track)
+      || String(track.syncPayload?.audioId ?? track.syncPayload?.audio_id ?? track.id.replace(/^bilibili:/i, '')).split(':')[0]
+    const videoId = /^\d+$/.test(bid || '') ? `av${bid}` : bid
+    const cid = resolveBiliVideoSkipCid(track)
+    if (videoId) url = `https://www.bilibili.com/video/${videoId}${cid ? `?cid=${cid}` : ''}`
   } else if (track.id.startsWith('youtube:')) {
     const vid = track.id.replace('youtube:', '')
     url = `https://music.youtube.com/watch?v=${vid}`
@@ -2072,16 +2113,25 @@ const sliderActiveColor = computed(() => dynamicColorVars.value['--np-primary'] 
       :blur-amount="settings.coverBlurAmount * COVER_BLUR_PX_PER_UNIT"
       :darken-alpha="Math.min(Math.max(settings.coverBlurDarken, 0), 0.8)"
     />
-    <HyperBackground
-      v-else-if="shouldRenderDynamicBackground"
-      :playing="player.isPlaying"
-      :music-level="settings.audioReactive ? player.audioLevel : 0"
-      :beat-impulse="settings.audioReactive ? player.beatImpulse : 0"
-      :colors="extractedColors"
-      :is-dark="true"
-      :light-offset="paletteResult?.lightOffset ?? 0"
-      :saturate-offset="paletteResult?.saturateOffset ?? 0"
-    />
+    <!-- Level and beat impulse are passed as readers: they change with the 200ms backend
+         event, and binding the values directly re-rendered this component (including the
+         whole more-options panel below) every 200ms. The readers return exactly the same
+         values and the background frame loop still reads them per frame, so nothing about
+         the rendering changes. -->
+    <Transition name="np-background" appear>
+      <HyperBackground
+        v-if="!settings.coverBlurBg && shouldRenderDynamicBackground"
+        :playing="player.isPlaying"
+        :low-performance="settings.lowPerformanceMode"
+        :suspended="frameLoopSuspended"
+        :music-level="readAudioLevel"
+        :beat-impulse="readBeatImpulse"
+        :colors="extractedColors"
+        :is-dark="true"
+        :light-offset="paletteResult?.lightOffset ?? 0"
+        :saturate-offset="paletteResult?.saturateOffset ?? 0"
+      />
+    </Transition>
     <div class="np-scrim" />
     <div class="np-ambient-glow" />
 
@@ -2203,6 +2253,7 @@ const sliderActiveColor = computed(() => dynamicColorVars.value['--np-primary'] 
           <WaveformSlider
             :progress="readInterpolatedProgress"
             :is-playing="player.isPlaying"
+            :suspended="frameLoopSuspended"
             :active-color="sliderActiveColor"
             @seek="onSeek"
             @preview="onSliderPreview"
@@ -2395,9 +2446,9 @@ const sliderActiveColor = computed(() => dynamicColorVars.value['--np-primary'] 
                 min="0"
                 max="1"
                 step="0.01"
-                :value="1 - player.volume"
+                :value="player.volume"
                 class="volume-slider"
-                @input="player.setVolume(1 - parseFloat(($event.target as HTMLInputElement).value))"
+                @input="player.setVolume(parseFloat(($event.target as HTMLInputElement).value))"
               />
               <EditableRangeValue
                 :model-value="player.volume"
@@ -2407,7 +2458,6 @@ const sliderActiveColor = computed(() => dynamicColorVars.value['--np-primary'] 
                 :step="0.01"
                 :input-scale="100"
                 :input-width="32"
-                :range-reversed="true"
                 :display-value="`${Math.round(player.volume * 100)}%`"
                 input-suffix="%"
                 :aria-label="t('player.volume')"
@@ -2466,6 +2516,7 @@ const sliderActiveColor = computed(() => dynamicColorVars.value['--np-primary'] 
           :is-playing="player.isPlaying"
           :lyric-offset-ms="currentLyricTotalOffsetMs"
           :seek-seq="player.lastSeekCommand.seq"
+          :suspended="frameLoopSuspended"
           @seek="onLyricSeek"
         />
         <div v-else-if="isFetchingLyrics" class="lyrics-empty">
@@ -2485,7 +2536,7 @@ const sliderActiveColor = computed(() => dynamicColorVars.value['--np-primary'] 
         <QueuePanel v-if="player.hasPlaybackSession && showQueue" @close="showQueue = false" />
       </Transition>
     </Teleport>
-    <AddToPlaylistDialog v-if="player.hasPlaybackSession" v-model:open="showAddToPlaylist" :track="player.currentTrack" />
+    <AddToPlaylistDialog v-if="player.hasPlaybackSession" v-model:open="showAddToPlaylist" :track="addToPlaylistTrack" />
     <BiliVideoSkipDialog v-model:open="showBiliVideoSkip" :track="biliVideoSkipTrack" />
     <CommentsPanel v-model:open="showComments" :track="player.currentTrack" />
     <ListenTogetherPanel v-if="player.hasPlaybackSession" v-model:open="showLtPanel" />
@@ -2562,6 +2613,14 @@ const sliderActiveColor = computed(() => dynamicColorVars.value['--np-primary'] 
 
             <!-- 歌词 -->
             <div class="np-more-group">
+              <button v-if="player.currentTrack && biliSubtitleTarget(player.currentTrack)" class="np-more-list-item" @click="goToSubView('bili-subtitles')">
+                <span class="material-symbols-rounded">subtitles</span>
+                <div class="np-more-list-info">
+                  <span class="np-more-list-headline">{{ t('bili_subtitle.title') }}</span>
+                  <span v-if="currentLyrics.subtitle?.track" class="np-more-list-desc">{{ currentLyrics.subtitle.track.label }}</span>
+                </div>
+                <span class="material-symbols-rounded np-more-chevron">chevron_right</span>
+              </button>
               <div class="np-more-list-item np-more-list-item--stepper">
                 <button class="np-more-stepper-main" @click="goToSubView('offset')">
                   <span class="material-symbols-rounded">timer</span>
@@ -2680,6 +2739,14 @@ const sliderActiveColor = computed(() => dynamicColorVars.value['--np-primary'] 
             </div>
           </template>
 
+          <template v-else-if="moreSheetView === 'bili-subtitles'">
+            <div class="np-more-sub-header">
+              <button class="np-more-back" :aria-label="t('common.back')" @click="goBackToMain()"><span class="material-symbols-rounded">arrow_back</span></button>
+              <h4 class="np-more-title">{{ t('bili_subtitle.title') }}</h4>
+            </div>
+            <BiliSubtitleSettings :track="player.currentTrack" />
+          </template>
+
           <!-- 子视图：歌词偏移（显示与编辑的都是实际生效的偏移） -->
           <template v-else-if="moreSheetView === 'offset'">
             <div class="np-more-sub-header">
@@ -2737,6 +2804,7 @@ const sliderActiveColor = computed(() => dynamicColorVars.value['--np-primary'] 
               <h4 class="np-more-title">{{ t('player.font_scale') }}</h4>
             </div>
             <div class="np-more-item">
+              <p class="np-more-label">{{ t('settings.lyric_font_size') }}</p>
               <div class="np-more-row">
                 <input type="range" :min="LYRIC_FONT_SCALE_MIN" :max="LYRIC_FONT_SCALE_MAX" :step="LYRIC_FONT_SCALE_STEP"
                   :value="settings.lyricFontScale"
@@ -2759,6 +2827,49 @@ const sliderActiveColor = computed(() => dynamicColorVars.value['--np-primary'] 
               <p class="np-more-preview" :style="{ fontSize: `${24 * settings.lyricFontScale}px` }">
                 {{ t('player.font_preview') }}
               </p>
+              <p class="np-more-preview" :style="{ fontSize: `${12 * settings.lyricFontScale * settings.lyricTranslationScale}px` }">
+                {{ t('player.translation_font_preview') }}
+              </p>
+            </div>
+            <div class="np-more-item">
+              <p class="np-more-label">{{ t('settings.lyric_translation_size') }}</p>
+              <div class="np-more-row">
+                <input type="range" class="np-more-slider"
+                  v-model.number="settings.lyricTranslationScale"
+                  :min="LYRIC_TRANSLATION_SCALE_MIN" :max="LYRIC_TRANSLATION_SCALE_MAX" :step="LYRIC_TRANSLATION_SCALE_STEP"
+                  :aria-label="t('settings.lyric_translation_size')" />
+                <EditableRangeValue
+                  v-model="settings.lyricTranslationScale" class="np-offset-value"
+                  :min="LYRIC_TRANSLATION_SCALE_MIN" :max="LYRIC_TRANSLATION_SCALE_MAX" :step="LYRIC_TRANSLATION_SCALE_STEP"
+                  :input-scale="100" input-suffix="%"
+                  :display-value="`${Math.round(settings.lyricTranslationScale * 100)}%`"
+                  :aria-label="t('settings.lyric_translation_size')" />
+              </div>
+              <p class="np-more-hint np-more-hint--below">{{ t('settings.lyric_translation_size_desc') }}</p>
+              <button class="np-more-text-btn" :disabled="settings.lyricTranslationScale === LYRIC_TRANSLATION_SCALE_DEFAULT"
+                @click="settings.lyricTranslationScale = LYRIC_TRANSLATION_SCALE_DEFAULT">
+                <span class="material-symbols-rounded">restart_alt</span>
+                {{ t('settings.ui_scale_reset') }}
+              </button>
+            </div>
+            <div class="np-more-item">
+              <p class="np-more-label">{{ t('settings.ui_scale') }}</p>
+              <div class="np-more-row">
+                <input type="range" class="np-more-slider" :value="settings.uiScale"
+                  :min="UI_SCALE_MIN" :max="uiScaleMax" :step="UI_SCALE_STEP"
+                  :disabled="!uiScaleSupported" :aria-label="t('settings.ui_scale')"
+                  @change="settings.uiScale = normalizeUiScale(Number(($event.target as HTMLInputElement).value))" />
+                <span class="np-offset-value">{{ settings.uiScale }}%</span>
+              </div>
+              <p class="np-more-hint np-more-hint--below">{{ t('settings.ui_scale_desc') }}</p>
+              <p v-if="uiScaleSupported" class="np-more-hint">{{ t('settings.ui_scale_limit', { value: uiScaleMax }) }}</p>
+              <p v-if="uiScaleError" class="np-more-hint" role="alert">{{ t('settings.ui_scale_failed') }}</p>
+              <p v-else-if="!uiScaleSupported" class="np-more-hint">{{ t(isTauri() ? 'settings.ui_scale_unsupported' : 'settings.ui_scale_preview') }}</p>
+              <button class="np-more-text-btn" :disabled="!uiScaleSupported || settings.uiScale === UI_SCALE_DEFAULT"
+                @click="settings.uiScale = UI_SCALE_DEFAULT">
+                <span class="material-symbols-rounded">restart_alt</span>
+                {{ t('settings.ui_scale_reset') }}
+              </button>
             </div>
           </template>
 
@@ -3215,6 +3326,15 @@ const sliderActiveColor = computed(() => dynamicColorVars.value['--np-primary'] 
   inset: 0;
   z-index: -1;
   transition: background 0.8s ease;
+}
+
+// 封面异步取色完成后渐入，避免播放页滑入途中突然切换整屏背景
+.np-background-enter-active {
+  transition: opacity 360ms ease;
+}
+
+.np-background-enter-from {
+  opacity: 0;
 }
 
 // 对齐 Android：无全局遮罩，对比度完全由文字颜色和动态配色保证
@@ -4466,13 +4586,12 @@ const sliderActiveColor = computed(() => dynamicColorVars.value['--np-primary'] 
 }
 
 .volume-slider {
-  // 竖排滑条不能用 writing-mode（WebKitGTK 圆点错位且拖不动），
-  // 用原生横向滑条整体旋转：几何/命中计算保持原生，视觉为竖向。
-  // value = 1 - volume：rotate(90deg) 使 min 在上，即音量满格在上
+  // 保留原生横向滑条的命中计算，避免 WebKitGTK 竖排错位
+  // 逆时针旋转让最大音量在上，数值不反转以保持方向键语义
   appearance: none;
   width: 100px;
   height: 4px;
-  transform: rotate(90deg);
+  transform: rotate(-90deg);
   margin: 48px 0;
   background: rgba(255, 255, 255, 0.15);
   border-radius: 2px;

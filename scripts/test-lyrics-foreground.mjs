@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises'
 import * as vue from 'vue'
 import { compileScript, parse } from 'vue/compiler-sfc'
 import ts from 'typescript'
+import { format } from './bili-subtitle-test-loader.mjs'
 
 const source = await readFile(new URL('../src/components/LyricsView.vue', import.meta.url), 'utf8')
 const script = compileScript(parse(source).descriptor, {
@@ -35,6 +36,10 @@ class ListenerTarget {
 async function mount(overrides = {}) {
   let now = 1000, frameId = 0
   const frames = new Map()
+  // The component now uses the shared frame loop (@/utils/frameLoop); wire it to the same
+  // fake frame table here
+  const scheduleFrame = callback => { const id = ++frameId; frames.set(id, callback); return id }
+  const cancelFrame = id => frames.delete(id)
   const document = Object.assign(new ListenerTarget(), {
     visibilityState: 'visible', fonts: Object.assign(new ListenerTarget(), { status: 'loaded' }),
   })
@@ -76,12 +81,15 @@ async function mount(overrides = {}) {
     lyricBlur: true, lyricBlurAmount: 1, lyricFontScale: 1,
   })
   const dependencies = {
+    '@/modules/lyrics/lyricsFormat': format,
     vue,
     '@amll-core/lyric-player/dom/index.ts': { DomLyricPlayer: FakeDomLyricPlayer },
     '@/stores/settings': { useSettingsStore: () => settings },
     'vue-i18n': { useI18n: () => ({ t: key => key }) },
     '@tauri-apps/plugin-clipboard-manager': { writeText: async () => {} },
     '@/components/ui/ContextMenu.vue': { default: {} },
+    '@/components/LyricShareDialog.vue': { default: {} },
+    '@/utils/frameLoop': { scheduleFrame, cancelFrame },
     '@/utils/contextMenu': { createContextMenuItem: (label, options) => ({ label, ...options }) },
   }
   const component = new Function(
@@ -90,11 +98,7 @@ async function mount(overrides = {}) {
   )(name => {
     assert.ok(name in dependencies, `unexpected dependency: ${name}`)
     return dependencies[name]
-  }, {}, document, window, { now: () => now }, callback => {
-    const id = ++frameId
-    frames.set(id, callback)
-    return id
-  }, id => frames.delete(id), undefined)
+  }, {}, document, window, { now: () => now }, scheduleFrame, cancelFrame, undefined)
   const setup = component.setup
   component.setup = (props, context) => {
     const state = setup(props, context)

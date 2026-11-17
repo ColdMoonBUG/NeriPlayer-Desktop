@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { invoke } from '@tauri-apps/api/core'
 import { normalizeTrack, usePlayerStore, type TrackInfo } from '@/stores/player'
+import { useTrackActivation } from '@/composables/useTrackActivation'
 import { useToastStore } from '@/stores/toast'
 import BilibiliCoverImage from '@/components/BilibiliCoverImage.vue'
 import TrackContextMenu from '@/components/TrackContextMenu.vue'
@@ -11,6 +12,7 @@ import { useArtistFavorite } from '@/modules/library/favoriteArtistState'
 import { playlistDetailCacheKey, previewCachedDetail, writePlaylistDetailCache, type CachedDetailPreview } from '@/modules/library/playlistDetailCache'
 import { recordPlaylistOpen } from '@/modules/library/playlistUsage'
 import { formatTrackDuration } from '@/utils/timeFormat'
+import { useBiliVideoPartsStore } from '@/stores/biliVideoParts'
 
 interface ArtistHeader { name: string; coverUrl: string; bannerUrl: string; description: string }
 interface ArtistDetail { header: ArtistHeader; tracks: TrackInfo[]; page: number; total: number; hasMore: boolean }
@@ -21,6 +23,8 @@ const route = useRoute()
 const router = useRouter()
 const { t } = useI18n()
 const player = usePlayerStore()
+const { onTrackClick, onTrackDoubleClick } = useTrackActivation()
+const biliParts = useBiliVideoPartsStore()
 const toast = useToastStore()
 const mid = computed(() => String(route.params.mid || ''))
 const detail = ref<ArtistDetail | null>(null)
@@ -102,7 +106,9 @@ async function load(more = false) {
 async function toggleFollow() {
   try { await toggle() } catch (cause) { toast.error(String(cause)) }
 }
-function playTrack(track: TrackInfo) { player.playAll(activeTracks.value, track.id) }
+function playTrack(track: TrackInfo) {
+  void biliParts.request(track, () => player.playAll(activeTracks.value, track.id))
+}
 
 async function loadContents(more = false) {
   if (loadingContents.value) return
@@ -239,7 +245,7 @@ onUnmounted(() => { generation++; contentsGeneration++; collectionGeneration++ }
       <div v-if="selectedContent ? collectionError : error" class="creator-error"><span>{{ selectedContent ? collectionError : error }}</span><button @click="selectedContent ? loadCollection(selectedContent, !!collection) : load(failedLoadMore)">{{ t('player.retry') }}</button></div>
       <div v-if="loadingCollection && !collection" class="state-center"><span class="material-symbols-rounded spinning">progress_activity</span></div>
       <div class="track-list">
-        <button v-for="(track, index) in activeTracks" :key="track.id" class="track-item" :class="{ active: player.currentTrack?.id === track.id }" @click="playTrack(track)" @contextmenu="trackMenuRef?.open($event, track)">
+        <button v-for="(track, index) in activeTracks" :key="track.id" class="track-item" :class="{ active: player.currentTrack?.id === track.id }" @click="onTrackClick($event, () => playTrack(track))" @dblclick="onTrackDoubleClick($event, () => playTrack(track))" @contextmenu="trackMenuRef?.open($event, track)">
           <span class="track-index">{{ index + 1 }}</span><div class="track-cover"><BilibiliCoverImage :src="track.coverUrl" loading="lazy"><span class="material-symbols-rounded filled">music_note</span></BilibiliCoverImage></div><div class="track-info"><div class="track-title">{{ track.title }}</div><div class="track-meta">{{ track.artist }}</div></div><span class="track-duration">{{ formatTrackDuration(track.durationMs) }}</span>
         </button>
       </div>

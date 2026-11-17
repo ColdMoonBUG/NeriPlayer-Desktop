@@ -84,6 +84,64 @@ const {
   resolveLtJoinSecret,
 } = await loadProtocolModule()
 
+async function loadArtistNavigationModule() {
+  const evaluate = (source, dependencies = {}) => {
+    const compiled = ts.transpileModule(source, {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+    }).outputText
+    const exports = {}
+    new Function('require', 'exports', compiled)(name => {
+      assert.ok(name in dependencies, `unexpected artist dependency ${name}`)
+      return dependencies[name]
+    }, exports)
+    return exports
+  }
+  const playbackSource = await readFile(path.join(root, 'src/modules/playback/playbackSource.ts'), 'utf8')
+  const parsed = ts.createSourceFile('playbackSource.ts', playbackSource, ts.ScriptTarget.ES2022, true)
+  const remoteKinds = parsed.statements.find(node => ts.isVariableStatement(node)
+    && node.declarationList.declarations.some(declaration => declaration.name.getText(parsed) === 'REMOTE_SOURCE_KINDS'))
+  assert.ok(remoteKinds)
+  const functions = ['getPlaybackSourceKind', 'syncPayloadString'].map(name => {
+    const declaration = parsed.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === name)
+    assert.ok(declaration)
+    return declaration.getText(parsed)
+  }).join('\n')
+  return evaluate(await readFile(path.join(root, 'src/modules/library/artistTrackNavigation.ts'), 'utf8'), {
+    '@tauri-apps/api/core': { invoke: async () => { throw new Error('artist mapping does not request network data') } },
+    '@/modules/playback/playbackSource': evaluate(`${remoteKinds.getText(parsed)}\n${functions}`),
+    '@/modules/playback/biliVideoSkip': evaluate(await readFile(path.join(root, 'src/modules/playback/biliVideoSkip.ts'), 'utf8')),
+    '@/utils/trackCover': evaluate(await readFile(path.join(root, 'src/utils/trackCover.ts'), 'utf8')),
+  })
+}
+const { artistSearchRoute, artistNavigationTargetKey } = await loadArtistNavigationModule()
+
+{
+  const hostTrack = {
+    id: 'bilibili:12345', title: '片段', artist: '匹配歌手', album: 'Bilibili', durationMs: 2000,
+    coverUrl: '', audioUrl: '', source: 'bilibili',
+    syncPayload: { channelId: 'bilibili', audioId: '12345', customArtist: '匹配歌手', originalArtist: '视频作者' },
+  }
+  const dto = JSON.parse(JSON.stringify(trackInfoToLtTrack(hostTrack)))
+  assert.equal(dto.artist, '匹配歌手')
+  assert.equal('customArtist' in dto, false)
+  assert.equal('originalArtist' in dto, false)
+  assert.equal('listenTogetherDisplayArtist' in dto, false)
+  const listener = ltTrackToTrackInfo(dto)
+  assert.equal(listener.syncPayload.listenTogetherDisplayArtist, '匹配歌手', 'legacy DTOs must retain the room display name as local navigation provenance')
+  assert.deepEqual(artistSearchRoute(listener, '视频作者'), {
+    name: 'explore', query: { q: '匹配歌手', platform: 'netease', kind: 'artists' },
+  }, 'a room display artist that differs from the resolved uploader must search the displayed artist')
+  assert.equal(artistSearchRoute(listener, ' 匹配歌手 '), null, 'an unchanged room uploader must retain its exact platform link')
+  assert.equal(artistSearchRoute(listener), null, 'the room name alone cannot prove that the artist was overridden')
+  assert.equal(artistSearchRoute(listener, ''), null, 'an absent uploader name cannot distinguish display metadata')
+  assert.equal(artistSearchRoute({ ...listener, syncPayload: { ...listener.syncPayload, listenTogetherDisplayArtist: '旧显示歌手' } }, '视频作者'), null)
+  const withoutRoomProvenance = { ...listener, syncPayload: { channelId: 'bilibili', audioId: '12345' } }
+  assert.equal(artistSearchRoute(withoutRoomProvenance, '视频作者'), null, 'non-room tracks keep their existing navigation semantics')
+  assert.notEqual(artistNavigationTargetKey(listener), artistNavigationTargetKey(withoutRoomProvenance), 'a change in room display provenance invalidates an in-flight target')
+  assert.equal(trackInfoToLtTrack(listener).stableKey, dto.stableKey)
+  assert.equal('listenTogetherDisplayArtist' in JSON.parse(JSON.stringify(trackInfoToLtTrack(listener))), false, 'local navigation provenance must never extend the room wire schema')
+}
+
 assert.equal(
   normalizeLtHttpBaseUrl(' https://listen.example/room/ '),
   'https://listen.example/room',
@@ -187,7 +245,7 @@ assert.equal(isTrustedInboundStreamUrl('https://music.126.net.evil.test/a', 'net
   assert.equal(lt.subAudioId, '888')
   assert.equal(lt.stableKey, 'bilibili:BV1xx:888')
   const back = ltTrackToTrackInfo(lt)
-  assert.equal(back.id, 'bilibili:BV1xx')
+  assert.equal(back.id, 'bilibili:BV1xx:888')
   assert.equal(back.album, 'Bilibili|888')
 }
 
@@ -207,6 +265,28 @@ assert.equal(isTrustedInboundStreamUrl('https://music.126.net.evil.test/a', 'net
   assert.equal(numeric.audioId, '12345')
   assert.equal(numeric.stableKey, 'bilibili:12345:888')
   assert.notEqual(explicit.stableKey, legacy.stableKey, 'different Bilibili parts remain different room tracks')
+}
+
+// 桌面分 P 后缀只用于本地身份，协议仍发送父视频和独立 CID
+{
+  const base = { id: 'bilibili:BV1parts:111', title: 'P1', artist: 'UP', album: 'Bilibili|111|BV1parts', durationMs: 1000, coverUrl: '', audioUrl: '', source: 'bilibili' }
+  const legacy = trackInfoToLtTrack(base)
+  assert.equal(legacy.audioId, 'BV1parts')
+  assert.equal(legacy.subAudioId, '111')
+  const suffixOnly = trackInfoToLtTrack({ ...base, album: '' })
+  assert.equal(suffixOnly.audioId, 'BV1parts')
+  assert.equal(suffixOnly.subAudioId, undefined, 'legacy page-index suffixes cannot become CIDs')
+  const authoritative = trackInfoToLtTrack({ ...base, syncPayload: { channelId: 'bilibili', audioId: '123456', subAudioId: '222' } })
+  assert.equal(authoritative.audioId, '123456')
+  assert.equal(authoritative.subAudioId, '222')
+  const incoming = ltTrackToTrackInfo({ ...authoritative, album: 'Bilibili|222|BV1parts' })
+  assert.equal(incoming.id, 'bilibili:123456:222')
+  assert.equal(incoming.album, 'Bilibili|222|BV1parts')
+  assert.equal(incoming.syncPayload.audioId, '123456')
+  assert.equal(incoming.syncPayload.subAudioId, '222')
+  assert.equal(trackInfoToLtTrack(incoming).stableKey, 'bilibili:123456:222')
+  const another = ltTrackToTrackInfo({ ...authoritative, subAudioId: '333' })
+  assert.notEqual(another.id, incoming.id)
 }
 
 // YouTube: playlistContext 进入 stableKey, mediaUri 回填

@@ -25,7 +25,9 @@ export interface DesktopLyricsFrame {
   trackId: string
   title: string
   artist: string
+  locale?: string
   isPlaying: boolean
+  clockRunning?: boolean
   /** 发帧时的播放位置（未加歌词偏移） */
   positionMs: number
   /** 发帧时的 Date.now() */
@@ -56,7 +58,7 @@ export const FRAME_WORD_BYTES = 64
 
 export function emptyDesktopLyricsFrame(style?: DesktopLyricsStyle): DesktopLyricsFrame {
   return {
-    trackId: '', title: '', artist: '', isPlaying: false,
+    trackId: '', title: '', artist: '', isPlaying: false, clockRunning: false,
     positionMs: 0, anchorAt: 0, rate: 1, offsetMs: 0,
     firstIndex: 0, lines: [], accent: '', style: style ?? normalizeDesktopLyricsStyle(null),
   }
@@ -115,13 +117,15 @@ export function buildDesktopLyricsFrame(input: {
   positionMs: number
   lyricOffsetMs: number
   isPlaying: boolean
+  clockRunning?: boolean
   rate: number
   now: number
   accent: string | null
   style: DesktopLyricsStyle
+  locale?: string
 }): DesktopLyricsFrame {
   const style = normalizeDesktopLyricsStyle(input.style)
-  if (!input.track) return emptyDesktopLyricsFrame(style)
+  if (!input.track) return { ...emptyDesktopLyricsFrame(style), locale: input.locale }
   const position = finite(input.positionMs)
   const offset = finite(input.lyricOffsetMs)
   const lines = sortedLines(input.lines)
@@ -132,7 +136,9 @@ export function buildDesktopLyricsFrame(input: {
     trackId: boundedText(input.track.id, 512),
     title: boundedText(input.track.title, FRAME_TEXT_BYTES),
     artist: boundedText(input.track.artist, FRAME_TEXT_BYTES),
+    locale: input.locale,
     isPlaying: input.isPlaying,
+    clockRunning: input.isPlaying && input.clockRunning !== false,
     positionMs: position,
     anchorAt: finite(input.now),
     rate: rate > 0 ? rate : 1,

@@ -10,6 +10,7 @@ import { installHostBackgroundSync } from './utils/hostBackground'
 import { preloadUserData } from './modules/persistence/userData'
 import { removeLegacyCacheBuckets } from './utils/persistentCache'
 import { installNativeContextMenuPolicy } from './utils/nativeContextMenu'
+import { installClipboardPasteGuard } from './utils/clipboardPaste'
 import { useSettingsStore } from './stores/settings'
 import { installUiScale } from './modules/settings/uiScale'
 import '@fontsource-variable/fraunces'
@@ -89,6 +90,7 @@ async function mountWindow() {
   await settings.hydrate()
   app.onUnmount(await installUiScale(settings))
   app.mount('#app')
+  installClipboardPasteGuard()
   installHostBackgroundSync()
 
   // Vue 挂载完成后显示窗口，避免闪烁

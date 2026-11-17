@@ -11,6 +11,7 @@ const log = createLogger('settings')
 export type ThemeMode = 'system' | 'dark' | 'light'
 export type CoverStyle = 'disc' | 'card'
 export type ColorMode = 'system' | 'default' | 'cover'
+export type LocalLibrarySortBy = 'default' | 'modified' | 'title' | 'artist' | 'album' | 'duration'
 
 export const YOUTUBE_PLAYBACK_SOURCES = [
   'automatic', 'visionos', 'android_vr', 'web_remix', 'tv_html5', 'web_creator',
@@ -46,6 +47,7 @@ export interface AppSettings {
   showAudioSampleRate: boolean
   showAudioBitDepth: boolean
   lyricFontScale: number
+  lyricTranslationScale: number
   crossfade: boolean
   normalizeVolume: boolean
   /** 多声道（AC-3/E-AC-3）音轨保留码流自带的动态范围压缩 */
@@ -60,6 +62,9 @@ export interface AppSettings {
   keepProgress: boolean
   rememberLongFormProgress: boolean
   keepPlaybackMode: boolean
+  doubleClickPlay: boolean
+  localLibrarySortBy: LocalLibrarySortBy
+  localLibrarySortDescending: boolean
   showTranslation: boolean
   showRomanization: boolean
   lyricBlur: boolean
@@ -70,6 +75,10 @@ export interface AppSettings {
   kugouOffset: number
   lrclibOffset: number
   amllTtmlOffset: number
+  biliCcSubtitleOffset: number
+  biliCcSubtitleEnabled: boolean
+  biliCcSubtitleLanguage: string
+  biliCcSubtitleAiFallback: boolean
   coverStyle: CoverStyle
   advancedLyrics: boolean
   /** 有逐字结果时优先用；关闭后不再用 AMLL/酷狗补逐字（Android prefer_word_timed_lyrics） */
@@ -79,6 +88,9 @@ export interface AppSettings {
   dynamicBackground: boolean
   colorMode: ColorMode
   audioReactive: boolean
+  /** Caps the frame rate and pauses background animation while a full-screen overlay is
+   * open (off by default: visuals come first) */
+  lowPerformanceMode: boolean
   coverBlurBg: boolean
   coverBlurAmount: number
   coverBlurDarken: number
@@ -162,6 +174,10 @@ export const UI_SCALE_STEP = 5
 export const LYRIC_FONT_SCALE_MIN = 0.5
 export const LYRIC_FONT_SCALE_MAX = 1.6
 export const LYRIC_FONT_SCALE_STEP = 0.05
+export const LYRIC_TRANSLATION_SCALE_DEFAULT = 1
+export const LYRIC_TRANSLATION_SCALE_MIN = 0.5
+export const LYRIC_TRANSLATION_SCALE_MAX = 2
+export const LYRIC_TRANSLATION_SCALE_STEP = 0.05
 // 封面模糊强度 × 30 = CSS 模糊半径（px），8 档上限即 240px
 export const COVER_BLUR_PX_PER_UNIT = 30
 export const MAX_COVER_BLUR_AMOUNT = 8
@@ -203,6 +219,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   showAudioSampleRate: false,
   showAudioBitDepth: false,
   lyricFontScale: 1,
+  lyricTranslationScale: LYRIC_TRANSLATION_SCALE_DEFAULT,
   crossfade: false,
   normalizeVolume: false,
   multichannelDrc: false,
@@ -216,6 +233,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   keepProgress: true,
   rememberLongFormProgress: true,
   keepPlaybackMode: true,
+  doubleClickPlay: false,
+  localLibrarySortBy: 'default',
+  localLibrarySortDescending: false,
   showTranslation: true,
   showRomanization: false,
   lyricBlur: true,
@@ -226,6 +246,10 @@ const DEFAULT_SETTINGS: AppSettings = {
   kugouOffset: 0,
   lrclibOffset: 0,
   amllTtmlOffset: 0,
+  biliCcSubtitleOffset: 0,
+  biliCcSubtitleEnabled: true,
+  biliCcSubtitleLanguage: '',
+  biliCcSubtitleAiFallback: true,
   coverStyle: 'card',
   advancedLyrics: true,
   preferWordTimedLyrics: true,
@@ -233,6 +257,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   dynamicBackground: true,
   colorMode: 'cover',
   audioReactive: true,
+  lowPerformanceMode: false,
   coverBlurBg: false,
   coverBlurAmount: 1.5,
   coverBlurDarken: 0.2,
@@ -307,6 +332,7 @@ const LEGACY_KEYS: Partial<Record<SettingKey, string>> = {
   showAudioSampleRate: 'audio_sample_rate',
   showAudioBitDepth: 'audio_bit_depth',
   lyricFontScale: 'lyric_font_scale',
+  lyricTranslationScale: 'lyric_translation_scale',
   crossfade: 'crossfade',
   normalizeVolume: 'normalize',
   fadeIn: 'fade_in',
@@ -317,6 +343,9 @@ const LEGACY_KEYS: Partial<Record<SettingKey, string>> = {
   crossfadeOutDuration: 'crossfade_out_duration',
   keepProgress: 'keep_progress',
   keepPlaybackMode: 'keep_mode',
+  doubleClickPlay: 'double_click_play',
+  localLibrarySortBy: 'local_library_sort_by',
+  localLibrarySortDescending: 'local_library_sort_descending',
   showTranslation: 'show_translation',
   lyricBlur: 'lyric_blur',
   lyricBlurAmount: 'lyric_blur_amount',
@@ -328,6 +357,7 @@ const LEGACY_KEYS: Partial<Record<SettingKey, string>> = {
   advancedLyrics: 'advanced_lyrics',
   dynamicBackground: 'dynamic_bg',
   audioReactive: 'audio_reactive',
+  lowPerformanceMode: 'low_performance_mode',
   coverBlurBg: 'cover_blur_bg',
   coverBlurAmount: 'cover_blur_amount',
   coverBlurDarken: 'cover_blur_darken',
@@ -431,6 +461,7 @@ function hasLegacySnapshot(): boolean {
     || localStorage.getItem('neri:player-state') !== null
 }
 
+/** Restore settings over current defaults and normalize persisted values before use or export. */
 function normalizeSnapshot(input: unknown): AppSettings {
   const source = input && typeof input === 'object' ? input as Partial<AppSettings> : {}
   const result = { ...DEFAULT_SETTINGS, equalizerBands: [...DEFAULT_SETTINGS.equalizerBands] }
@@ -467,6 +498,7 @@ function normalizeSnapshot(input: unknown): AppSettings {
   if (!('colorMode' in source) && legacyDynamicColor === true) result.colorMode = 'cover'
   if (!['system', 'default', 'cover'].includes(result.colorMode)) result.colorMode = DEFAULT_SETTINGS.colorMode
   if (!['home', 'explore', 'library'].includes(result.defaultScreen)) result.defaultScreen = DEFAULT_SETTINGS.defaultScreen
+  if (!['default', 'modified', 'title', 'artist', 'album', 'duration'].includes(result.localLibrarySortBy)) result.localLibrarySortBy = DEFAULT_SETTINGS.localLibrarySortBy
   if (!['zh-CN', 'zh-TW', 'en', 'ja'].includes(result.locale)) result.locale = DEFAULT_SETTINGS.locale
   if (!['off', 'error', 'warn', 'info', 'debug', 'trace'].includes(result.logLevel)) result.logLevel = DEFAULT_SETTINGS.logLevel
   if (result.themeColor.startsWith('#')) result.themeColor = result.themeColor === '#6750A4' ? 'purple' : DEFAULT_SETTINGS.themeColor
@@ -499,6 +531,9 @@ function normalizeSnapshot(input: unknown): AppSettings {
 
   // 毫秒、MB 等字段在 Rust 端是整数，带小数会让整份设置保存失败
   result.lyricFontScale = clamp(result.lyricFontScale, LYRIC_FONT_SCALE_MIN, LYRIC_FONT_SCALE_MAX)
+  result.lyricTranslationScale = Number.isFinite(result.lyricTranslationScale)
+    ? clamp(result.lyricTranslationScale, LYRIC_TRANSLATION_SCALE_MIN, LYRIC_TRANSLATION_SCALE_MAX)
+    : LYRIC_TRANSLATION_SCALE_DEFAULT
   result.fadeInDuration = clampInteger(result.fadeInDuration, 0, 10000)
   result.fadeOutDuration = clampInteger(result.fadeOutDuration, 0, 10000)
   result.crossfadeInDuration = clampInteger(result.crossfadeInDuration, 0, 10000)
@@ -510,6 +545,8 @@ function normalizeSnapshot(input: unknown): AppSettings {
   result.kugouOffset = normalizeLyricDefaultOffset(result.kugouOffset, DEFAULT_SETTINGS.kugouOffset)
   result.lrclibOffset = normalizeLyricDefaultOffset(result.lrclibOffset, DEFAULT_SETTINGS.lrclibOffset)
   result.amllTtmlOffset = normalizeLyricDefaultOffset(result.amllTtmlOffset, DEFAULT_SETTINGS.amllTtmlOffset)
+  result.biliCcSubtitleOffset = normalizeLyricDefaultOffset(result.biliCcSubtitleOffset, DEFAULT_SETTINGS.biliCcSubtitleOffset)
+  result.biliCcSubtitleLanguage = /^[a-zA-Z0-9_-]{1,32}$/.test(result.biliCcSubtitleLanguage.trim()) ? result.biliCcSubtitleLanguage.trim() : ''
   result.coverBlurAmount = clamp(result.coverBlurAmount, 0, MAX_COVER_BLUR_AMOUNT)
   result.coverBlurDarken = clamp(result.coverBlurDarken, 0, 1)
   result.backgroundImageBlur = clamp(result.backgroundImageBlur, 0, 100)
@@ -646,6 +683,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const showAudioSampleRate = ref(initial.showAudioSampleRate)
   const showAudioBitDepth = ref(initial.showAudioBitDepth)
   const lyricFontScale = ref(initial.lyricFontScale)
+  const lyricTranslationScale = ref(initial.lyricTranslationScale)
   const crossfade = ref(initial.crossfade)
   const normalizeVolume = ref(initial.normalizeVolume)
   const multichannelDrc = ref(initial.multichannelDrc)
@@ -659,6 +697,9 @@ export const useSettingsStore = defineStore('settings', () => {
   const keepProgress = ref(initial.keepProgress)
   const rememberLongFormProgress = ref(initial.rememberLongFormProgress)
   const keepPlaybackMode = ref(initial.keepPlaybackMode)
+  const doubleClickPlay = ref(initial.doubleClickPlay)
+  const localLibrarySortBy = ref<LocalLibrarySortBy>(initial.localLibrarySortBy)
+  const localLibrarySortDescending = ref(initial.localLibrarySortDescending)
   const showTranslation = ref(initial.showTranslation)
   const showRomanization = ref(initial.showRomanization)
   const lyricBlur = ref(initial.lyricBlur)
@@ -669,6 +710,10 @@ export const useSettingsStore = defineStore('settings', () => {
   const kugouOffset = ref(initial.kugouOffset)
   const lrclibOffset = ref(initial.lrclibOffset)
   const amllTtmlOffset = ref(initial.amllTtmlOffset)
+  const biliCcSubtitleOffset = ref(initial.biliCcSubtitleOffset)
+  const biliCcSubtitleEnabled = ref(initial.biliCcSubtitleEnabled)
+  const biliCcSubtitleLanguage = ref(initial.biliCcSubtitleLanguage)
+  const biliCcSubtitleAiFallback = ref(initial.biliCcSubtitleAiFallback)
   const coverStyle = ref<CoverStyle>(initial.coverStyle)
   const advancedLyrics = ref(initial.advancedLyrics)
   const preferWordTimedLyrics = ref(initial.preferWordTimedLyrics)
@@ -676,6 +721,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const dynamicBackground = ref(initial.dynamicBackground)
   const colorMode = ref<ColorMode>(initial.colorMode)
   const audioReactive = ref(initial.audioReactive)
+  const lowPerformanceMode = ref(initial.lowPerformanceMode)
   const coverBlurBg = ref(initial.coverBlurBg)
   const coverBlurAmount = ref(initial.coverBlurAmount)
   const coverBlurDarken = ref(initial.coverBlurDarken)
@@ -733,13 +779,15 @@ export const useSettingsStore = defineStore('settings', () => {
   const settingRefs: SettingRefs = {
     darkMode, themeColor, uiScale, appFontFamily, lyricFontFamily, locale, defaultScreen, closeToTray, showCoverBadge,
     showNowPlayingTitle, showToolbarDock, showQualitySwitch, showAudioCodec,
-    showAudioSpec, lyricFontScale, crossfade, normalizeVolume, multichannelDrc, volumeBalance, fadeIn,
+    showAudioSpec, lyricFontScale, lyricTranslationScale, crossfade, normalizeVolume, multichannelDrc, volumeBalance, fadeIn,
     showAudioBitrate, showAudioFormat, showAudioChannels, showAudioSampleRate, showAudioBitDepth,
     fadeInDuration, fadeOutDuration, crossfadeNext, crossfadeInDuration,
-    crossfadeOutDuration, keepProgress, rememberLongFormProgress, keepPlaybackMode, showTranslation,
+    crossfadeOutDuration, keepProgress, rememberLongFormProgress, keepPlaybackMode, doubleClickPlay,
+    localLibrarySortBy, localLibrarySortDescending, showTranslation,
     showRomanization, lyricBlur, lyricBlurAmount, lyricEmphasisThresholdMs, cloudMusicOffset, qqMusicOffset, kugouOffset, lrclibOffset,
-    amllTtmlOffset, coverStyle,
-    advancedLyrics, preferWordTimedLyrics, defaultLyricSource, dynamicBackground, colorMode, audioReactive, coverBlurBg,
+    amllTtmlOffset, biliCcSubtitleOffset, biliCcSubtitleEnabled, biliCcSubtitleLanguage, biliCcSubtitleAiFallback, coverStyle,
+    advancedLyrics, preferWordTimedLyrics, defaultLyricSource, dynamicBackground, colorMode, audioReactive,
+    lowPerformanceMode, coverBlurBg,
     coverBlurAmount, coverBlurDarken, neteaseQuality, qqMusicQuality,
     youtubeQuality, biliQuality, bypassProxy, internationalizationEnabled, exploreSearchHistoryEnabled,
     youtubePlaybackSource, neteaseAutoSourceSwitch, neteaseLocalSourceFallback,
@@ -831,15 +879,17 @@ export const useSettingsStore = defineStore('settings', () => {
     isHydrated, hydrate, snapshot, applySnapshot,
     darkMode, themeColor, uiScale, appFontFamily, lyricFontFamily, locale, coverStyle,
     defaultScreen, closeToTray, showCoverBadge, showNowPlayingTitle, showToolbarDock,
-    showQualitySwitch, showAudioCodec, showAudioSpec, lyricFontScale,
+    showQualitySwitch, showAudioCodec, showAudioSpec, lyricFontScale, lyricTranslationScale,
     showAudioBitrate, showAudioFormat, showAudioChannels, showAudioSampleRate, showAudioBitDepth,
     crossfade, normalizeVolume, multichannelDrc, volumeBalance, fadeIn, fadeInDuration, fadeOutDuration,
     crossfadeNext, crossfadeInDuration, crossfadeOutDuration,
-    keepProgress, rememberLongFormProgress, keepPlaybackMode, showTranslation, showRomanization,
+    keepProgress, rememberLongFormProgress, keepPlaybackMode, doubleClickPlay,
+    localLibrarySortBy, localLibrarySortDescending, showTranslation, showRomanization,
     lyricBlur, lyricBlurAmount, lyricEmphasisThresholdMs,
     cloudMusicOffset, qqMusicOffset, kugouOffset, lrclibOffset, amllTtmlOffset,
+    biliCcSubtitleOffset, biliCcSubtitleEnabled, biliCcSubtitleLanguage, biliCcSubtitleAiFallback,
     advancedLyrics, preferWordTimedLyrics, defaultLyricSource, dynamicBackground,
-    colorMode, audioReactive, coverBlurBg, coverBlurAmount, coverBlurDarken,
+    colorMode, audioReactive, lowPerformanceMode, coverBlurBg, coverBlurAmount, coverBlurDarken,
     neteaseQuality, qqMusicQuality, youtubeQuality, biliQuality, bypassProxy,
     youtubePlaybackSource, neteaseAutoSourceSwitch, neteaseLocalSourceFallback,
     qqAutoSourceSwitch,
