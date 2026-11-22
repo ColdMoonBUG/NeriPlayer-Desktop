@@ -3,8 +3,9 @@ use std::collections::HashSet;
 use qqmusic_api::{account::{self, AccountRead}, CancellationToken, Credential};
 use serde_json::{json, Value};
 use tauri::State;
-use crate::{error::{AppError, AppResult}, state::AppState};
-use crate::api::qq::client::qq_api_error;
+use neri_common::error::{AppError, AppResult};
+use crate::state::AppState;
+use neri_platform::api::qq::client::qq_api_error;
 
 fn text(row: &Value, keys: &[&str]) -> String {
     keys.iter().find_map(|key| {

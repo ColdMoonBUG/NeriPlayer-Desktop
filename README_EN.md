@@ -37,7 +37,14 @@ built with <strong>Tauri 2 + Vue 3 + Rust</strong> for Windows, macOS, and Linux
 Development focuses on multi-source discovery, native playback, local control, and cross-device sync.
 </p>
 
-<strong>Preview / Under active development</strong>
+<p>
+This repository is a downstream fork of
+<a href="https://github.com/cwuom/NeriPlayer-Desktop">cwuom/NeriPlayer-Desktop</a>, adding playback
+reliability work, QQ Music integration, and local-experience changes. Upstream commits and
+attribution are preserved in full, and upstream refactors continue to be merged in.
+</p>
+
+<strong>🚧 Work in progress / 开发中</strong>
 
 </div>
 
@@ -67,16 +74,7 @@ Development focuses on multi-source discovery, native playback, local control, a
 
 ---
 
-## Start here
-
-To try the app, see [Getting Started](#getting-started).
-To learn what it offers, see [Why it stands out](#why-it-stands-out)
-and [Key Features](#key-features).
-To contribute code, start with [CONTRIBUTING_EN.md](./CONTRIBUTING_EN.md).
-To host a Listen Together server, see
-[Listen Together Deployment](#listen-together-deployment).
-Before using multiple devices, read the compatibility notes in
-[GitHub Sync](#github-sync) and [WebDAV Sync](#webdav-sync).
+## About
 
 ```text
 NeriPlayer Desktop
@@ -84,10 +82,8 @@ NeriPlayer Desktop
 ├── Local-first data: library, downloads, playlists, history, queue, and stats
 ├── Optional user-controlled sync: GitHub / WebDAV metadata sync
 ├── Desktop playback: native audio, word-synced lyrics, effects, tray, media keys, and desktop lyrics
-└── Diagnostics and feedback: live logs, file logs, crash reports, and connectivity probes
+└── Diagnostics and feedback: recent logs, file logs, crash reports, and connectivity probes
 ```
-
-## About
 
 NeriPlayer Desktop uses **Vue 3 + TypeScript** for its interface,
 **Rust** for platform requests, audio decoding, playback, storage, and sync,
@@ -124,7 +120,7 @@ The current scope:
 - **Simple controls backed by native DSP**:
   29 built-in presets, a 10-band graphic equalizer, parametric EQ, AutoEQ import, tone and spatial processing,
   compression, limiting, and speaker optimization, with effects remembered per output device.
-  See the [DSP notes](./src-tauri/native/dsp/README.md) for native DSP sources and desktop extensions.
+  See the [DSP notes](./src-tauri/crates/neri-playback/native/dsp/README.md) for native DSP sources and desktop extensions.
 - **Rich word-synced lyrics**:
   AMLL provides word highlighting, translations, and phonetics, with automatic multi-source retrieval,
   manual matching, editing, and offset adjustment. Now Playing includes a cover-colored WebGL fluid background and audio response.
@@ -139,7 +135,7 @@ The current scope:
   independent desktop lyrics, the system tray, close-to-tray behavior, media keys, system media sessions,
   configurable in-app and global shortcuts, and macOS menu bar lyrics.
 - **Diagnostics available on demand**:
-  developer mode provides live logs, crash reports, and connectivity probes.
+  developer mode provides auto-refreshing recent logs, crash reports, and connectivity probes.
   File logging can be enabled separately, and reports can identify the exact build.
 
 ---
@@ -202,7 +198,7 @@ If an existing clone is missing the lyrics submodule, run `git submodule update 
 
 For local Release builds and FFmpeg packaging, read
 [CONTRIBUTING_EN.md](./CONTRIBUTING_EN.md)
-and the [FFmpeg build notes](./src-tauri/native/ffmpeg/README.md).
+and the [FFmpeg build notes](./src-tauri/crates/neri-playback/native/ffmpeg/README.md).
 A plain `pnpm tauri build` does not automatically download or bundle FFmpeg shared libraries.
 
 ---
@@ -210,11 +206,11 @@ A plain `pnpm tauri build` does not automatically download or bundle FFmpeg shar
 ## Key Features
 
 - **Home and Explore**: recent plays, frequently opened playlists, recommendations by section,
-  NetEase/Bilibili/YouTube Music search, and manageable search history.
+  NetEase/Bilibili/YouTube Music search, and search history that can be cleared or turned off.
   International mode supports YouTube Music home shelves for signed-in accounts.
 - **Library and artists**: local playlists, favorite playlists and artists, downloads,
   NetEase playlists/albums, Bilibili favorites, and YouTube Music playlists;
-  category search, pagination, multi-selection, drag-and-drop, and context menus.
+  category search, load-more lists, multi-selection, drag-and-drop, and context menus.
 - **Queue and resume**: shuffle, repeat, reordering, saved playback progress, and long-form resume.
   Shuffle shows the actual playback order; switch to the original order to drag tracks into place.
 - **Native audio and effects**: output devices, channel balance, 0.1x–4x speed, 0.25x–2x independent pitch,
@@ -265,7 +261,7 @@ A plain `pnpm tauri build` does not automatically download or bundle FFmpeg shar
   light/dark themes, cover colors, custom/fluid backgrounds, interface/lyric fonts,
   interface scaling, and settings search.
 - **Desktop integration and diagnostics**: tray, close to tray, single instance, system media sessions,
-  media keys, in-app/global shortcuts, macOS menu bar lyrics, live logs, and diagnostic reports.
+  media keys, in-app/global shortcuts, macOS menu bar lyrics, recent logs, and diagnostic reports.
 
 ### Default shortcuts
 
@@ -304,45 +300,17 @@ Text fields and active controls take priority over the relevant keys.
 | QQ Music | QQ/WeChat sign-in, song and playlist search, account playlist library, explore recommendations, account-entitled streaming, lyrics and downloads | Does not bypass membership restrictions; streaming depends on account entitlements, region and upstream APIs; see [QQ Music integration](./QQ_MUSIC_INTEGRATION.md) |
 | Local audio | Multi-folder scans, direct playback, playlist and artist management, tags and lyrics | Paths must exist on the current device; formats depend on available decoders |
 
-The desktop app combines native audio output, device selection, and DSP effects with independent desktop lyrics,
-tray controls, system media sessions, media keys, and configurable shortcuts for in-window and background playback control.
-
 ---
 
 ## Implementation Notes
 
-### Build and versions
-
-- Stack: Tauri 2, Vue 3, TypeScript, Pinia, Vite, Rust, and C++17
-- Package manager: `pnpm@9.15.9`; Rust toolchain: `1.95.0`; CI Node.js: `20`
-- In-app version: `<git-short-hash>.<MMddHHmm>`, with build time and UUID also available
-- Native configuration: `src-tauri/tauri.conf.json`; release matrix: `.github/workflows/release.yml`
-- Lyrics component: the `vendor/applemusic-like-lyrics` Git submodule
-- Packages with extended decoding require an additional FFmpeg resource configuration; local development does not require FFmpeg development packages
-
-### Module layout
-
-| Path | Responsibility |
-| --- | --- |
-| `src/views/`, `src/components/` | Pages, player, lyrics, menus, and settings |
-| `src/stores/`, `src/modules/` | Frontend state, playback coordination, lyrics, shortcuts, and Listen Together |
-| `src-tauri/src/commands/` | Tauri commands and frontend/backend data boundaries |
-| `src-tauri/src/api/`, `src-tauri/src/auth/` | Platform requests, login, signing, and sessions |
-| `src-tauri/src/audio/`, `src-tauri/native/` | Native playback, decoding, output, FFmpeg, and DSP |
-| `src-tauri/src/lyrics/`, `src-tauri/src/library/` | Lyric parsing/matching, library, tags, and stats |
-| `src-tauri/src/db/`, `src-tauri/src/sync/` | SQLite, migration, sync models, merging, and V4 archives |
-| `src-tauri/src/listen_together/` | WebSocket sessions and protocol |
-| `scripts/`, `.github/workflows/` | Regression checks, builds, packaging, and CI |
-
-### Entry point and navigation
-
-The main interface includes Home, Explore, Library, Settings, and a Debug page in developer mode.
-Mini Player, Now Playing, the queue, and comments panels work with shared playback state.
-Desktop lyrics and the tray popup use separate windows synchronized through native commands and events.
+This section covers user-facing behavior only. For code layout, crate boundaries, and quality gates, see the
+[implementation overview](docs/implementation_EN.md); for the development environment, extension points, and
+validation commands, see [CONTRIBUTING_EN.md](./CONTRIBUTING_EN.md).
 
 ### Playback, cache, and service
 
-- `src-tauri/src/audio/` handles playback, seeking, buffering, decoding, output, and media sessions.
+- `neri-playback` handles playback, seeking, buffering, decoding, output, and media sessions.
   Online playback supports HTTP Range streaming and segmented seeking; this is separate from download file resume.
 - Symphonia is the built-in decoding backend. FFmpeg shared libraries load in a runtime search order,
   with fallback attempted if libraries are missing or incompatible. Some formats may remain unavailable without them.
@@ -383,8 +351,6 @@ check live performances, covers, and edited versions manually.
 - Configuration import accepts Android plaintext and password-encrypted backups. Android imports warn that some settings may not transfer before applying supported settings and any included login state. Android-only features and device paths may not transfer.
 - Backup encryption uses the same PBKDF2-HMAC-SHA256 / AES-256-GCM envelope as Android. Passwords are not stored with the file and cannot be recovered. Desktop versions that only support plaintext must be updated before opening encrypted backups.
 - Imported cookies remain subject to platform expiry, network access, and risk controls. YouTube cookie import checks local format and does not guarantee valid account authorization. Android backups containing only an Authorization header without cookies require signing in again.
-
-See [CONTRIBUTING_EN.md](./CONTRIBUTING_EN.md) for implementation paths, extension points, and validation commands.
 
 ---
 
@@ -514,7 +480,7 @@ They have no fixed schedule.
 ## Bug Report
 
 1. Copy the build version from Settings → About, and record your OS, architecture, and reproduction steps
-2. Click the **version number seven times** in Settings to enable developer mode, then open Debug for live logs, crash reports, or diagnostic report export
+2. Click the **version number seven times** in Settings to enable developer mode, then open Debug for recent logs, crash reports, or diagnostic report export
 3. For persistent logs, enable file logging in Settings and restart the app before reproducing the issue. The file logging switch takes effect after restart; log-level changes apply immediately
 4. Open [Issues](https://github.com/cwuom/NeriPlayer-Desktop/issues) and use the appropriate template
 
@@ -588,6 +554,14 @@ do not attach full configuration exports or databases.
   <td>Features, sync models, Listen Together protocol, and native DSP sources</td>
 </tr>
 <tr>
+  <td><a href="https://github.com/cwuom/NeriPlayer-Desktop">cwuom/NeriPlayer-Desktop</a></td>
+  <td>Upstream desktop implementation this fork builds on: playback, lyrics, sync, downloads, and the cross-platform shell</td>
+</tr>
+<tr>
+  <td><a href="https://github.com/YAQMC/qm-api-rs">YAQMC/qm-api-rs</a></td>
+  <td>QQ Music API client (GPL-3.0-or-later). Provides QQ/WeChat OAuth sign-in, credential renewal, playlist reads, and stream resolution; the pinned revision is in <code>src-tauri/Cargo.toml</code></td>
+</tr>
+<tr>
   <td><a href="https://github.com/amll-dev/applemusic-like-lyrics">applemusic-like-lyrics</a></td>
   <td>Word-synced lyric rendering and fluid background components</td>
 </tr>
@@ -615,40 +589,33 @@ do not attach full configuration exports or databases.
 
 ---
 
-## Update Cycle
-
-- The project is under active Preview development. Releases follow feature work and maintenance needs.
-- Core playback, local data, lyrics, sync, and cross-platform compatibility remain under maintenance.
-- CI builds let you try work in progress. Refer to the relevant commit and release notes for changes and known issues.
-
----
-
-## Support
-
-- The project and its maintainers do not accept sponsorships, donations, or commercial funding.
-- Support the project with reproducible Issues, PRs, documentation improvements, or Preview validation.
-
----
-
 ## License
 
 NeriPlayer Desktop is released under **GPL-3.0-or-later**. See [LICENSE](./LICENSE) for the terms.
 
 - Code released under MIT before 2026-10-07 retains its original notice in [LICENSES/MIT.txt](./LICENSES/MIT.txt).
 - `vendor/applemusic-like-lyrics` is distributed under its AGPL-3.0 license.
-- The ported native DSP follows its source GPL-3.0 license; see the [DSP notes](./src-tauri/native/dsp/README.md).
+- The ported native DSP follows its source GPL-3.0 license; see the [DSP notes](./src-tauri/crates/neri-playback/native/dsp/README.md).
   The Android USB code's alternative license does not apply.
 - The bundled minimal FFmpeg build does not enable GPL components and is distributed under LGPL-2.1-or-later.
-  See the [FFmpeg notes](./src-tauri/native/ffmpeg/README.md) and Release attachments for sources, build options, and source access.
+  See the [FFmpeg notes](./src-tauri/crates/neri-playback/native/ffmpeg/README.md) and Release attachments for sources, build options, and source access.
+- `qqmusic-api` ([YAQMC/qm-api-rs](https://github.com/YAQMC/qm-api-rs)) is distributed under
+  GPL-3.0-or-later and pinned to an exact commit via a git dependency. Its MIT-licensed derived
+  work and full provenance are documented in that repository's THIRD_PARTY_NOTICES.md.
+  Binary releases ship the corresponding source; see
+  [Third-party license references](./THIRD_PARTY_LICENSES.md).
+- This project is a downstream fork of
+  [cwuom/NeriPlayer-Desktop](https://github.com/cwuom/NeriPlayer-Desktop) and keeps upstream's
+  original commits and attribution. Upstream and this fork are both released under GPL-3.0-or-later.
 - Third-party resources and source code retain their own licenses.
   The repository's main license does not relicense every dependency.
 
 ---
 
-# Contributing to NeriPlayer Desktop
+## Contributing
 
-Before contributing, read the full [CONTRIBUTING_EN.md](./CONTRIBUTING_EN.md) and follow the
-[Code of Conduct](./CODE_OF_CONDUCT.md).
+Reproducible Issues, PRs, documentation improvements, and Preview validation are all welcome.
+Before contributing, read [CONTRIBUTING_EN.md](./CONTRIBUTING_EN.md) and follow the [Code of Conduct](./CODE_OF_CONDUCT.md).
 
 ---
 

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import ts from 'typescript'
 import { ref } from 'vue'
 
@@ -9,7 +9,11 @@ const clockCompiled = ts.transpileModule(clockSource, {
 }).outputText
 const { predictAudiblePosition } = await import(`data:text/javascript;base64,${Buffer.from(clockCompiled).toString('base64')}`)
 
-const source = readFileSync(new URL('../src/stores/player.ts', import.meta.url), 'utf8')
+// player store 拆成 player.ts 与 player/ 下的切片，拼接全部源码后按名称查找实现
+const playerDir = new URL('../src/stores/player/', import.meta.url)
+const playerFiles = [new URL('../src/stores/player.ts', import.meta.url),
+  ...readdirSync(playerDir).filter(name => name.endsWith('.ts')).sort().map(name => new URL(name, playerDir))]
+const source = playerFiles.map(file => readFileSync(file, 'utf8')).join('\n')
 const parsed = ts.createSourceFile('player.ts', source, ts.ScriptTarget.ES2022, true)
 const names = new Set(['commitBackendPosition', 'clampPlaybackPosition', '_startInterpolationLoop'])
 const functions = []

@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises'
 // 探索页 QQ 分栏的默认推荐：后端命令 + 前端接线 + 四语言文案，一处缺就红。
 const read = path => readFile(new URL(path, import.meta.url), 'utf8')
 
-const exploreCmd = await read('../src-tauri/src/commands/explore_cmd.rs')
+const exploreCmd = await read('../src-tauri/src/commands/discover/explore_cmd.rs')
 const mainRs = await read('../src-tauri/src/main.rs')
 const exploreView = await read('../src/views/ExploreView.vue')
 
