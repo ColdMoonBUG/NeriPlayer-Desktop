@@ -55,3 +55,9 @@ docs-private/
 
 # Test build Direction
 /build/
+# Local release staging and build scratch (installers, FFmpeg source tarballs, version stamp config)
+release-out/
+.cache/
+# Local scratch clone of helper repositories kept beside the tree while investigating upstream
+YAQMC/
+qq_muisc_qrlogin.py
