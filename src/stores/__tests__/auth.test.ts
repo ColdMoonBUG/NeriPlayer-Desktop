@@ -60,6 +60,7 @@ function loggedOutInfo(platform: string): BackendAuthInfo {
 function status(overrides: Partial<AuthStatusResponse> = {}): AuthStatusResponse {
   return {
     netease: loggedOutInfo('netease'),
+    qq: loggedOutInfo('qq'),
     bilibili: loggedOutInfo('bilibili'),
     youtube: loggedOutInfo('youtube'),
     ...overrides,

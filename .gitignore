@@ -61,3 +61,8 @@ release-out/
 # Local scratch clone of helper repositories kept beside the tree while investigating upstream
 YAQMC/
 qq_muisc_qrlogin.py
+
+# Flatpak 本地打包的输入与构建状态（见 packaging/flatpak/ 清单开头的注释）
+/packaging/flatpak/shared-modules/
+/packaging/flatpak/*.deb
+.flatpak-builder/

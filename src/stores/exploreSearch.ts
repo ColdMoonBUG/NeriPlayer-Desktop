@@ -8,12 +8,12 @@ const log = createLogger('explore-search')
 export type ExplorePlatform = 'netease' | 'qq' | 'bilibili' | 'youtube' | 'link'
 export type ExploreKind = 'songs' | 'playlists' | 'artists' | 'videos' | 'creators'
 
-/// 对齐 Android：网易云可搜歌曲/歌单/歌手，YouTube Music 可搜歌曲/视频/创作者，B 站只有视频
+/// 对齐 Android：网易云可搜歌曲/歌单/歌手，YouTube Music 与 B 站可搜歌曲/视频/创作者
 export const EXPLORE_KINDS: Record<Exclude<ExplorePlatform, 'link'>, ExploreKind[]> = {
   qq: ['songs', 'playlists'],
   netease: ['songs', 'playlists', 'artists'],
   youtube: ['songs', 'videos', 'creators'],
-  bilibili: ['videos'],
+  bilibili: ['songs', 'videos', 'creators'],
 }
 
 export interface ExploreSong {
@@ -35,6 +35,9 @@ export interface ExploreCollection {
   cover_url: string | null
   subtitle: string
   track_count?: number
+  /** 仅 B 站创作者搜索结果携带 */
+  follower_count?: number
+  video_count?: number
 }
 
 export interface ExploreNotice {

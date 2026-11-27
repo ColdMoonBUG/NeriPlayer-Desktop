@@ -36,6 +36,7 @@ const page = (ids, hasMore = false) => ({ items: ids.map(song), has_more: hasMor
 assert.deepEqual(exports.EXPLORE_KINDS.netease, ['songs', 'playlists', 'artists'])
 assert.deepEqual(exports.EXPLORE_KINDS.qq, ['songs', 'playlists'])
 assert.deepEqual(exports.EXPLORE_KINDS.youtube, ['songs', 'videos', 'creators'])
+assert.deepEqual(exports.EXPLORE_KINDS.bilibili, ['songs', 'videos', 'creators'])
 
 // 慢的旧关键词晚于新关键词返回，不能覆盖新结果
 const slow = store.search('netease', 'songs', 'old')
