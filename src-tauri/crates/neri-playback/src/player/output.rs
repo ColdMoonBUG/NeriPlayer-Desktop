@@ -352,6 +352,10 @@ pub(super) fn render_output<T>(
     } = chain;
     let started_ns = metrics::monotonic_ns();
     let silence = T::from_sample(0.0);
+    // EOF can race begin_rebuffering: the worker clears buffering just before
+    // the callback sets it. Recheck readiness here so the remaining tail drains
+    // and QueryEmpty can report completion instead of staying silent forever.
+    shared.update_buffering_state();
     if shared.paused.load(Ordering::Acquire) || shared.buffering.load(Ordering::Acquire) {
         output.fill(silence);
         counters.record_callback(

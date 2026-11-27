@@ -119,10 +119,21 @@ fn spawn_prefetch_sequence(inner: Arc<RemoteAudioInner>, plan: PrefetchPlan) {
 
 /// 当前预取块大小：按近期吞吐自适应（8s 可完成），无样本时用 512KB 默认
 fn current_prefetch_block_bytes(inner: &RemoteAudioInner) -> u64 {
+    // response.bytes() publishes only once the full range arrives. Eight-second
+    // ranges therefore turn a brief cache miss into seconds of silence. Limit
+    // each response to roughly two seconds of media; keep the 15s window/lanes.
+    let media_cap = if inner.bitrate_bps > 0 {
+        inner
+            .bitrate_bps
+            .saturating_mul(2)
+            .clamp(REMOTE_MIN_BLOCK_BYTES, REMOTE_ADAPTIVE_MAX_BLOCK_BYTES)
+    } else {
+        REMOTE_PREFETCH_BLOCK_BYTES
+    };
     adaptive_block_bytes(
         inner.throughput_bps(),
         REMOTE_PREFETCH_BLOCK_BYTES,
-        REMOTE_ADAPTIVE_MAX_BLOCK_BYTES,
+        media_cap,
     )
 }
 

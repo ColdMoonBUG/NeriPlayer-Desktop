@@ -2926,7 +2926,7 @@ fn spawn_flaky_range_server(body: Arc<Vec<u8>>, fail_first: usize) -> (String, S
 fn demand_fetch_retries_transient_failures_with_halved_blocks() {
     let total_len: u64 = 1024 * 1024;
     let body: Arc<Vec<u8>> = Arc::new((0..total_len).map(|index| (index % 251) as u8).collect());
-    // 前两个请求（256KB、128KB）中途断开，第三个（64KB）放行
+    // 交互读取直接使用 64KB；前两个请求中断，第三个放行。
     let (url, requests) = spawn_flaky_range_server(Arc::clone(&body), 2);
     let inner = Arc::new(RemoteAudioInner {
         // 必须绕过系统代理：本地回环服务器走代理会拿到 502
@@ -2974,10 +2974,10 @@ fn demand_fetch_retries_transient_failures_with_halved_blocks() {
         .expect("demand read must survive transient failures");
 
     assert_eq!(bytes, [0, 1, 2, 3]);
-    // 断言折半序列：256KB → 128KB → 64KB
+    // 已在块大小下限，重试不再缩小，也不扩大到解码缓冲区大小。
     assert_eq!(
         requests.lock().expect("requests lock").clone(),
-        vec![(0, 262_143), (0, 131_071), (0, 65_535)],
+        vec![(0, 65_535), (0, 65_535), (0, 65_535)],
     );
     // 成功后在途登记必须清空（等待方不会悬挂在残留登记上）
     assert!(inner.in_flight.lock().expect("in-flight lock").is_empty());

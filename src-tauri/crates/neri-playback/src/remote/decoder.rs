@@ -100,6 +100,7 @@ pub struct SymphoniaAudioDecoder {
     buffer: SampleBuffer<f32>,
     spec: SignalSpec,
     retry_virtual_body_edges: bool,
+    fast_mpeg_seek: bool,
     source_eof: Option<Arc<AtomicBool>>,
     exhausted: bool,
 }
@@ -196,8 +197,18 @@ impl SymphoniaAudioDecoder {
         let buffer_len = REMOTE_DECODER_BUFFER_BYTES;
         let options = MediaSourceStreamOptions { buffer_len };
         let mss = MediaSourceStream::new(Box::new(source), options);
-        let decoder =
+        let mut decoder =
             Self::init_remote(mss, None).map_err(|err| format!("Decode error: {}", err))?;
+        // Accurate MP3 seek scans every intervening frame over HTTP. Constant
+        // bitrate MP3 can jump by byte position then refine to a sample. Do not
+        // apply the estimate to Xing/VBRI variable-bitrate files or other codecs.
+        decoder.fast_mpeg_seek = decoder.decoder.codec_params().codec == codecs::CODEC_TYPE_MP3
+            && decoder.total_duration.is_some()
+            && finish_handle.header_bytes().is_some_and(|header| {
+                !header
+                    .windows(4)
+                    .any(|word| word == b"Xing" || word == b"VBRI")
+            });
         finish_handle.finish_demuxer_open();
         finish_handle.clear_virtual_body();
         log::info!(
@@ -328,6 +339,7 @@ impl SymphoniaAudioDecoder {
             buffer,
             spec,
             retry_virtual_body_edges: false,
+            fast_mpeg_seek: false,
             source_eof: None,
             exhausted: false,
         })
@@ -430,6 +442,7 @@ impl SymphoniaAudioDecoder {
             buffer,
             spec,
             retry_virtual_body_edges: enable_seek_after_probe.is_some(),
+            fast_mpeg_seek: false,
             source_eof: None,
             exhausted: false,
         })
@@ -555,6 +568,7 @@ impl SymphoniaAudioDecoder {
             buffer,
             spec,
             retry_virtual_body_edges: true,
+            fast_mpeg_seek: false,
             source_eof: None,
             exhausted: false,
         })
@@ -775,7 +789,11 @@ impl PcmSource for SymphoniaAudioDecoder {
         let seek_res = self
             .format
             .seek(
-                SeekMode::Accurate,
+                if self.fast_mpeg_seek {
+                    SeekMode::Coarse
+                } else {
+                    SeekMode::Accurate
+                },
                 SeekTo::Time {
                     time,
                     track_id: None,

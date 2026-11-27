@@ -42,6 +42,9 @@ const REMOTE_INITIAL_BLOCK_BYTES: u64 = 128 * 1024;
 /// 超长媒体首包加大，尽量一次拿齐 moov + 起始音频
 const REMOTE_LONG_INITIAL_BLOCK_BYTES: u64 = 512 * 1024;
 const REMOTE_FETCH_BLOCK_BYTES: u64 = 256 * 1024;
+// Interactive reads must not wait for a whole decoder-sized block. Read permits
+// short results; background prefetch fills the rest without delaying seek.
+const REMOTE_INTERACTIVE_BLOCK_BYTES: u64 = 64 * 1024;
 /// 预取专用块：慢链路上每个请求的往返/慢启动开销占大头（实机 256KB 块耗时
 /// 600-4000ms），顺序预取用大块摊薄开销；需求读与 seek 仍用 256KB 保低延迟
 const REMOTE_PREFETCH_BLOCK_BYTES: u64 = 512 * 1024;

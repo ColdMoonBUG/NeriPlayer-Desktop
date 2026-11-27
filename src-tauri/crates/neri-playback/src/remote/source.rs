@@ -701,7 +701,7 @@ impl RemoteAudioSource {
     }
 
     /// 按物理偏移拉取；全程不改 self.pos（self.pos 只存逻辑坐标）
-    fn fetch_physical_range(&self, physical: u64, wanted_len: usize) -> io::Result<()> {
+    fn fetch_physical_range(&self, physical: u64, _wanted_len: usize) -> io::Result<()> {
         self.ensure_read_current()?;
         if physical >= self.inner.total_len {
             return Ok(());
@@ -715,8 +715,9 @@ impl RemoteAudioSource {
         };
         // 慢网自适应：按近期吞吐缩块（8s 可完成），mode 块只作上限；
         // 无样本时保持 mode 默认块，冷启动行为不变
-        let block = adaptive_block_bytes(self.inner.throughput_bps(), mode_block, mode_block);
-        let wanted = wanted_len.max(block as usize) as u64;
+        let block = adaptive_block_bytes(self.inner.throughput_bps(), mode_block, mode_block)
+            .min(REMOTE_INTERACTIVE_BLOCK_BYTES);
+        let wanted = block;
         let end = physical
             .saturating_add(wanted)
             .saturating_sub(1)
