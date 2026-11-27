@@ -63,6 +63,8 @@ const REMOTE_SEEK_TIMEOUT: Duration = Duration::from_secs(45);
 const LOCAL_PREBUFFER: Duration = Duration::from_millis(80);
 const GROWING_PREBUFFER: Duration = Duration::from_millis(800);
 const REMOTE_PREBUFFER: Duration = Duration::from_millis(1_500);
+// 同一首歌拖动进度条时的快速预缓冲：无需再等足 1.5s，后台整首预取会持续补齐
+const REMOTE_SEEK_PREBUFFER: Duration = Duration::from_millis(200);
 const REBUFFER_TARGET: Duration = Duration::from_millis(1_500);
 // 音效/倍速切换后的短恢复目标：避免 underrun 后卡 1.5s
 const EFFECTS_RECOVER_TARGET: Duration = Duration::from_millis(120);
@@ -150,6 +152,7 @@ impl AudioSource {
     fn prebuffer_duration(&self) -> Duration {
         match self {
             Self::Growing(_, _, _) => GROWING_PREBUFFER,
+            Self::Remote(source, _) if source.is_fully_cached() => LOCAL_PREBUFFER,
             Self::Remote(_, _) => REMOTE_PREBUFFER,
             Self::Bytes(_, _) | Self::File(_, _) => LOCAL_PREBUFFER,
         }

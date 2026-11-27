@@ -11,6 +11,12 @@ impl RemoteAudioSource {
             .map(|cache| cache.entry_id().to_owned())
     }
 
+    /// 整首歌已完整缓存在内存或磁盘中，后续读取与 seek 等同本地文件
+    pub fn is_fully_cached(&self) -> bool {
+        self.inner.total_len > 0
+            && contiguous_cached_end(&self.inner, 0) >= self.inner.total_len
+    }
+
     pub async fn open(
         client: reqwest::Client,
         url: String,
@@ -172,7 +178,20 @@ impl RemoteAudioSource {
             .as_ref()
             .map(|segment| (segment.start, segment.data.clone()));
         let cache = initial_segment.into_iter().collect();
-        let prefetch_window = prefetch_window(total_len, duration_hint_ms);
+        // 普通单曲（< 45 分钟且 <= 64MB）后台直接把整首歌预取进内存/磁盘缓存，
+        // 避免播放中反复向服务端分段拉取，整首落缓存后任意拖动进度条 0 网络请求秒切；
+        // 超长内容或超大文件仍保留 15s 滑动窗口，防止撑爆内存与流量
+        let prefetch_window = if duration_hint_ms < REMOTE_LONG_FORM_DURATION_MS
+            && total_len > 0
+            && total_len <= REMOTE_MAX_CACHE_BYTES as u64
+        {
+            PrefetchWindow {
+                low_water_bytes: total_len,
+                target_bytes: total_len,
+            }
+        } else {
+            prefetch_window(total_len, duration_hint_ms)
+        };
         let mut protected_ranges = Vec::new();
         if let Some((start, data)) = &initial_disk_segment {
             if !data.is_empty() {

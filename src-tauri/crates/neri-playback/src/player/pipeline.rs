@@ -513,11 +513,18 @@ pub(super) fn prepare_session(
     let normalize = effects.snapshot().normalize_volume;
     // 同一首歌重建会话时增益已经落定，不必再预热、再等估计
     let fresh_track = !loudness.is_seeded();
-    // 新曲目开着音量均衡：先分析够预热时长再出声，第一个可闻样本就是正确的响度
-    let prebuffer = if normalize && fresh_track {
-        source.prebuffer_duration().max(NORMALIZE_WARMUP)
+    // 新曲目开着音量均衡：先分析够预热时长再出声，第一个可闻样本就是正确的响度；
+    // 同一首歌拖动进度条（!fresh_track）：若整首已缓存则直接按本地 80ms 秒出声，
+    // 尚未缓完也只等短预缓冲（200ms），避免每次拖动都被 1.5s 预缓冲拖慢
+    let base_prebuffer = if !fresh_track {
+        source.prebuffer_duration().min(REMOTE_SEEK_PREBUFFER)
     } else {
         source.prebuffer_duration()
+    };
+    let prebuffer = if normalize && fresh_track {
+        base_prebuffer.max(NORMALIZE_WARMUP)
+    } else {
+        base_prebuffer
     };
     let initial_target = duration_to_frames(prebuffer, sample_rate);
     let clock = clock.unwrap_or_else(|| Arc::new(PlaybackClock::new(start_position_ms)));

@@ -126,7 +126,7 @@ fn current_prefetch_block_bytes(inner: &RemoteAudioInner) -> u64 {
         inner
             .bitrate_bps
             .saturating_mul(2)
-            .clamp(REMOTE_MIN_BLOCK_BYTES, REMOTE_ADAPTIVE_MAX_BLOCK_BYTES)
+            .clamp(REMOTE_PREFETCH_BLOCK_BYTES, REMOTE_ADAPTIVE_MAX_BLOCK_BYTES)
     } else {
         REMOTE_PREFETCH_BLOCK_BYTES
     };
